@@ -16,7 +16,7 @@ from metaflow_extensions.netflix_ext.plugins.conda.utils import arch_id
 _deps_parse = re.compile(r"([^<>=!~]+)(.*)")
 _ext_parse = re.compile(r"(\w+)\(([^)]+)\)")
 
-name_to_pkg = {}
+name_to_pkg = {"netflix-ext": "metaflow-netflixext"}
 
 
 def parse_deps(deps: str) -> List[TStr]:
