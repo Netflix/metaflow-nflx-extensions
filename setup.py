@@ -6,6 +6,8 @@ setup(
     name="metaflow-netflixext",
     version=version,
     description="EXPERIMENTAL Metaflow extensions from Netflix",
+    long_description=open("README.md").read(),
+    long_description_content_type="text/markdown",
     author="Netflix Metaflow Developers",
     author_email="metaflow-dev@netflix.com",
     packages=find_namespace_packages(include=["metaflow_extensions.*"]),
