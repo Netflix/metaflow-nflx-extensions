@@ -31,7 +31,7 @@ from metaflow.metaflow_config import (
 
 from metaflow.metaflow_environment import MetaflowEnvironment
 
-from .utils import get_conda_manifest_path
+from .utils import get_conda_manifest_path, plural_marker
 
 from .env_descr import CachedEnvironmentInfo, EnvID, ResolvedEnvironment
 from .conda import Conda
@@ -84,9 +84,20 @@ class CondaEnvironment(MetaflowEnvironment):
             # Figure out the environments that we need to resolve for all steps
             # We will resolve all unique environments in parallel
             step_conda_dec = get_conda_decorator(self._flow, step.__name__)
-            env_ids = step_conda_dec.env_ids
-            for env_id in env_ids:
-                resolved_env = self._conda.environment(env_id)
+            my_arch_env_id = step_conda_dec.env_id
+            requested_archs = step_conda_dec.requested_architectures
+            # First look up the env_id (it's the default one)
+            resolved_env = self._conda.environment(my_arch_env_id)
+            if resolved_env is not None:
+                # Check to make sure it supports all requested architectures
+                if not set(requested_archs).issubset(resolved_env.co_resolved_archs):
+                    resolved_env = None
+            for arch in requested_archs:
+                env_id = EnvID(
+                    req_id=my_arch_env_id.req_id,
+                    full_id=my_arch_env_id.full_id,
+                    arch=arch,
+                )
                 if env_id not in self._requested_envs:
                     self._requested_envs[env_id] = {
                         "id": env_id,
@@ -177,11 +188,19 @@ class CondaEnvironment(MetaflowEnvironment):
     ):
         start = time.time()
         if len(env_ids) == len(self._requested_envs):
-            echo("    Resolving %d environments in flow ..." % len(env_ids), nl=False)
+            echo(
+                "    Resolving %d environment%s in flow ..."
+                % (len(env_ids), plural_marker(len(env_ids))),
+                nl=False,
+            )
         else:
             echo(
-                "    Resolving %d of %d environments in flows (others are cached) ..."
-                % (len(env_ids), len(self._requested_envs)),
+                "    Resolving %d of %d environment%s in flow (others are cached) ..."
+                % (
+                    len(env_ids),
+                    len(self._requested_envs),
+                    plural_marker(len(self._requested_envs)),
+                ),
                 nl=False,
             )
 
@@ -262,7 +281,7 @@ class CondaEnvironment(MetaflowEnvironment):
                     )
 
         duration = int(time.time() - start)
-        echo(" done in %d seconds." % duration)
+        echo(" done in %d second%s." % (duration, plural_marker(duration)))
 
     def _get_env_id(self, step_name: str) -> Optional[EnvID]:
         conda_decorator = get_conda_decorator(self._flow, step_name)

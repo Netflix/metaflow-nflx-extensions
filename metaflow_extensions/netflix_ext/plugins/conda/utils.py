@@ -160,3 +160,7 @@ def parse_explicit_url_pip(url: str) -> ParseExplicitResult:
     return ParseExplicitResult(
         filename=filename, url=url_clean, url_format=url_format, hash=url_hash
     )
+
+
+def plural_marker(count: int) -> str:
+    return "s" if count != 1 else ""

@@ -33,6 +33,9 @@ This extension currently contains:
 This functionality is currently being actively tested within Netflix but has not yet
 been deployed in production.
 
+It is likely to evolve primarily in its implementation as we do further testing. Feedback
+on what is working and what is not is most welcome.
+
 ### Improvements over the included Conda decorator
 This decorator improves several aspects of the included Conda decorator:
 - it has significant performance gains:
@@ -93,13 +96,14 @@ needs to satisfy the following requirements:
 - `lockfile`
 - (optional but recommended) `mamba>=1.1.0`
 
-In addition, and only if you want to support `pypi` packages, you need to apply the
+In addition, and only if you want to support `pypi` packages, it is best to apply the
 PR `https://github.com/conda-incubator/conda-lock/pull/290` to `conda-lock`. This is
 the unfortunate result of a bug in how `conda-lock` handles packages that are both
 present in the `conda` environment and `pypi` one.
 
-Due to bugs in `conda`, if your resolved environment contains `.conda` packages and you
-do not have `micromamba` installed, the environment creation will fail.
+Due to bugs in `conda` and the way we use it, if your resolved environment
+contains `.conda` packages and you do not have `micromamba` installed, the
+environment creation will fail.
 
 #### Uninstallation
 Uninstalling this package will revert the behavior of the conda decorator to the one

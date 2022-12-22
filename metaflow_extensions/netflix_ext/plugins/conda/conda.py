@@ -66,6 +66,7 @@ from .utils import (
     get_conda_root,
     parse_explicit_url_conda,
     parse_explicit_url_pip,
+    plural_marker,
 )
 
 from .env_descr import (
@@ -114,7 +115,9 @@ class Conda(object):
         self._use_conda_lock_to_resolve = (
             CONDA_PREFERRED_RESOLVER == "conda-lock"
         )  # type: bool
-        self._find_conda_binary()
+        self._found_binaries = False  # We delay resolving binaries until we need them
+        # because in the remote case, in conda_environment.py
+        # we create this object but don't use it.
 
         # Figure out what environments we know about locally
         self._local_root = LocalStorage.get_datastore_root_from_config(
@@ -136,6 +139,8 @@ class Conda(object):
             self._storage = None
 
     def binary(self, binary: str) -> Optional[str]:
+        if not self._found_binaries:
+            self._find_conda_binary()
         if self._bins:
             return self._bins.get(binary)
         return None
@@ -152,6 +157,9 @@ class Conda(object):
             # TODO: Maybe relax this later but for now assume that the remote environment
             # is a "lighter" conda.
             raise CondaException("Cannot resolve environments in a remote environment")
+
+        if not self._found_binaries:
+            self._find_conda_binary()
 
         have_pip_deps = any([d.category == "pip" for d in deps])
         if have_pip_deps and not self._use_conda_lock_to_resolve:
@@ -188,6 +196,9 @@ class Conda(object):
             # TODO: Maybe relax this later but for now assume that the remote environment
             # is a "lighter" conda.
             raise CondaException("Cannot resolve environments in a remote environment")
+
+        if not self._found_binaries:
+            self._find_conda_binary()
 
         have_pip_deps = any(
             chain(
@@ -252,6 +263,10 @@ class Conda(object):
         env: ResolvedEnvironment,
         do_symlink: bool = False,
     ):
+
+        if not self._found_binaries:
+            self._find_conda_binary()
+
         try:
             # I am not 100% sure the lock is required but since the environments share
             # a common package cache, we will keep it for now
@@ -263,6 +278,10 @@ class Conda(object):
     def create_for_name(
         self, name: str, env: ResolvedEnvironment, do_symlink: bool = False
     ):
+
+        if not self._found_binaries:
+            self._find_conda_binary()
+
         with CondaLock(self._env_lock_file(name)):
             self._create(env, name)
         if do_symlink:
@@ -272,6 +291,9 @@ class Conda(object):
 
     def remove_for_step(self, step_name: str, env_id: EnvID):
         # Remove the conda environment
+        if not self._found_binaries:
+            self._find_conda_binary()
+
         try:
             env_name = self._env_directory_from_envid(env_id)
             return self.remove_for_name(env_name)
@@ -280,11 +302,15 @@ class Conda(object):
             raise CondaStepException(e, [step_name])
 
     def remove_for_name(self, name: str):
+        if not self._found_binaries:
+            self._find_conda_binary()
         with CondaLock(self._env_lock_file(name)):
             self._remove(name)
 
     def python(self, env_desc: Union[EnvID, str]) -> Optional[str]:
         # Get Python interpreter for the conda environment
+        if not self._found_binaries:
+            self._find_conda_binary()
         env_path = None
         if isinstance(env_desc, EnvID):
             env_path = self.created_environment(env_desc)
@@ -305,6 +331,9 @@ class Conda(object):
     def created_environment(
         self, env_desc: Union[EnvID, str]
     ) -> Optional[Tuple[EnvID, str]]:
+        if not self._found_binaries:
+            self._find_conda_binary()
+
         if isinstance(env_desc, EnvID):
             prefix = "metaflow_%s_%s" % (env_desc.req_id, env_desc.full_id)
         else:
@@ -320,6 +349,8 @@ class Conda(object):
         # List all existing metaflow environments; this can include environments that
         # were created with the `environment` command and therefore have a different
         # name
+        if not self._found_binaries:
+            self._find_conda_binary()
         prefix = "metaflow_%s_" % req_id if req_id else ""
         return {
             k: v
@@ -400,6 +431,8 @@ class Conda(object):
             raise CondaException(
                 "Cannot cache environments since no datastore configured"
             )
+        if not self._found_binaries:
+            self._find_conda_binary()
 
         cache_paths_to_check = []  # type: List[Tuple[str, str, str]]
         my_arch_id = arch_id()
@@ -633,12 +666,19 @@ class Conda(object):
             if upload_files:
                 start = time.time()
                 self._echo(
-                    "    Caching %d items to %s ..."
-                    % (len(upload_files), self._datastore_type),
+                    "    Caching %d item%s to %s ..."
+                    % (
+                        len(upload_files),
+                        plural_marker(len(upload_files)),
+                        self._datastore_type,
+                    ),
                     nl=False,
                 )
                 self._upload_to_ds(upload_files)
-                self._echo(" done in %d seconds." % int(time.time() - start))
+                delta_time = int(time.time() - start)
+                self._echo(
+                    " done in %d second%s." % (delta_time, plural_marker(delta_time))
+                )
 
                 # If this is successful, we cache the environments. We do this *after*
                 # in case some packages fail to upload so we don't write corrupt
@@ -656,12 +696,19 @@ class Conda(object):
                     )
                 start = time.time()
                 self._echo(
-                    "    Caching %d environments to %s ..."
-                    % (len(upload_files), self._datastore_type),
+                    "    Caching %d environment%s to %s ..."
+                    % (
+                        len(upload_files),
+                        plural_marker(len(upload_files)),
+                        self._datastore_type,
+                    ),
                     nl=False,
                 )
                 self._upload_to_ds(upload_files)
-                self._echo(" done in %d seconds." % int(time.time() - start))
+                delta_time = int(time.time() - start)
+                self._echo(
+                    " done in %d second%s." % (delta_time, plural_marker(delta_time))
+                )
             else:
                 self._echo("    All items already cached in %s." % self._datastore_type)
 
@@ -690,6 +737,9 @@ class Conda(object):
         # Tarballs are fetched from cache if available and the web if not. Package
         # transmutation also happens if the requested format is not found (only for
         # conda packages))
+
+        if not self._found_binaries:
+            self._find_conda_binary()
 
         if require_conda_format is None:
             require_conda_format = []
@@ -961,8 +1011,12 @@ class Conda(object):
         if do_download:
             start = time.time()
             self._echo(
-                "    Downloading %d(web) + %d(cache) packages ..."
-                % (len(web_downloads), len(cache_downloads)),
+                "    Downloading %d(web) + %d(cache) package%s ..."
+                % (
+                    len(web_downloads),
+                    len(cache_downloads),
+                    plural_marker(len(web_downloads) + len(cache_downloads)),
+                ),
                 nl=False,
             )
 
@@ -1041,12 +1095,18 @@ class Conda(object):
                         )
 
         if do_download:
+            delta_time = int(time.time() - start)
             self._echo(
-                " done in %d seconds." % int(time.time() - start), timestamp=False
+                " done in %d second%s." % (delta_time, plural_marker(delta_time)),
+                timestamp=False,
             )
         if not pending_errors and transmutes:
             start = time.time()
-            self._echo("    Transmuting %d packages ..." % len(transmutes), nl=False)
+            self._echo(
+                "    Transmuting %d package%s ..."
+                % (len(transmutes), plural_marker(len(transmutes))),
+                nl=False,
+            )
             with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
                 transmut_results = [
                     executor.submit(_transmute, entry) for entry in transmutes
@@ -1064,8 +1124,10 @@ class Conda(object):
 
                         if new_url not in known_urls:
                             url_adds.append(new_url)
+            delta_time = int(time.time() - start)
             self._echo(
-                " done in %d seconds." % int(time.time() - start), timestamp=False
+                " done in %d second%s." % (delta_time, plural_marker(delta_time)),
+                timestamp=False,
             )
         if url_adds:
             # Update the urls file in the packages directory so that Conda knows that the
@@ -1387,6 +1449,7 @@ class Conda(object):
         err = self._validate_conda_installation()
         if err:
             raise err
+        self._found_binaries = True
 
     def _ensure_local_conda(self):
         if CONDA_LOCAL_PATH is not None:
@@ -1458,7 +1521,11 @@ class Conda(object):
                 raise InvalidEnvironmentException(
                     msg="Could not extract environment: %s" % str(e)
                 )
-        self._echo(" done in %d seconds." % int(time.time() - start), timestamp=False)
+        delta_time = int(time.time() - start)
+        self._echo(
+            " done in %d second%s." % (delta_time, plural_marker(delta_time)),
+            timestamp=False,
+        )
 
     def _ensure_remote_conda(self):
         if CONDA_REMOTE_INSTALLER is not None:
@@ -1467,14 +1534,17 @@ class Conda(object):
             # If we don't have a REMOTE_INSTALLER, we check if we need to install one
             args = [
                 "/bin/bash",
-                "-c"
-                "if ! type %s  >/dev/null 2>&1; "
-                "then wget --no-check-certificate "
-                "https://micro.mamba.pm/install.sh -O micromamba.sh >/dev/null 2>&1; "
-                "./micromamba.sh >/dev/null 2>&1; echo $HOME/.local/bin/micromamba; "
-                "else which %s; fi" % ("micromamba", "micromamba"),
+                "-c",
+                "if ! type micromamba  >/dev/null 2>&1; then "
+                "mkdir -p ~/.local/bin >/dev/null 2>&1; "
+                "curl -Ls https://micro.mamba.pm/api/micromamba/%s/latest | "
+                "tar -xvj -C ~/.local/bin/ --strip-components=1 bin/micromamba >/dev/null 2>&1; "
+                "echo $HOME/.local/bin/micromamba; "
+                "else which micromamba; fi" % arch_id(),
             ]
-            self._bins = {"micromamba": subprocess.check_output(args).decode("utf-8")}
+            self._bins = {
+                "conda": subprocess.check_output(args).decode("utf-8").strip()
+            }
 
     def _install_remote_conda(self):
         from metaflow.plugins import DATASTORES
@@ -1541,7 +1611,8 @@ class Conda(object):
                     to_remove.append(k)
                 else:
                     return InvalidEnvironmentException(
-                        "Required binary '%s' found. Install using `%s install -n base %s`"
+                        "Required binary '%s' not found. "
+                        "Install using `%s install -n base %s`"
                         % (k, self._dependency_solver, k)
                     )
         if to_remove:
@@ -1847,7 +1918,11 @@ class Conda(object):
         ) as f:
             json.dump(env.env_id, f)
 
-        self._echo(" done in %s seconds." % int(time.time() - start), timestamp=False)
+        delta_time = int(time.time() - start)
+        self._echo(
+            " done in %s second%s." % (delta_time, plural_marker(delta_time)),
+            timestamp=False,
+        )
 
     def _remove(self, env_name: str):
         # TODO: Verify that this is a proper metaflow environment to remove

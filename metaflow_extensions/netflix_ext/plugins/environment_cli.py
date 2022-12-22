@@ -51,9 +51,9 @@ def _get_envs(
         step_conda_dec = get_conda_decorator(flow, step.__name__)
         # We want to gather steps by the type of requirements they have. This is
         # basically their req ID as well as the requested architectures.
-        env_ids = step_conda_dec.env_ids
-        archs = tuple(sorted(env.arch for env in env_ids))
-        req_id = env_ids[0].req_id
+        env_id = step_conda_dec.env_id
+        archs = tuple(sorted(step_conda_dec.requested_architectures))
+        req_id = env_id.req_id
         reqs_to_steps.setdefault((req_id, archs), []).append(step.__name__)
     # We now look for environments that have the proper req_id and a superset of the
     # architectures asked for

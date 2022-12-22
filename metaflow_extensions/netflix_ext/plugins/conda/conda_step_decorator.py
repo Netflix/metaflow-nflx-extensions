@@ -102,28 +102,11 @@ class CondaStepDecorator(StepDecorator):
         )
 
     @property
-    def env_ids(self) -> List[EnvID]:
-        debug.conda_exec(
-            "Requested for step %s: deps: %s; sources: %s"
-            % (self._step_name, str(self.step_deps), str(self.source_deps))
-        )
-        return [
-            EnvID(
-                req_id=ResolvedEnvironment.get_req_id(self.step_deps, self.source_deps),
-                full_id="_default",
-                arch=arch,
-            )
-            for arch in self.requested_architectures
-        ]
-
-    @property
     def env_id(self) -> EnvID:
-        arch = arch_id()
-        my_arch_env = [i for i in self.env_ids if i.arch == arch]
-        if my_arch_env:
-            return my_arch_env[0]
-        raise InvalidEnvironmentException(
-            "Architecture '%s' not requested for step" % arch
+        return EnvID(
+            req_id=ResolvedEnvironment.get_req_id(self.step_deps, self.source_deps),
+            full_id="_default",
+            arch=arch_id(),
         )
 
     @property

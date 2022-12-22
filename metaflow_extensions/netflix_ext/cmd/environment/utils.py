@@ -14,7 +14,7 @@ from metaflow_extensions.netflix_ext.plugins.conda.env_descr import (
 from metaflow_extensions.netflix_ext.plugins.conda.utils import arch_id
 
 _deps_parse = re.compile(r"([^<>=!~]+)(.*)")
-_ext_parse = re.compile(r"(\w+)\(([^)]+)\)")
+_ext_parse = re.compile(r"([-_\w]+)\(([^)]+)\)")
 
 name_to_pkg = {"netflix-ext": "metaflow-netflixext"}
 

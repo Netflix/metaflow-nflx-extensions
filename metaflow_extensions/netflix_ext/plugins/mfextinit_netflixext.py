@@ -7,4 +7,8 @@ FLOW_DECORATORS = [CondaFlowDecorator]
 STEP_DECORATORS = [CondaStepDecorator]
 ENVIRONMENTS = [CondaEnvironment]
 
-__mf_promot_submodules__ = ["conda"]
+def get_plugin_cli():
+    from . import environment_cli
+    return [environment_cli.cli]
+
+__mf_promote_submodules__ = ["conda"]
