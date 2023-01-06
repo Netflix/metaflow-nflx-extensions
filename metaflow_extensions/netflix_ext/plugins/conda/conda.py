@@ -438,7 +438,7 @@ class Conda(object):
         my_arch_id = arch_id()
         cache_formats = cache_formats or {
             "pip": ["_any"],
-            "conda": [CONDA_PREFERRED_FORMAT],
+            "conda": [CONDA_PREFERRED_FORMAT] if CONDA_PREFERRED_FORMAT else [],
         }
         # Contains the architecture, the list of packages that need the URL
         # and the list of formats needed

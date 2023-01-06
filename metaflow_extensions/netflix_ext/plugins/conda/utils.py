@@ -27,10 +27,13 @@ _ALL_CONDA_FORMATS = (".tar.bz2", ".conda")
 # List of formats that guarantees the preferred format is first. This is important as
 # functions that rely on selecting the "preferred" source of a package rely on the
 # preferred format being first.
-CONDA_FORMATS = (
-    CONDA_PREFERRED_FORMAT,
-    *[x for x in _ALL_CONDA_FORMATS if x != CONDA_PREFERRED_FORMAT],
-)  # type: Tuple[str, ...]
+if CONDA_PREFERRED_FORMAT:
+    CONDA_FORMATS = (
+        CONDA_PREFERRED_FORMAT,
+        *[x for x in _ALL_CONDA_FORMATS if x != CONDA_PREFERRED_FORMAT],
+    )  # type: Tuple[str, ...]
+else:
+    CONDA_FORMATS = CONDA_PREFERRED_FORMAT  # type: Tuple[str, ...]
 TRANSMUT_PATHCOMPONENT = "_transmut"
 
 

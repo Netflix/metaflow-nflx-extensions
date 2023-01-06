@@ -51,7 +51,7 @@ CONDA_LOCAL_PATH = from_conf("CONDA_LOCAL_PATH")
 # Preferred Format for Conda packages
 CONDA_PREFERRED_FORMAT = from_conf(
     "CONDA_PREFERRED_FORMAT",
-    ".conda",
+    None,
     get_validate_choice_fn([".tar.bz2", ".conda"]),
 )
 

@@ -80,6 +80,7 @@ or through environment variables. The useful configuration values are listed bel
 - `CONDA_LOCAL_PATH`: if set, installs the tarball in `CONDA_LOCAL_DIST` in this path.
 - `CONDA_PREFERRED_FORMAT`: `.tar.bz2` or `.conda`. Prefer `.conda` for speed gains; any
   package not available in the preferred format will be transmuted to it automatically.
+  If left empty, whatever package is found will be used (ie: there is no preference)
 - `CONDA_PREFERRED_RESOLVER`: `conda` or `conda-lock`; use `conda`/`mamba` or `conda-lock`
   to resolve environments. `conda-lock` is in more active development but allows for
   the inclusion of `pypi` dependencies.

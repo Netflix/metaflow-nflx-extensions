@@ -104,7 +104,9 @@ class CondaEnvironment(MetaflowEnvironment):
                         "steps": [step.name],
                         "deps": step_conda_dec.step_deps,
                         "sources": step_conda_dec.source_deps,
-                        "conda_format": [CONDA_PREFERRED_FORMAT],
+                        "conda_format": [CONDA_PREFERRED_FORMAT]
+                        if CONDA_PREFERRED_FORMAT
+                        else [],
                         "resolved": resolved_env,
                         "already_resolved": resolved_env is not None,
                     }
