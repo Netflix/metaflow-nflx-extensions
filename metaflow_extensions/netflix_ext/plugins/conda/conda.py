@@ -5,6 +5,7 @@ import json
 import os
 import requests
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -13,6 +14,7 @@ import tempfile
 import time
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import closing
 from distutils.version import LooseVersion
 from itertools import chain
 from typing import (
@@ -80,6 +82,8 @@ from .env_descr import (
     write_to_conda_manifest,
 )
 
+from .conda_lock_micromamba_server import glue_script
+
 _CONDA_DEP_RESOLVERS = ("conda", "mamba")
 
 ParseURLResult = NamedTuple(
@@ -111,7 +115,12 @@ class Conda(object):
         self._mode = mode
         self._bins = None  # type: Optional[Dict[str, str]]
         self._dependency_solver = CONDA_DEPENDENCY_RESOLVER.lower()  # type: str
-        self._have_micromamba = False  # True if the installer is micromamba
+        self._have_micromamba = False  # type: bool
+        self._have_micromamba_server = False  # type: bool
+        self._micromamba_server_port = None  # type: Optional[int]
+        self._micromamba_server_process = (
+            None
+        )  # type: Optional[subprocess.Popen[bytes]]
         self._use_conda_lock_to_resolve = (
             CONDA_PREFERRED_RESOLVER == "conda-lock"
         )  # type: bool
@@ -137,6 +146,14 @@ class Conda(object):
             )  # type: Optional[DataStoreStorage]
         else:
             self._storage = None
+
+    def __del__(self):
+        if self._micromamba_server_process:
+            self._micromamba_server_process.kill()
+        if not debug.conda and self._bins:
+            server_bin = self._bins.get("micromamba_server")
+            if server_bin:
+                os.unlink(server_bin)
 
     def binary(self, binary: str) -> Optional[str]:
         if not self._found_binaries:
@@ -171,6 +188,10 @@ class Conda(object):
                 packages = self._resolve_env_with_conda_lock(
                     deps, sources, architecture
                 )
+            # elif self._have_micromamba_server:
+            #    packages = self._resolve_env_with_micromamba_server(
+            #        deps, sources, architecture
+            #    )
             else:
                 packages = self._resolve_env_with_conda(deps, sources, architecture)
             return ResolvedEnvironment(
@@ -834,15 +855,13 @@ class Conda(object):
                 dst_format = [f for f in CONDA_FORMATS if f != src_format][0]
                 dst_file = src_file[: -len(src_format)] + dst_format
 
-                # micromamba is in general slightly faster but still has a bug with
-                # empty directories so we use cph for now.
-                # if "micromamba" in cast(Dict[str, str], self._bins):
-                #     _micromamba_transmute(src_file, dst_file, dst_format)
+                if "micromamba" in cast(Dict[str, str], self._bins):
+                    _micromamba_transmute(src_file, dst_file, dst_format)
                 if "cph" in cast(Dict[str, str], self._bins):
                     _cph_transmute(src_file, dst_file, dst_format)
                 else:
                     raise CondaException(
-                        "Requesting to transmute package without cph"  # or micromamba"
+                        "Requesting to transmute package without cph or micromamba"
                     )
 
                 pkg_spec.add_local_file(dst_format, dst_file, transmuted=True)
@@ -1157,6 +1176,63 @@ class Conda(object):
         # Returns a path to where we store a resolved environment's information
         return os.path.join("envs", env_id.arch, env_id.req_id, env_id.full_id, "env")
 
+    def _resolve_env_with_micromamba_server(
+        self, deps: Sequence[TStr], channels: Sequence[TStr], architecture: str
+    ) -> List[PackageSpecification]:
+        if any([d.category != "conda" for d in deps]):
+            raise CondaException(
+                "Cannot resolve dependencies that include non-Conda dependencies: %s"
+                % "; ".join(map(str, deps))
+            )
+
+        if not self._have_micromamba_server:
+            raise CondaException(
+                "Micromamba server not supported by installed version of micromamba"
+            )
+
+        self._start_micromamba_server()
+        # Form the payload to send to the server
+        req = {
+            "specs": [d.value for d in deps if d.category == "conda"] + ["pip"],
+            "platform": architecture,
+            "channels": [c.value for c in channels if c.category == "conda"],
+        }
+        if arch_id() == architecture:
+            # Use the same virtual packages as the ones used for conda/mamba
+            req["virtual_packages"] = [
+                "%s=%s=%s" % (pkg_name, pkg_version, pkg_id)
+                for pkg_name, pkg_version, pkg_id in self._info["virtual_pkgs"]
+            ]
+        # Make the request to the micromamba server
+        debug.conda_exec(
+            "Payload for micromamba server on port %d: %s"
+            % (self._micromamba_server_port, str(req))
+        )
+        resp = requests.post(
+            "http://localhost:%d" % self._micromamba_server_port, json=req
+        )
+        if resp.status_code != 200:
+            raise CondaException(
+                "Got unexpected return code from micromamba server: %d"
+                % resp.status_code
+            )
+        else:
+            json_response = resp.json()
+            if "error_msg" in json_response:
+                raise CondaException(
+                    "Cannot resolve environment: %s" % json_response["error_msg"]
+                )
+            else:
+                return [
+                    CondaPackageSpecification(
+                        filename=pkg["filename"],
+                        url=pkg["url"],
+                        url_format=os.path.splitext(pkg["filename"])[1],
+                        hashes={os.path.splitext(pkg["filename"])[1]: pkg["md5"]},
+                    )
+                    for pkg in json_response["packages"]
+                ]
+
     def _resolve_env_with_conda(
         self,
         deps: Sequence[TStr],
@@ -1251,6 +1327,8 @@ class Conda(object):
                 "Cannot resolve dependencies that include non-Conda/Pip dependencies: %s"
                 % "; ".join(map(str, deps))
             )
+        self._start_micromamba_server()
+
         try:
             # We resolve the environment using conda-lock
 
@@ -1367,10 +1445,13 @@ class Conda(object):
                     "-k",
                     "explicit",
                     "--conda",
-                    self._bins["conda"],
                 ]
-                if self._dependency_solver == "mamba":
-                    args.append("--mamba")
+                if "micromamba_server" in self._bins:
+                    args.extend([self._bins["micromamba_server"], "--micromamba"])
+                else:
+                    args.append(self._bins["conda"])
+                    if self._dependency_solver == "mamba":
+                        args.append("--mamba")
 
                 # If arch_id() == architecture, we also use the same virtual packages
                 # as the ones that exist on the machine to mimic the current behavior
@@ -1632,8 +1713,8 @@ class Conda(object):
 
         if "micromamba version" in self._info:
             self._have_micromamba = True
-            if LooseVersion(self._info["micromamba version"]) < LooseVersion("1.0.0"):
-                msg = "Micromamba version 1.0.0 or newer is required."
+            if LooseVersion(self._info["micromamba version"]) < LooseVersion("1.2.0"):
+                msg = "Micromamba version 1.2.0 or newer is required."
                 return InvalidEnvironmentException(msg)
         elif self._dependency_solver == "conda" or self._dependency_solver == "mamba":
             if LooseVersion(self._info["conda_version"]) < LooseVersion("4.14.0"):
@@ -1655,6 +1736,17 @@ class Conda(object):
                 "Unknown dependency solver: %s" % self._dependency_solver
             )
 
+        # Even if we have conda/mamba as the dependency solver, we can also possibly
+        # use the micromamba server. Micromamba is typically used "as conda" only on
+        # remote environments.
+        if "micromamba" in self._bins:
+            try:
+                self._call_conda(
+                    ["server", "--help"], "micromamba", pretty_print_exception=False
+                )
+                self._have_micromamba_server = False  # FIXME: Check on version
+            except CondaException:
+                self._have_micromamba_server = False
         if self._mode == "local":
             # Check if conda-forge is available as a channel to pick up Metaflow's
             # dependencies.
@@ -2001,6 +2093,7 @@ class Conda(object):
         args: List[str],
         binary: str = "conda",
         addl_env: Optional[Mapping[str, str]] = None,
+        pretty_print_exception: bool = True,
     ) -> bytes:
 
         if self._bins is None or binary not in self._bins:
@@ -2039,7 +2132,11 @@ class Conda(object):
                     err = [output]  # type: List[str]
                 for error in output.get("errors", []):
                     err.append(error["error"])
-                print("Pretty-printed exception:\n%s" % "\n".join(err), file=sys.stderr)
+                if pretty_print_exception:
+                    print(
+                        "Pretty-printed exception:\n%s" % "\n".join(err),
+                        file=sys.stderr,
+                    )
                 raise CondaException(
                     "Conda command '{cmd}' returned an error ({code}); "
                     "see pretty-printed error above".format(
@@ -2064,6 +2161,70 @@ class Conda(object):
                 "Conda command '{cmd}' returned error ({code}); "
                 "see pretty-printed error above".format(cmd=e.cmd, code=e.returncode)
             )
+
+    def _start_micromamba_server(self):
+        if not self._have_micromamba_server:
+            return
+        if self._micromamba_server_port:
+            return
+
+        def _find_port():
+            with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+                s.bind(("", 0))
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                return s.getsockname()[1]
+
+        assert self._bins
+        while True:
+            cur_port = _find_port()
+            p = subprocess.Popen(
+                [
+                    self._bins["micromamba"],
+                    "-r",
+                    os.path.dirname(self._package_dirs[0]),
+                    "server",
+                    "-p",
+                    str(cur_port),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            time.sleep(1)
+            # If we can't start, we try again with a new port
+            debug.conda_exec("Attempted micromamba server start on port %d" % cur_port)
+            if not p.poll():
+                break
+        self._micromamba_server_port = cur_port
+        self._micromamba_server_process = p
+        debug.conda_exec("Micromamba server started on port %d" % cur_port)
+        # We also create a script to pretend to be micromamba but still use the server
+        # This allows us to integrate with conda-lock without modifying conda-lock.
+        # This can go away if/when conda-lock integrates directly with micromamba server
+        # Conda-lock checks for the file ending in "micromamba" so we name it
+        # appropriately
+        with tempfile.NamedTemporaryFile(
+            suffix="micromamba", delete=False, mode="w", encoding="utf-8"
+        ) as f:
+            f.write(
+                glue_script.format(
+                    python_executable=sys.executable,
+                    micromamba_exec=self._bins["micromamba"],
+                    micromamba_root=os.path.dirname(self._package_dirs[0]),
+                    server_port=cur_port,
+                )
+            )
+            debug.conda_exec("Micromamba server glue script in %s" % cur_port)
+            self._bins["micromamba_server"] = f.name
+        os.chmod(
+            self._bins["micromamba_server"],
+            stat.S_IRUSR
+            | stat.S_IXUSR
+            | stat.S_IRGRP
+            | stat.S_IXGRP
+            | stat.S_IROTH
+            | stat.S_IXOTH,
+        )
 
 
 TCondaLock = TypeVar("TCondaLock", bound="CondaLock")
