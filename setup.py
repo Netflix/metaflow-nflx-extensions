@@ -1,6 +1,6 @@
 from setuptools import setup, find_namespace_packages
 
-version = "0.0.2"
+version = "0.0.3"
 
 setup(
     name="metaflow-netflixext",
@@ -33,5 +33,5 @@ setup(
         "metaflow_extensions",
     ],
     python_requires='>3.5',
-    install_requires=["metaflow>=2.7.16"],
+    install_requires=["metaflow>=2.7.20"],
 )
