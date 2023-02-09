@@ -249,11 +249,11 @@ class CondaStepDecorator(StepDecorator):
                 # to the PYTHONPATH for the interpreter. Note that we don't symlink
                 # to the parent of the package because that could end up including
                 # more stuff we don't want
-                self.addl_paths = []  # type: List[str]
+                self._addl_paths = []  # type: List[str]
                 for p in custom_paths:
                     temp_dir = tempfile.mkdtemp(dir=self._metaflow_home)
                     os.symlink(p, os.path.join(temp_dir, EXT_PKG))
-                    self.addl_paths.append(temp_dir)
+                    self._addl_paths.append(temp_dir)
 
         # Also install any environment escape overrides directly here to enable
         # the escape to work even in non metaflow-created subprocesses
@@ -294,8 +294,8 @@ class CondaStepDecorator(StepDecorator):
 
             # Actually set it up.
             python_path = self._metaflow_home
-            if self.addl_paths is not None:
-                addl_paths = os.pathsep.join(self.addl_paths)
+            if self._addl_paths is not None:
+                addl_paths = os.pathsep.join(self._addl_paths)
                 python_path = os.pathsep.join([addl_paths, python_path])
 
             cli_args.env["PYTHONPATH"] = python_path

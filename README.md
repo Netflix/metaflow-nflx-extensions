@@ -90,12 +90,12 @@ or through environment variables. The useful configuration values are listed bel
 #### Conda environment requirements
 Your local conda environment or the cached environment (in `CONDA_LOCAL_DIST_DIRNAME`)
 needs to satisfy the following requirements:
-- `conda<22.11` (Conda 22.11+ has issues with `conda-lock`)
+- `conda`
 - `conda-lock>=1.3.0`
-- `micromamba>=1.1.0`
+- `micromamba>=1.2.0`
 - `conda-package-handling>=1.9.0`
 - `lockfile`
-- (optional but recommended) `mamba>=1.1.0`
+- (optional but recommended) `mamba>=1.3.0`
 
 In addition, and only if you want to support `pypi` packages, it is best to apply the
 PR `https://github.com/conda-incubator/conda-lock/pull/290` to `conda-lock`. This is
@@ -128,6 +128,11 @@ The `conda` and `conda_base` decorators take the following additional options:
 - `archs`: A list of strings indicating the architectures to resolve this environment
   for. By default, the environment is resolved for the current platform and `linux-64`
   if running on a remote environment.
+
+#### Additional decorator
+Additional decorators `pip` and `pip_base` add a syntactic sugar around the `conda`
+and `conda_base` decorators where you would specify just `pip_packages`. These may
+go away in the future.
 
 #### Additional command-line tool
 An additional `environment` command-line tool is available invoked as follows:
