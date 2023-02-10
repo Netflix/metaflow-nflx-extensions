@@ -84,20 +84,9 @@ class CondaEnvironment(MetaflowEnvironment):
             # Figure out the environments that we need to resolve for all steps
             # We will resolve all unique environments in parallel
             step_conda_dec = get_conda_decorator(self._flow, step.__name__)
-            my_arch_env_id = step_conda_dec.env_id
-            requested_archs = step_conda_dec.requested_architectures
-            # First look up the env_id (it's the default one)
-            resolved_env = self._conda.environment(my_arch_env_id)
-            if resolved_env is not None:
-                # Check to make sure it supports all requested architectures
-                if not set(requested_archs).issubset(resolved_env.co_resolved_archs):
-                    resolved_env = None
-            for arch in requested_archs:
-                env_id = EnvID(
-                    req_id=my_arch_env_id.req_id,
-                    full_id=my_arch_env_id.full_id,
-                    arch=arch,
-                )
+            env_ids = step_conda_dec.env_ids
+            for env_id in env_ids:
+                resolved_env = self._conda.environment(env_id)
                 if env_id not in self._requested_envs:
                     self._requested_envs[env_id] = {
                         "id": env_id,

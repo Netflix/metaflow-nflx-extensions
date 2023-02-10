@@ -33,7 +33,6 @@ from metaflow.metadata import MetaDatum
 from metaflow.metadata.metadata import MetadataProvider
 from metaflow.metaflow_config import (
     CONDA_REMOTE_COMMANDS,
-    CONDA_PREFERRED_FORMAT,
     get_pinned_conda_libs,
 )
 from metaflow.metaflow_environment import (
@@ -64,9 +63,18 @@ class CondaStepDecorator(StepDecorator):
 
     Parameters
     ----------
-    libraries : Dict
+    libraries : Dict[str, str]
         Libraries to use for this step. The key is the name of the package
         and the value is the version to use (default: `{}`).
+    channels : List[str]
+        Additional channels to search
+    pip_packages : Dict[str, str]
+        Same as libraries but for pip packages
+    pip_sources : List[str]
+        Same as channels but for pip sources
+    archs: List[str]
+        List of architectures to build this environment on
+        (default: None, i.e: the current architecture)
     python : string
         Version of Python to use, e.g. '3.7.4'
         (default: None, i.e. the current Python version).
@@ -102,11 +110,28 @@ class CondaStepDecorator(StepDecorator):
         )
 
     @property
+    def env_ids(self) -> List[EnvID]:
+        debug.conda_exec(
+            "Requested for step %s: deps: %s; sources: %s"
+            % (self._step_name, str(self.step_deps), str(self.source_deps))
+        )
+        return [
+            EnvID(
+                req_id=ResolvedEnvironment.get_req_id(self.step_deps, self.source_deps),
+                full_id="_default",
+                arch=arch,
+            )
+            for arch in self.requested_architectures
+        ]
+
+    @property
     def env_id(self) -> EnvID:
-        return EnvID(
-            req_id=ResolvedEnvironment.get_req_id(self.step_deps, self.source_deps),
-            full_id="_default",
-            arch=arch_id(),
+        arch = arch_id()
+        my_arch_env = [i for i in self.env_ids if i.arch == arch]
+        if my_arch_env:
+            return my_arch_env[0]
+        raise InvalidEnvironmentException(
+            "Architecture '%s' not requested for step" % arch
         )
 
     @property
@@ -181,7 +206,7 @@ class CondaStepDecorator(StepDecorator):
         path_to_metaflow = os.path.join(get_metaflow_root(), "metaflow")
         path_to_info = os.path.join(get_metaflow_root(), "INFO")
         self._metaflow_home = tempfile.mkdtemp(dir="/tmp")
-        self.addl_paths = None  # type: Optional[List[str]]
+        self._addl_paths = None
         os.symlink(path_to_metaflow, os.path.join(self._metaflow_home, "metaflow"))
 
         # Symlink the INFO file as well to properly propagate down the Metaflow version
@@ -224,11 +249,11 @@ class CondaStepDecorator(StepDecorator):
                 # to the PYTHONPATH for the interpreter. Note that we don't symlink
                 # to the parent of the package because that could end up including
                 # more stuff we don't want
-                self.addl_paths = []
+                self._addl_paths = []  # type: List[str]
                 for p in custom_paths:
                     temp_dir = tempfile.mkdtemp(dir=self._metaflow_home)
                     os.symlink(p, os.path.join(temp_dir, EXT_PKG))
-                    self.addl_paths.append(temp_dir)
+                    self._addl_paths.append(temp_dir)
 
         # Also install any environment escape overrides directly here to enable
         # the escape to work even in non metaflow-created subprocesses
@@ -269,8 +294,8 @@ class CondaStepDecorator(StepDecorator):
 
             # Actually set it up.
             python_path = self._metaflow_home
-            if self.addl_paths is not None:
-                addl_paths = os.pathsep.join(self.addl_paths)
+            if self._addl_paths is not None:
+                addl_paths = os.pathsep.join(self._addl_paths)
                 python_path = os.pathsep.join([addl_paths, python_path])
 
             cli_args.env["PYTHONPATH"] = python_path
@@ -379,10 +404,86 @@ class CondaStepDecorator(StepDecorator):
             cls.conda = Conda(echo, datastore_type)
 
 
+class PipStepDecorator(CondaStepDecorator):
+    """
+    Specifies the Pip environment for the step.
+
+    Information in this decorator will augment any
+    attributes set in the `@pip_base` flow-level decorator. Hence
+    you can use `@pip_base` to set common libraries required by all
+    steps and use `@pip` to specify step-specific additions.
+
+    Parameters
+    ----------
+    packages : Dict[str, str]
+        Packages to use for this step. The key is the name of the package
+        and the value is the version to use (default: `{}`).
+    sources : List[str]
+        Additional channels to search for
+    archs: List[str]
+        List of architectures to build this environment on
+        (default: None, i.e: the current architecture)
+    python : str
+        Version of Python to use, e.g. '3.7.4'
+        (default: None, i.e. the current Python version).
+    disabled : bool
+        If set to True, disables Conda (default: False).
+    """
+
+    name = "pip"
+
+    defaults = {
+        "packages": {},
+        "sources": [],
+        "archs": None,
+        "python": None,
+        "disabled": None,
+    }
+
+    def _pip_deps(self) -> Dict[str, str]:
+        deps = {}
+        deps.update(self._base_attributes["packages"])
+        deps.update(self.attributes["packages"])
+        return deps
+
+    def _pip_sources(self) -> List[str]:
+        return list(chain(self.attributes["sources"], self._base_attributes["sources"]))
+
+    def _get_base_attributes(self) -> Dict[str, Any]:
+        if "pip_base" in self._flow._flow_decorators:
+            return self._flow._flow_decorators["pip_base"].attributes
+        return self.defaults
+
+    def step_init(
+        self, flow, graph, step_name, decorators, environment, flow_datastore, logger
+    ):
+        if environment.TYPE != "conda":
+            raise InvalidEnvironmentException(
+                "@%s decorator requires --environment=conda" % self.name
+            )
+
+        for deco in decorators:
+            if deco.name == "conda" and deco.statically_defined:
+                raise InvalidEnvironmentException(
+                    "@%s decorator is not compatible with @conda. "
+                    "If you need both pip and conda dependencies, use @conda and "
+                    "pass in the pip dependencies as `pip_packages` and the "
+                    "sources as `pip_sources`" % self.name
+                )
+            else:
+                # Auto inserted decorator -- we remove since we replace it
+                decorators.remove(deco)
+                break
+
+        return super().step_init(
+            flow, graph, step_name, decorators, environment, flow_datastore, logger
+        )
+
+
 def get_conda_decorator(flow: FlowSpec, step_name: str) -> CondaStepDecorator:
     step = next(step for step in flow if step.name == step_name)
     decorator = next(
         deco for deco in step.decorators if isinstance(deco, CondaStepDecorator)
     )
-    # Guaranteed to have a conda decorator because of self.decospecs()
+    # Guaranteed to have a conda decorator because of env.decospecs()
     return decorator

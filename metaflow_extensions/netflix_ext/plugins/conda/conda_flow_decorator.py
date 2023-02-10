@@ -41,5 +41,50 @@ class CondaFlowDecorator(FlowDecorator):
     ):
         if environment.TYPE != "conda":
             raise InvalidEnvironmentException(
-                "The *@conda* decorator requires " "--environment=conda"
+                "The *@conda_base* decorator requires " "--environment=conda"
+            )
+
+
+class PipFlowDecorator(FlowDecorator):
+    """
+    Specifies the Pip environment for all steps in the flow.
+
+    Information in this decorator will augment any
+    attributes set in the `@pip_base` flow-level decorator. Hence
+    you can use `@pip_base` to set common libraries required by all
+    steps and use `@pip` to specify step-specific additions.
+
+    Parameters
+    ----------
+    packages : Dict[str, str]
+        Packages to use for this step. The key is the name of the package
+        and the value is the version to use (default: `{}`).
+    sources : List[str]
+        Additional channels to search for
+    archs: List[str]
+        List of architectures to build this environment on
+        (default: None, i.e: the current architecture)
+    python : str
+        Version of Python to use, e.g. '3.7.4'
+        (default: None, i.e. the current Python version).
+    disabled : bool
+        If set to True, disables Conda (default: False).
+    """
+
+    name = "pip_base"
+
+    defaults = {
+        "packages": {},
+        "sources": [],
+        "archs": None,
+        "python": None,
+        "disabled": None,
+    }
+
+    def flow_init(
+        self, flow, graph, environment, flow_datastore, metadata, logger, echo, options
+    ):
+        if environment.TYPE != "conda":
+            raise InvalidEnvironmentException(
+                "The *@pip_base* decorator requires " "--environment=conda"
             )
