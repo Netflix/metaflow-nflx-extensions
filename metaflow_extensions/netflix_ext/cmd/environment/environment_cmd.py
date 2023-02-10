@@ -124,8 +124,18 @@ def environment(
     obj.datastore_type = datastore
 
     if conda_root:
-        metaflow_config.CONDA_S3ROOT = conda_root
-    obj.conda_root = metaflow_config.CONDA_S3ROOT
+        if obj.datastore_type == "s3":
+            metaflow_config.CONDA_S3ROOT = conda_root
+        elif obj.datastore_type == "azure":
+            metaflow_config.CONDA_AZUREROOT = conda_root
+        elif obj.datastore_type == "gs":
+            metaflow_config.CONDA_GSROOT = conda_root
+        else:
+            # Should never happen due to click validation
+            raise RuntimeError("Unknown datastore type: %s" % obj.datastore_type)
+    obj.conda_root = getattr(
+        metaflow_config, "CONFIG_%sROOT" % obj.datastore_type.upper()
+    )
 
     obj.metadata_type = metadata
 

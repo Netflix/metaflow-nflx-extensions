@@ -438,12 +438,13 @@ class Conda(object):
         cache_formats: Optional[Dict[str, List[str]]] = None,
     ) -> None:
         # The logic behind this function is as follows:
-        #  - check in the S3/Azure storage to see if the file exists
+        #  - check in the S3/Azure/GS storage to see if the file exists
         #  - if it does, we are all good and we update the cache_urls
         #  - if it does not, check if the file is locally installed (if same arch)
-        #    + if installed, check if it matches the MD5 hash and if all checks out, use to upload
+        #    + if installed, check if it matches the MD5 hash and if all checks out,
+        #      use to upload
         #    + if not, download it
-        #  - at this point, we have the tarballs so upload to S3/Azure
+        #  - at this point, we have the tarballs so upload to S3/Azure/GS
 
         # We cache multiple environments at once because we can benefit from overlaps
         # between environments which is likely across multiple similar environments

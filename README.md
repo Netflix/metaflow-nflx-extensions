@@ -52,9 +52,7 @@ This decorator improves several aspects of the included Conda decorator:
 
 ### Installation
 To use, simply install this package alongside the `metaflow` package. This package
-requires Metaflow v2.7.16 or later. This implementation currently only supports S3 for
-environment caching. If you require additional datastores, please open an issue and we
-can work together to add it (it is not very hard).
+requires Metaflow v2.7.20 or later.
 
 #### Configuration
 You have several configuration options that can be set in
@@ -62,18 +60,21 @@ You have several configuration options that can be set in
 the OSS implementation of decorators such as `batch` and `kubernetes`, you should
 set these values directly in the configuration file and not in an external configuration
 or through environment variables. The useful configuration values are listed below:
-- `CONDA_S3ROOT`: directory in S3 containing all the cached packages and environments
+- `CONDA_S3ROOT`/`CONDA_AZUREROOT`/`CONDA_GSROOT`: directory in S3/azure/gs containing
+  all the cached packages and environments
   as well as eventual conda distributions to use. For safety, do not point this to the
   same prefix as for the current Conda implementation.
 - `CONDA_DEPENDENCY_RESOLVER`: `mamba` or `conda`; `mamba` is recommended as
   typically faster.
-- `CONDA_REMOTE_INSTALLER_DIRNAME`: if set contains a prefix within `CONDA_S3ROOT`
+- `CONDA_REMOTE_INSTALLER_DIRNAME`: if set contains a prefix within
+  `CONDA_S3ROOT`/`CONDA_AZUREROOT`/`CONDA_GSROOT`
   under which `micromamba` (or other similar executable) are cached. If not specified,
   `micromamba`'s latest version will be downloaded on remote environments when an
   environment needs to be re-hydrated.
 - `CONDA_REMOTE_INSTALLER`: if set architecture specific installer in 
   `CONDA_REMOTE_INSTALLER_DIRNAME`.
-- `CONDA_LOCAL_DIST_DIRNAME`: if set contains a prefix within `CONDA_S3ROOT` under
+- `CONDA_LOCAL_DIST_DIRNAME`: if set contains a prefix within
+  `CONDA_S3ROOT`/`CONDA_AZUREROOT`/`CONDA_GSROOT` under
   which fully created conda environments for local execution are cached. If not set,
   the local machine's Conda installation is used.
 - `CONDA_LOCAL_DIST`: if set architecture specific tar ball in `CONDA_LOCAL_DIST_DIRNAME`.
@@ -110,7 +111,7 @@ environment creation will fail.
 Uninstalling this package will revert the behavior of the conda decorator to the one
 currently present in Metaflow. It is safe to switch back and forth and there should
 be no conflict between both implementations provided they do not share the same
-caching prefix in S3.
+caching prefix in S3/azure/gs.
 
 ### Usage
 Your current code with `conda` decorators will continue working as is. However, at this
@@ -191,7 +192,7 @@ Metaflow task in a Conda environment:
   environment to a fully resolved one. It does not require the downloading of packages
   (for the most part) nor the creation of an environment.
 - caching the environment: this is an optional step which stores all the packages as
-  well as the description of the environment in S3 for later retrieval on environment
+  well as the description of the environment in S3/azure/gs for later retrieval on environment
   creation. During this step, packages may be downloaded (from the web for example) but
   an environment is still not created.
 - creating the environment: in this step, the exact set of packages needed are
@@ -259,10 +260,10 @@ several environments may refer to the same package:
   that any downloaded package will be available if we need to create the environments
   locally. We take care of properly updating the list of URLs if needed (so Conda
   can reason about what is present in the directory).
-- we then upload all packages to S3 using our parallel uploader. Transmuted packages
+- we then upload all packages to S3/azure/gs using our parallel uploader. Transmuted packages
   are also linked together so we can find them later.
 
-The `ResolvedEnvironment`, now with updated cache information, is also cached to S3 to
+The `ResolvedEnvironment`, now with updated cache information, is also cached to S3/azure/gs to
 promote sharing.
 
 ###### Creating environments

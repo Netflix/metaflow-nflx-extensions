@@ -2,19 +2,16 @@
 
 import os
 import platform
-import re
-import subprocess
 
-from hashlib import md5
 from shutil import which
 from typing import NamedTuple, Optional, Sequence, Tuple, Union
 from urllib.parse import urlparse
 
 from metaflow.exception import MetaflowException
+import metaflow.metaflow_config as mf_config
 from metaflow.metaflow_config import (
     CONDA_MAGIC_FILE_V2,  # type: ignore
     CONDA_PREFERRED_FORMAT,  # type: ignore
-    CONDA_S3ROOT,  # type: ignore
 )
 
 from metaflow.metaflow_environment import InvalidEnvironmentException
@@ -77,12 +74,13 @@ def get_conda_manifest_path(ds_root: str) -> str:
 
 
 def get_conda_root(datastore_type: str) -> str:
-    if datastore_type == "s3":
-        if CONDA_S3ROOT is None:
-            # We error on METAFLOW_DATASTORE_SYSROOT_S3 because that is the default used
-            raise MetaflowException(msg="METAFLOW_DATASTORE_SYSROOT_S3 must be set!")
-        return CONDA_S3ROOT  # type: ignore
-    raise CondaException("Unknown datastore type: %s" % datastore_type)
+    conda_root = getattr(mf_config, "CONFIG_%sROOT" % datastore_type.upper())
+    if conda_root is None:
+        # We error on METAFLOW_DATASTORE_SYSROOT_<ds> because that is the default used
+        raise MetaflowException(
+            msg="METAFLOW_DATASTORE_SYSROOT_%s must be set!" % datastore_type.upper()
+        )
+    return conda_root  # type: ignore
 
 
 def arch_id() -> str:

@@ -1,11 +1,27 @@
 import os
-from metaflow.metaflow_config import DATASTORE_SYSROOT_S3
+from metaflow.metaflow_config import (
+    DATASTORE_SYSROOT_S3,
+    DATASTORE_SYSROOT_AZURE,
+    DATASTORE_SYSROOT_GS,
+)
 from metaflow.metaflow_config_funcs import from_conf, get_validate_choice_fn
 
 
 CONDA_S3ROOT = from_conf(
     "CONDA_S3ROOT",
     os.path.join(DATASTORE_SYSROOT_S3, "conda_env") if DATASTORE_SYSROOT_S3 else None,
+)
+
+CONDA_AZUREROOT = from_conf(
+    "CONDA_AZUREROOT",
+    os.path.join(DATASTORE_SYSROOT_AZURE, "conda_env")
+    if DATASTORE_SYSROOT_AZURE
+    else None,
+)
+
+CONDA_GSROOT = from_conf(
+    "CONDA_GSROOT",
+    os.path.join(DATASTORE_SYSROOT_GS, "conda_env") if DATASTORE_SYSROOT_GS else None,
 )
 
 CONDA_MAGIC_FILE_V2 = "conda_v2.cnd"
