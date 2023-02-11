@@ -343,7 +343,7 @@ class CondaStepDecorator(StepDecorator):
 
     def _get_base_attributes(self) -> Dict[str, Any]:
         if "conda_base" in self._flow._flow_decorators:
-            return self._flow._flow_decorators["conda_base"].attributes
+            return self._flow._flow_decorators["conda_base"][0].attributes
         return self.defaults
 
     def _python_version(self) -> str:

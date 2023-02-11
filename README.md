@@ -52,7 +52,7 @@ This decorator improves several aspects of the included Conda decorator:
 
 ### Installation
 To use, simply install this package alongside the `metaflow` package. This package
-requires Metaflow v2.7.20 or later.
+requires Metaflow v2.7.22 or later.
 
 #### Configuration
 You have several configuration options that can be set in

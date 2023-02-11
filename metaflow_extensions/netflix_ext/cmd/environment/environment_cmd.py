@@ -134,7 +134,7 @@ def environment(
             # Should never happen due to click validation
             raise RuntimeError("Unknown datastore type: %s" % obj.datastore_type)
     obj.conda_root = getattr(
-        metaflow_config, "CONFIG_%sROOT" % obj.datastore_type.upper()
+        metaflow_config, "CONDA_%sROOT" % obj.datastore_type.upper()
     )
 
     obj.metadata_type = metadata

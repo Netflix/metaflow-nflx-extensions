@@ -74,7 +74,7 @@ def get_conda_manifest_path(ds_root: str) -> str:
 
 
 def get_conda_root(datastore_type: str) -> str:
-    conda_root = getattr(mf_config, "CONFIG_%sROOT" % datastore_type.upper())
+    conda_root = getattr(mf_config, "CONDA_%sROOT" % datastore_type.upper())
     if conda_root is None:
         # We error on METAFLOW_DATASTORE_SYSROOT_<ds> because that is the default used
         raise MetaflowException(
