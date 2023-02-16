@@ -88,22 +88,39 @@ or through environment variables. The useful configuration values are listed bel
 - `CONDA_DEFAULT_PIP_SOURCES`: list of additional mirrors to search for packages. Useful
   if your company has an internal mirror.
 
+##### Azure specific setup
+For Azure, you need to do the following two steps once during setup:
+- Manually create the blob container specified in `CONDA_AZUREROOT`
+- Grant the `Storage Blob Data Contributor` role to the storage account to the service
+  principal or user accounts that will be accessing as described
+  [here](https://learn.microsoft.com/en-us/azure/storage/blobs/assign-azure-role-data-access?tabs=portal#assign-an-azure-role).
+
 #### Conda environment requirements
 Your local conda environment or the cached environment (in `CONDA_LOCAL_DIST_DIRNAME`)
 needs to satisfy the following requirements:
 - `conda`
-- `conda-lock>=1.3.0`
-- `micromamba>=1.2.0`
-- `conda-package-handling>=1.9.0`
-- `lockfile`
 - (optional but recommended) `mamba>=1.3.0`
 
-In addition, and only if you want to support `pypi` packages, it is best to apply the
+##### `Pypi` package support
+If you want support for `pypi` packages, you will also need:
+- `conda-lock>=1.3.0`
+- `lockfile`
+
+It is also best to apply the
 PR `https://github.com/conda-incubator/conda-lock/pull/290` to `conda-lock`. This is
 the unfortunate result of a bug in how `conda-lock` handles packages that are both
 present in the `conda` environment and `pypi` one.
 
-Due to bugs in `conda` and the way we use it, if your resolved environment
+##### Support for `.tar.bz2` and `.conda` packages
+If you set `CONDA_PREFERRED_FORMAT` to either `.tar.bz2` or `.conda`, for some packages,
+we will need to transmute them from one format to the other. For example if a package
+is available for download as a `.tar.bz2` package but you request `.conda` packages,
+the system will transmute (convert) the `.tar.bz2` package into one that ends in
+`.conda`. To do so, you need to have at least one of the following packages installed:
+- `micromamba>=1.3.0`
+- `conda-package-handling>=1.9.0`
+
+Also due to a bug in `conda` and the way we use it, if your resolved environment
 contains `.conda` packages and you do not have `micromamba` installed, the
 environment creation will fail.
 

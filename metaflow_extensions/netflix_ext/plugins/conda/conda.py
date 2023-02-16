@@ -858,7 +858,7 @@ class Conda(object):
 
                 if "micromamba" in cast(Dict[str, str], self._bins):
                     _micromamba_transmute(src_file, dst_file, dst_format)
-                if "cph" in cast(Dict[str, str], self._bins):
+                elif "cph" in cast(Dict[str, str], self._bins):
                     _cph_transmute(src_file, dst_file, dst_format)
                 else:
                     raise CondaException(
@@ -1714,8 +1714,8 @@ class Conda(object):
 
         if "micromamba version" in self._info:
             self._have_micromamba = True
-            if LooseVersion(self._info["micromamba version"]) < LooseVersion("1.2.0"):
-                msg = "Micromamba version 1.2.0 or newer is required."
+            if LooseVersion(self._info["micromamba version"]) < LooseVersion("1.3.0"):
+                msg = "Micromamba version 1.3.0 or newer is required."
                 return InvalidEnvironmentException(msg)
         elif self._dependency_solver == "conda" or self._dependency_solver == "mamba":
             if LooseVersion(self._info["conda_version"]) < LooseVersion("4.14.0"):
@@ -2121,7 +2121,7 @@ class Conda(object):
             debug.conda_exec("Conda call: %s" % str([self._bins[binary]] + args))
             return subprocess.check_output(
                 [self._bins[binary]] + args,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.PIPE,
                 env=dict(os.environ, **env),
             ).strip()
         except subprocess.CalledProcessError as e:
