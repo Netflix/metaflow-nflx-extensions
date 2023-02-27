@@ -63,4 +63,4 @@ def setup_conda_manifest():
 if __name__ == "__main__":
     start = time.time()
     bootstrap_environment(*sys.argv[1:])
-    debug.conda("Conda bootstrap took %f seconds" % (time.time() - start))
+    debug.conda_exec("Conda bootstrap took %f seconds" % (time.time() - start))

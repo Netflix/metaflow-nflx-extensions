@@ -125,8 +125,7 @@ If you set `CONDA_PREFERRED_FORMAT` to either `.tar.bz2` or `.conda`, for some p
 we will need to transmute them from one format to the other. For example if a package
 is available for download as a `.tar.bz2` package but you request `.conda` packages,
 the system will transmute (convert) the `.tar.bz2` package into one that ends in
-`.conda`. To do so, you need to have at least one of the following packages installed:
-- `micromamba>=1.3.0`
+`.conda`. To do so, you need to have the following package installed:
 - `conda-package-handling>=1.9.0`
 
 Also due to a bug in `conda` and the way we use it, if your resolved environment

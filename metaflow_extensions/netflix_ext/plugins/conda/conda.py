@@ -856,13 +856,16 @@ class Conda(object):
                 dst_format = [f for f in CONDA_FORMATS if f != src_format][0]
                 dst_file = src_file[: -len(src_format)] + dst_format
 
-                if "micromamba" in cast(Dict[str, str], self._bins):
-                    _micromamba_transmute(src_file, dst_file, dst_format)
-                elif "cph" in cast(Dict[str, str], self._bins):
+                # Micromamba transmute still has a few issues for now so
+                # forcing use of CPH which does not have these issues
+                # https://github.com/mamba-org/mamba/issues/2328
+                # if "micromamba" in cast(Dict[str, str], self._bins):
+                #    _micromamba_transmute(src_file, dst_file, dst_format)
+                if "cph" in cast(Dict[str, str], self._bins):
                     _cph_transmute(src_file, dst_file, dst_format)
                 else:
                     raise CondaException(
-                        "Requesting to transmute package without cph or micromamba"
+                        "Requesting to transmute package without cph"  # or micromamba
                     )
 
                 pkg_spec.add_local_file(dst_format, dst_file, transmuted=True)
@@ -1031,11 +1034,12 @@ class Conda(object):
         if do_download:
             start = time.time()
             self._echo(
-                "    Downloading %d(web) + %d(cache) package%s ..."
+                "    Downloading %d(web) + %d(cache) package%s for arch %s ..."
                 % (
                     len(web_downloads),
                     len(cache_downloads),
                     plural_marker(len(web_downloads) + len(cache_downloads)),
+                    requested_arch,
                 ),
                 nl=False,
             )
@@ -1123,8 +1127,8 @@ class Conda(object):
         if not pending_errors and transmutes:
             start = time.time()
             self._echo(
-                "    Transmuting %d package%s ..."
-                % (len(transmutes), plural_marker(len(transmutes))),
+                "    Transmuting %d package%s for arch %s..."
+                % (len(transmutes), plural_marker(len(transmutes)), requested_arch),
                 nl=False,
             )
             with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
@@ -1516,22 +1520,27 @@ class Conda(object):
                 os.unlink(outfile_name)
 
     def _find_conda_binary(self):
-        if self._dependency_solver not in _CONDA_DEP_RESOLVERS:
-            raise InvalidEnvironmentException(
-                "Invalid Conda dependency resolver %s, valid candidates are %s."
-                % (self._dependency_solver, _CONDA_DEP_RESOLVERS)
-            )
-        if self._mode == "local":
-            self._ensure_local_conda()
-        else:
-            # Remote mode -- we install a conda environment or make sure we have
-            # one already there
-            self._ensure_remote_conda()
+        # Lock as we may be trying to resolve multiple environments at once and therefore
+        # we may be trying to validate the installation multiple times.
+        with CondaLock("/tmp/mf-conda-check.lock"):
+            if self._found_binaries:
+                return
+            if self._dependency_solver not in _CONDA_DEP_RESOLVERS:
+                raise InvalidEnvironmentException(
+                    "Invalid Conda dependency resolver %s, valid candidates are %s."
+                    % (self._dependency_solver, _CONDA_DEP_RESOLVERS)
+                )
+            if self._mode == "local":
+                self._ensure_local_conda()
+            else:
+                # Remote mode -- we install a conda environment or make sure we have
+                # one already there
+                self._ensure_remote_conda()
 
-        err = self._validate_conda_installation()
-        if err:
-            raise err
-        self._found_binaries = True
+            err = self._validate_conda_installation()
+            if err:
+                raise err
+            self._found_binaries = True
 
     def _ensure_local_conda(self):
         if CONDA_LOCAL_PATH is not None:
@@ -1985,13 +1994,13 @@ class Conda(object):
                     print(
                         "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
                         if e.output
-                        else "<None>",
+                        else "No STDOUT",
                         file=sys.stderr,
                     )
                     print(
                         "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
                         if e.stderr
-                        else "<None>",
+                        else "No STDERR",
                         file=sys.stderr,
                     )
                     raise CondaException(
@@ -2149,13 +2158,13 @@ class Conda(object):
             print(
                 "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
                 if e.output
-                else "<None>",
+                else "No STDOUT",
                 file=sys.stderr,
             )
             print(
                 "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
                 if e.stderr
-                else "<None>",
+                else "No STDERR",
                 file=sys.stderr,
             )
             raise CondaException(
@@ -2176,6 +2185,7 @@ class Conda(object):
                 return s.getsockname()[1]
 
         assert self._bins
+        attempt = 1
         while True:
             cur_port = _find_port()
             p = subprocess.Popen(
@@ -2193,7 +2203,11 @@ class Conda(object):
             )
             time.sleep(1)
             # If we can't start, we try again with a new port
-            debug.conda_exec("Attempted micromamba server start on port %d" % cur_port)
+            debug.conda_exec(
+                "Attempted micromamba server start on port %d (attempt %d)"
+                % (cur_port, attempt)
+            )
+            attempt += 1
             if not p.poll():
                 break
         self._micromamba_server_port = cur_port

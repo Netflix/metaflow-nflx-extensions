@@ -217,7 +217,7 @@ class CondaStepDecorator(StepDecorator):
             # If there is no "INFO" file, we will actually create one in this new
             # place because we won't be able to properly resolve the EXT_PKG extensions
             # the same way as outside conda (looking at distributions, etc). In a
-            # Conda environment, as shown below (where we set self.addl_paths), all
+            # Conda environment, as shown below (where we set self._addl_paths), all
             # EXT_PKG extensions are PYTHONPATH extensions. Instead of re-resolving,
             # we use the resolved information that is written out to the INFO file.
             with open(
@@ -427,7 +427,7 @@ class PipStepDecorator(CondaStepDecorator):
         Version of Python to use, e.g. '3.7.4'
         (default: None, i.e. the current Python version).
     disabled : bool
-        If set to True, disables Conda (default: False).
+        If set to True, disables Pip (default: False).
     """
 
     name = "pip"

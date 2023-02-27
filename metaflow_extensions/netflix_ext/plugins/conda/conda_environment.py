@@ -320,8 +320,12 @@ class CondaEnvironment(MetaflowEnvironment):
         # we then can't clean it up easily.
         files = self.base_env.add_to_package()
         # Add conda manifest file to job package at the top level.
+
+        # In the case of a resume, we still "package" the code but don't send it
+        # anywhere -- if we are resuming on a remote node, this file may not exist
+        # so we skip
         path = get_conda_manifest_path(self._local_root)
-        if os.path.exists(path):
+        if path and os.path.exists(path):
             files.append((path, os.path.basename(path)))
         return files
 

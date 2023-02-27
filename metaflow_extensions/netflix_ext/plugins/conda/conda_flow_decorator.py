@@ -68,7 +68,7 @@ class PipFlowDecorator(FlowDecorator):
         Version of Python to use, e.g. '3.7.4'
         (default: None, i.e. the current Python version).
     disabled : bool
-        If set to True, disables Conda (default: False).
+        If set to True, disables Pip (default: False).
     """
 
     name = "pip_base"
