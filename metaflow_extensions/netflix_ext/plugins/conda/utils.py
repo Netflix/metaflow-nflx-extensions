@@ -30,7 +30,7 @@ if CONDA_PREFERRED_FORMAT:
         *[x for x in _ALL_CONDA_FORMATS if x != CONDA_PREFERRED_FORMAT],
     )  # type: Tuple[str, ...]
 else:
-    CONDA_FORMATS = CONDA_PREFERRED_FORMAT  # type: Tuple[str, ...]
+    CONDA_FORMATS = _ALL_CONDA_FORMATS  # type: Tuple[str, ...]
 TRANSMUT_PATHCOMPONENT = "_transmut"
 
 

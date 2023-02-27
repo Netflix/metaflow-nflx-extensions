@@ -58,8 +58,17 @@ requires Metaflow v2.7.22 or later.
 You have several configuration options that can be set in
 `metaflow_extensions/netflix_ext/config/mfextinit_netflixext.py`. Due to limitations in
 the OSS implementation of decorators such as `batch` and `kubernetes`, you should
-set these values directly in the configuration file and not in an external configuration
-or through environment variables. The useful configuration values are listed below:
+set these values directly in the `mfextinit_netflixext.py` configuration file and
+not in an external configuration
+or through environment variables. If you do not want to modify the `mfextinit_netflixext.py`
+file, you should annotate all your steps using:
+```
+@environment(vars={"METAFLOW_CONDA_S3ROOT": "..."})
+```
+for any variables that you modify (`CONDA_S3ROOT` is shown as an example above but
+you should list any and all variables below that you wish to modify).
+
+The useful configuration values are listed below:
 - `CONDA_S3ROOT`/`CONDA_AZUREROOT`/`CONDA_GSROOT`: directory in S3/azure/gs containing
   all the cached packages and environments
   as well as eventual conda distributions to use. For safety, do not point this to the

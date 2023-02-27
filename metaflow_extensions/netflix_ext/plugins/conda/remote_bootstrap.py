@@ -9,6 +9,8 @@ from metaflow.metaflow_config import DATASTORE_LOCAL_DIR, CONDA_MAGIC_FILE_V2
 
 from metaflow.cli import echo_always
 
+from metaflow.debug import debug
+
 from metaflow.plugins.env_escape import generate_trampolines, ENV_ESCAPE_PY
 
 from .env_descr import read_conda_manifest
@@ -59,4 +61,6 @@ def setup_conda_manifest():
 
 
 if __name__ == "__main__":
+    start = time.time()
     bootstrap_environment(*sys.argv[1:])
+    debug.conda("Conda bootstrap took %f seconds" % (time.time() - start))
