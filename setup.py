@@ -1,6 +1,6 @@
 from setuptools import setup, find_namespace_packages
 
-version = "0.0.7"
+version = "0.0.8"
 
 setup(
     name="metaflow-netflixext",
