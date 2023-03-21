@@ -24,7 +24,7 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-from metaflow.metaflow_config import ENV_PACKAGES_DIRNAME
+from metaflow.metaflow_config import CONDA_PACKAGES_DIRNAME
 from metaflow.util import get_username
 
 from .utils import (
@@ -98,7 +98,7 @@ class CachePackage:
 
         if is_transmuted:
             return os.path.join(
-                cast(str, ENV_PACKAGES_DIRNAME),
+                cast(str, CONDA_PACKAGES_DIRNAME),
                 cls.TYPE,
                 TRANSMUT_PATHCOMPONENT,
                 url.netloc,
@@ -109,7 +109,7 @@ class CachePackage:
             )
         else:
             return os.path.join(
-                cast(str, ENV_PACKAGES_DIRNAME),
+                cast(str, CONDA_PACKAGES_DIRNAME),
                 cls.TYPE,
                 url.netloc,
                 file_path.lstrip("/"),
@@ -481,9 +481,9 @@ class PipPackageSpecification(PackageSpecification):
 
     def _split_filename(self) -> Tuple[str, str, str]:
         name, version, _, _, _ = self._filename.rsplit("-", 4)
-        if "." in name:
+        if "." in name and "-" in name:
             # This means the version is actually a build identifier and version
-            # is in name
+            # is in name -- TODO: this is not very stable (find a better way)
             name, version = name.rsplit("-", 1)
         return (name, version, version)
 
@@ -643,13 +643,14 @@ class ResolvedEnvironment:
 class CachedEnvironmentInfo:
     def __init__(
         self,
-        step_mappings: Optional[Dict[str, Tuple[str, str]]],
-        env_aliases: Optional[Dict[str, Dict[str, Tuple[str, str]]]],
+        version: int = 1,
+        step_mappings: Optional[Dict[str, Tuple[str, str]]] = None,
+        env_aliases: Optional[Dict[str, Dict[str, Tuple[str, str]]]] = None,
         resolved_environments: Optional[
             Dict[str, Dict[str, Dict[str, Union[ResolvedEnvironment, str]]]]
-        ],
+        ] = None,
     ):
-
+        self._version = version
         self._step_mappings = step_mappings if step_mappings else {}
         self._env_aliases = env_aliases if env_aliases else {}
         self._resolved_environments = (
@@ -742,6 +743,23 @@ class CachedEnvironmentInfo:
                             env,
                         )
 
+    def update(self, cached_info: "CachedEnvironmentInfo"):
+        if self._version != cached_info._version:
+            raise ValueError(
+                "Cannot update an environment of version %d with one of version %d"
+                % (self._version, cached_info._version)
+            )
+        for alias, per_arch_aliases in cached_info._env_aliases.items():
+            to_update = self._env_aliases.setdefault(alias, {})
+            to_update.update(per_arch_aliases)
+        # Ignore _step_mappings as not currently used
+
+        for arch, per_arch_envs in cached_info._resolved_environments.items():
+            per_arch_resolved_env = self._resolved_environments.setdefault(arch, {})
+            for req_id, per_req_id_envs in per_arch_envs.items():
+                per_req_id_resolved_env = per_arch_resolved_env.setdefault(req_id, {})
+                per_req_id_resolved_env.update(per_req_id_envs)
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "version": 1,
@@ -769,7 +787,8 @@ class CachedEnvironmentInfo:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]):
-        if int(d.get("version", -1)) != 1:
+        version = int(d.get("version", -1))
+        if version != 1:
             raise ValueError("Wrong version information for CachedInformationInfo")
 
         aliases = d.get("aliases", {})  # type: Dict[str, Dict[str, Tuple[str, str]]]
@@ -814,6 +833,7 @@ class CachedEnvironmentInfo:
                     % ", ".join(d["aliases"].keys())
                 )
         return cls(
+            version,
             step_mappings=d["mappings"],
             env_aliases=d["aliases"],
             resolved_environments=resolved_environments,
@@ -826,9 +846,7 @@ def read_conda_manifest(ds_root: str) -> CachedEnvironmentInfo:
         with open(path, mode="r", encoding="utf-8") as f:
             return CachedEnvironmentInfo.from_dict(json.load(f))
     else:
-        return CachedEnvironmentInfo(
-            step_mappings=None, env_aliases=None, resolved_environments=None
-        )
+        return CachedEnvironmentInfo()
 
 
 def write_to_conda_manifest(ds_root: str, info: CachedEnvironmentInfo):
@@ -838,12 +856,22 @@ def write_to_conda_manifest(ds_root: str, info: CachedEnvironmentInfo):
     except OSError as x:
         if x.errno != errno.EEXIST:
             raise
-    with os.fdopen(
-        os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC), "w", encoding="utf-8"
-    ) as f:
+    with os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT), "r+", encoding="utf-8") as f:
         try:
             fcntl.flock(f, fcntl.LOCK_EX)
-            json.dump(info.to_dict(), f)
+            # We first read the file and then update it with the info we have
+            # This makes sure that if the file was updated by another process between
+            # the time we read it and now, we have a sum of all information. This can
+            # happen if multiple runs are running on the same machine from the same
+            # directory.
+            current_content = CachedEnvironmentInfo()
+            if os.path.getsize(path) > 0:
+                # Not a new file
+                f.seek(0)
+                current_content = CachedEnvironmentInfo.from_dict(json.load(f))
+            f.seek(0)
+            current_content.update(info)
+            json.dump(current_content.to_dict(), f)
         except IOError as e:
             if e.errno != errno.EAGAIN:
                 raise

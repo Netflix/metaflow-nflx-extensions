@@ -36,7 +36,11 @@ CONDA_DEPENDENCY_RESOLVER = from_conf(
 # Timeout trying to acquire the lock to create environments
 CONDA_LOCK_TIMEOUT = from_conf("CONDA_LOCK_TIMEOUT", 3600)
 
-ENV_PACKAGES_DIRNAME = from_conf("ENV_PACKAGES_DIRNAME", "packages")
+# Location within CONDA_<DS>ROOT of the packages directory
+CONDA_PACKAGES_DIRNAME = from_conf("ENV_PACKAGES_DIRNAME", "packages")
+# Ditto for the envs directory
+CONDA_ENVS_DIRNAME = from_conf("CONDA_ENVS_DIRNAME", "envs")
+
 
 # CONDA_REMOTE_INSTALLER_DIRNAME = from_conf(
 #     "CONDA_REMOTE_INSTALLER_DIRNAME", "conda-remote"

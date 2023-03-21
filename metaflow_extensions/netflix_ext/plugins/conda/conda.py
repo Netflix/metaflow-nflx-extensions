@@ -30,7 +30,6 @@ from typing import (
     Sequence,
     Set,
     Tuple,
-    TypeVar,
     Union,
     cast,
 )
@@ -41,14 +40,15 @@ from metaflow.plugins.datastores.local_storage import LocalStorage
 from metaflow.datastore.datastore_storage import DataStoreStorage
 
 from metaflow.debug import debug
-from metaflow.exception import MetaflowException, MetaflowInternalError
+from metaflow.exception import MetaflowException
 from metaflow.metaflow_config import (
     CONDA_DEPENDENCY_RESOLVER,
     CONDA_LOCAL_DIST_DIRNAME,
     CONDA_LOCAL_DIST,
     CONDA_LOCAL_PATH,
     CONDA_LOCK_TIMEOUT,
-    ENV_PACKAGES_DIRNAME,
+    CONDA_PACKAGES_DIRNAME,
+    CONDA_ENVS_DIRNAME,
     CONDA_PREFERRED_FORMAT,
     CONDA_PREFERRED_RESOLVER,
     CONDA_REMOTE_INSTALLER,
@@ -239,6 +239,7 @@ class Conda(object):
         # We form the new list of dependencies based on the ones we have in cur_env
         # and the new ones
         sources = list(chain(cur_env.sources, new_sources))
+        user_deps = list(chain(cur_env.deps, new_deps))
         deps = list(
             chain(
                 [
@@ -248,6 +249,14 @@ class Conda(object):
                 new_deps,
             )
         )
+        # We check if we already resolved this environment and bypass resolving for
+        # if it we already have solved for it.
+        new_env_id = EnvID(
+            ResolvedEnvironment.get_req_id(user_deps, sources), "_default", architecture
+        )
+        new_resolved_env = self.environment(new_env_id)
+        if new_resolved_env:
+            return new_resolved_env
         try:
             if self._use_conda_lock_to_resolve:
                 packages = self._resolve_env_with_conda_lock(
@@ -269,7 +278,7 @@ class Conda(object):
                 else:
                     packages_merged.append(p)
             return ResolvedEnvironment(
-                list(chain(cur_env.deps, new_deps)),
+                user_deps,
                 sources,
                 architecture,
                 user_alias=user_env_name,
@@ -289,8 +298,6 @@ class Conda(object):
             self._find_conda_binary()
 
         try:
-            # I am not 100% sure the lock is required but since the environments share
-            # a common package cache, we will keep it for now
             env_name = self._env_directory_from_envid(env.env_id)
             return self.create_for_name(env_name, env, do_symlink)
         except CondaException as e:
@@ -303,8 +310,18 @@ class Conda(object):
         if not self._found_binaries:
             self._find_conda_binary()
 
+        # We lock two things here:
+        #   - the directory in which we are going to create the environment so
+        #     that we don't create the same named environment twice
+        #   - the directories we are going to fetch/expand files from/to to prevent
+        #     the packages themselves from being accessed concurrently.
+        #
+        # This is not great but doing so prevents errors when multiple runs run in
+        # parallel. In a typical use-case, the locks are non-contended and it should
+        # be very fast.
         with CondaLock(self._env_lock_file(name)):
-            self._create(env, name)
+            with CondaLockMultiDir(self._package_dirs, self._package_dir_lockfile_name):
+                self._create(env, name)
         if do_symlink:
             python_path = self.python(name)
             if python_path:
@@ -386,8 +403,12 @@ class Conda(object):
         env = self._cached_environment.env_for(*env_id)
 
         debug.conda_exec("%s%sfound locally" % (str(env_id), " " if env else " not "))
+        if env:
+            return env
 
-        if not local_only and not env and self._storage:
+        # We never have a "_default" remotely so save time and don't go try to
+        # look for one
+        if not local_only and self._storage and env_id.full_id != "_default":
             env = self._remote_env_fetch([env_id])
             if env:
                 env = env[0]
@@ -627,14 +648,22 @@ class Conda(object):
 
         with tempfile.TemporaryDirectory() as download_dir:
             for arch, pkgs in pkgs_to_fetch_per_arch.items():
-                arch_tmpdir = os.path.join(download_dir, arch)
-                os.mkdir(arch_tmpdir)
-                self.lazy_fetch_packages(
-                    pkgs,
-                    require_conda_format=cache_formats.get("conda", []),
-                    requested_arch=arch,
-                    tempdir=arch_tmpdir,
-                )
+                if arch == arch_id():
+                    search_dirs = self._package_dirs
+                else:
+                    search_dirs = [os.path.join(download_dir, arch)]
+                    os.mkdir(search_dirs[0])
+                dest_dir = search_dirs[0]
+
+                with CondaLockMultiDir(search_dirs, self._package_dir_lockfile_name):
+                    self._lazy_fetch_packages(
+                        pkgs,
+                        dest_dir,
+                        require_conda_format=cache_formats.get("conda", []),
+                        require_url_format=True,
+                        requested_arch=arch,
+                        search_dirs=search_dirs,
+                    )
 
                 # Upload what we need to upload and update the representative package with
                 # the new cache information. For all packages, we basically check if we have
@@ -737,12 +766,24 @@ class Conda(object):
     def write_out_environments(self) -> None:
         write_to_conda_manifest(self._local_root, self._cached_environment)
 
-    def lazy_fetch_packages(
+    def get_datastore_path_to_env(self, env_id: EnvID) -> str:
+        # Returns a path to where we store a resolved environment's information
+        return os.path.join(
+            cast(str, CONDA_ENVS_DIRNAME),
+            env_id.arch,
+            env_id.req_id,
+            env_id.full_id,
+            "env",
+        )
+
+    def _lazy_fetch_packages(
         self,
         packages: Iterable[PackageSpecification],
+        dest_dir: str,
         require_conda_format: Optional[Sequence[str]] = None,
+        require_url_format: bool = False,
         requested_arch: str = arch_id(),
-        tempdir: Optional[str] = None,
+        search_dirs: Optional[List[str]] = None,
     ):
         # Lazily fetch all packages specified by the PackageSpecification
         # for requested_arch.
@@ -759,26 +800,22 @@ class Conda(object):
         # Tarballs are fetched from cache if available and the web if not. Package
         # transmutation also happens if the requested format is not found (only for
         # conda packages))
+        #
+        # A lock needs to be held on all directories of search_dirs and dest_dir
 
         if not self._found_binaries:
             self._find_conda_binary()
 
         if require_conda_format is None:
             require_conda_format = []
-        use_package_dirs = True
-        if requested_arch != arch_id():
-            if tempdir is None:
-                raise MetaflowInternalError(
-                    "Cannot lazily fetch packages for another architecture "
-                    "without a temporary directory"
-                )
-            use_package_dirs = False
 
         cache_downloads = []  # type: List[Tuple[PackageSpecification, str, str]]
         web_downloads = []  # type: List[Tuple[PackageSpecification, str]]
         transmutes = []  # type: List[Tuple[PackageSpecification, str]]
         url_adds = []  # type: List[str]
-        known_urls = set()  # type: Set[str]
+
+        if search_dirs is None:
+            search_dirs = [dest_dir]
 
         # Helper functions
         def _add_to_fetch_lists(
@@ -873,29 +910,15 @@ class Conda(object):
                 return (pkg_spec, None, e)
             return (pkg_spec, dst_format, None)
 
-        # Setup package_dirs which is where we look for existing packages.
-        if use_package_dirs:
-            package_dirs = self._package_dirs
-        else:
-            assert tempdir is not None  # Keep pyright happy
-            package_dirs = [tempdir]
-
-        # We are only adding to package_dirs[0] so we only read that one into known_urls
-        with CondaLock(self._package_dir_lock_file(package_dirs[0])):
-            url_file = os.path.join(package_dirs[0], "urls.txt")
-            if os.path.isfile(url_file):
-                with open(url_file, "rb") as f:
-                    known_urls.update([l.strip().decode("utf-8") for l in f])
-
         # Iterate over all the filenames that we want to fetch.
         for pkg_spec in packages:
             found_dir = False
-            # Look for it to exist in any of the package_dirs
-            for p in [d for d in package_dirs if os.path.isdir(d)]:
-                extract_path = os.path.join(p, pkg_spec.filename)
+            for d in search_dirs:
+                extract_path = os.path.join(d, pkg_spec.filename)
                 if (
                     pkg_spec.TYPE == "conda"
                     and not require_conda_format
+                    and not require_url_format
                     and os.path.isdir(extract_path)
                 ):
                     debug.conda_exec(
@@ -903,24 +926,9 @@ class Conda(object):
                         % (pkg_spec.filename, extract_path)
                     )
                     pkg_spec.add_local_dir(extract_path)
-                    # results.append(
-                    #     LazyFetchResult(
-                    #         filename=filename,
-                    #         url=base_url,
-                    #         is_dir=True,
-                    #         per_format_desc={
-                    #             ".local": {
-                    #                 "cache_url": None,
-                    #                 "local_path": extract_path,
-                    #                 "fetched": False,
-                    #                 "cached": False,
-                    #                 "transmuted": False,
-                    #             }
-                    #         },
-                    #     )
-                    # )
                     found_dir = True
                     break
+
                 # At this point, we don't have a directory or we need specific tarballs
                 for f in pkg_spec.allowed_formats():
                     # We may have found the file in another directory
@@ -928,11 +936,11 @@ class Conda(object):
                         continue
                     if pkg_spec.TYPE == "conda":
                         tentative_path = os.path.join(
-                            p, "%s%s" % (pkg_spec.filename, f)
+                            d, "%s%s" % (pkg_spec.filename, f)
                         )
                     else:
                         tentative_path = os.path.join(
-                            p, pkg_spec.TYPE, "%s%s" % (pkg_spec.filename, f)
+                            d, pkg_spec.TYPE, "%s%s" % (pkg_spec.filename, f)
                         )
                     if os.path.isfile(tentative_path):
                         try:
@@ -964,12 +972,10 @@ class Conda(object):
             available_formats = {}  # type: Dict[str, Tuple[str, str]]
             if pkg_spec.TYPE != "conda":
                 dl_local_path = os.path.join(
-                    package_dirs[0], pkg_spec.TYPE, "%s{format}" % pkg_spec.filename
+                    dest_dir, pkg_spec.TYPE, "%s{format}" % pkg_spec.filename
                 )
             else:
-                dl_local_path = os.path.join(
-                    package_dirs[0], "%s{format}" % pkg_spec.filename
-                )
+                dl_local_path = os.path.join(dest_dir, "%s{format}" % pkg_spec.filename)
             # Check for local files first
             for f in pkg_spec.allowed_formats():
                 local_path = pkg_spec.local_file(f)
@@ -1024,6 +1030,15 @@ class Conda(object):
                 ]:
                     _add_to_fetch_lists(pkg_spec, f, *available_formats[f])
                     fetched_formats.append(f)
+                if require_url_format and pkg_spec.url_format not in fetched_formats:
+                    # Guaranteed to be in available_formats because we add the web_src
+                    # as a last resort above
+                    _add_to_fetch_lists(
+                        pkg_spec,
+                        pkg_spec.url_format,
+                        *available_formats[pkg_spec.url_format]
+                    )
+                    fetched_formats.append(pkg_spec.url_format)
                 # For anything that we need and we don't have an available source for,
                 # we transmute from our most preferred source.
                 for f in [f for f in require_conda_format if f not in fetched_formats]:
@@ -1044,125 +1059,138 @@ class Conda(object):
                 nl=False,
             )
 
-        # Ensure the packages directory exists at the very least
-        if do_download and not os.path.isdir(package_dirs[0]):
-            os.makedirs(package_dirs[0])
-
         pending_errors = []  # type: List[str]
-        if web_downloads:
-            with ThreadPoolExecutor() as executor:
-                with requests.Session() as s:
-                    a = requests.adapters.HTTPAdapter(
-                        pool_connections=executor._max_workers,
-                        pool_maxsize=executor._max_workers,
-                        max_retries=3,
-                    )
-                    s.mount("https://", a)
-                    download_results = [
-                        executor.submit(_download_web, s, entry)
-                        for entry in web_downloads
-                    ]
-                    for f in as_completed(download_results):
-                        pkg_spec, error = f.result()
-                        if error is None:
+        if do_download or len(transmutes) > 0:
+            # Ensure the packages directory exists at the very least
+            if not os.path.isdir(dest_dir):
+                os.makedirs(dest_dir)
+            url_file = os.path.join(dest_dir, "urls.txt")
+            known_urls = set()  # type: Set[str]
+            if os.path.isfile(url_file):
+                with open(url_file, "rb") as f:
+                    known_urls.update([l.strip().decode("utf-8") for l in f])
+
+            if web_downloads:
+                with ThreadPoolExecutor() as executor:
+                    with requests.Session() as s:
+                        a = requests.adapters.HTTPAdapter(
+                            pool_connections=executor._max_workers,
+                            pool_maxsize=executor._max_workers,
+                            max_retries=3,
+                        )
+                        s.mount("https://", a)
+                        download_results = [
+                            executor.submit(_download_web, s, entry)
+                            for entry in web_downloads
+                        ]
+                        for f in as_completed(download_results):
+                            pkg_spec, error = f.result()
+                            if error is None:
+                                if (
+                                    pkg_spec.TYPE == "conda"
+                                    and pkg_spec.url not in known_urls
+                                ):
+                                    url_adds.append(pkg_spec.url)
+                            else:
+                                pending_errors.append(
+                                    "Error downloading package for '%s': %s"
+                                    % (pkg_spec.filename, str(error))
+                                )
+
+            if cache_downloads:
+                from metaflow.plugins import DATASTORES
+
+                storage = [d for d in DATASTORES if d.TYPE == self._datastore_type][0](
+                    get_conda_root(self._datastore_type)
+                )  # type: DataStoreStorage
+                keys_to_info = (
+                    {}
+                )  # type: Dict[str, Tuple[PackageSpecification, str, str, str]]
+                for pkg_spec, pkg_format, local_path in cache_downloads:
+                    cache_info = pkg_spec.cached_version(pkg_format)
+                    if cache_info:
+                        keys_to_info[cache_info.url] = (
+                            pkg_spec,
+                            pkg_format,
+                            cache_info.hash,
+                            local_path,
+                        )
+                    else:
+                        pending_errors.append(
+                            "Internal error: trying to download a non-existent cache item for %s"
+                            % pkg_spec.filename
+                        )
+                with storage.load_bytes(keys_to_info.keys()) as load_results:  # type: ignore
+                    for (key, tmpfile, _) in load_results:  # type: ignore
+                        pkg_spec, pkg_format, pkg_hash, local_path = keys_to_info[key]  # type: ignore
+                        if not tmpfile:
+                            pending_errors.append(
+                                "Error downloading package from cache for '%s': not found at %s"
+                                % (pkg_spec.filename, key)
+                            )
+                        else:
+                            url_to_add = self._make_urlstxt_from_cacheurl(key)  # type: ignore
                             if (
                                 pkg_spec.TYPE == "conda"
-                                and pkg_spec.url not in known_urls
+                                and url_to_add not in known_urls
                             ):
-                                url_adds.append(pkg_spec.url)
-                        else:
-                            pending_errors.append(
-                                "Error downloading package for '%s': %s"
-                                % (pkg_spec.filename, str(error))
+                                url_adds.append(url_to_add)
+                            shutil.move(tmpfile, local_path)  # type: ignore
+                            # We consider stuff in the cache to be clean in terms of hash
+                            # so we don't want to recompute it.
+                            pkg_spec.add_local_file(
+                                pkg_format, local_path, pkg_hash, downloaded=True
                             )
 
-        if cache_downloads:
-            from metaflow.plugins import DATASTORES
+            if do_download:
+                delta_time = int(time.time() - start)
+                self._echo(
+                    " done in %d second%s." % (delta_time, plural_marker(delta_time)),
+                    timestamp=False,
+                )
+            if not pending_errors and transmutes:
+                start = time.time()
+                self._echo(
+                    "    Transmuting %d package%s for arch %s..."
+                    % (
+                        len(transmutes),
+                        plural_marker(len(transmutes)),
+                        requested_arch,
+                    ),
+                    nl=False,
+                )
+                with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
+                    transmut_results = [
+                        executor.submit(_transmute, entry) for entry in transmutes
+                    ]
+                    for f in as_completed(transmut_results):
+                        pkg_spec, dst_format, error = f.result()
+                        if error:
+                            pending_errors.append(
+                                "Error transmuting '%s': %s"
+                                % (pkg_spec.filename, error)
+                            )
+                        else:
+                            new_url = self._make_urlstxt_from_url(
+                                pkg_spec.url, dst_format, is_transmuted=True
+                            )
 
-            storage = [d for d in DATASTORES if d.TYPE == self._datastore_type][0](
-                get_conda_root(self._datastore_type)
-            )  # type: DataStoreStorage
-            keys_to_info = (
-                {}
-            )  # type: Dict[str, Tuple[PackageSpecification, str, str, str]]
-            for pkg_spec, pkg_format, local_path in cache_downloads:
-                cache_info = pkg_spec.cached_version(pkg_format)
-                if cache_info:
-                    keys_to_info[cache_info.url] = (
-                        pkg_spec,
-                        pkg_format,
-                        cache_info.hash,
-                        local_path,
-                    )
-                else:
-                    pending_errors.append(
-                        "Internal error: trying to download a non-existent cache item for %s"
-                        % pkg_spec.filename
-                    )
-            with storage.load_bytes(keys_to_info.keys()) as load_results:  # type: ignore
-                for (key, tmpfile, _) in load_results:  # type: ignore
-                    pkg_spec, pkg_format, pkg_hash, local_path = keys_to_info[key]  # type: ignore
-                    if not tmpfile:
-                        pending_errors.append(
-                            "Error downloading package from cache for '%s': not found at %s"
-                            % (pkg_spec.filename, key)
-                        )
-                    else:
-                        url_to_add = self._make_urlstxt_from_cacheurl(key)  # type: ignore
-                        if pkg_spec.TYPE == "conda" and url_to_add not in known_urls:
-                            url_adds.append(url_to_add)
-                        shutil.move(tmpfile, local_path)  # type: ignore
-                        # We consider stuff in the cache to be clean in terms of hash
-                        # so we don't want to recompute it.
-                        pkg_spec.add_local_file(
-                            pkg_format, local_path, pkg_hash, downloaded=True
-                        )
-
-        if do_download:
-            delta_time = int(time.time() - start)
-            self._echo(
-                " done in %d second%s." % (delta_time, plural_marker(delta_time)),
-                timestamp=False,
-            )
-        if not pending_errors and transmutes:
-            start = time.time()
-            self._echo(
-                "    Transmuting %d package%s for arch %s..."
-                % (len(transmutes), plural_marker(len(transmutes)), requested_arch),
-                nl=False,
-            )
-            with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
-                transmut_results = [
-                    executor.submit(_transmute, entry) for entry in transmutes
-                ]
-                for f in as_completed(transmut_results):
-                    pkg_spec, dst_format, error = f.result()
-                    if error:
-                        pending_errors.append(
-                            "Error transmuting '%s': %s" % (pkg_spec.filename, error)
-                        )
-                    else:
-                        new_url = self._make_urlstxt_from_url(
-                            pkg_spec.url, dst_format, is_transmuted=True
-                        )
-
-                        if new_url not in known_urls:
-                            url_adds.append(new_url)
-            delta_time = int(time.time() - start)
-            self._echo(
-                " done in %d second%s." % (delta_time, plural_marker(delta_time)),
-                timestamp=False,
-            )
-        if url_adds:
-            # Update the urls file in the packages directory so that Conda knows that the
-            # files are there
-            debug.conda_exec(
-                "Adding the following URLs to %s: %s"
-                % (os.path.join(package_dirs[0], "urls.txt"), str(url_adds))
-            )
-            with CondaLock(self._package_dir_lock_file(package_dirs[0])):
+                            if new_url not in known_urls:
+                                url_adds.append(new_url)
+                delta_time = int(time.time() - start)
+                self._echo(
+                    " done in %d second%s." % (delta_time, plural_marker(delta_time)),
+                    timestamp=False,
+                )
+            if url_adds:
+                # Update the urls file in the packages directory so that Conda knows that the
+                # files are there
+                debug.conda_exec(
+                    "Adding the following URLs to %s: %s"
+                    % (os.path.join(dest_dir, "urls.txt"), str(url_adds))
+                )
                 with open(
-                    os.path.join(package_dirs[0], "urls.txt"),
+                    os.path.join(dest_dir, "urls.txt"),
                     mode="a",
                     encoding="utf-8",
                 ) as f:
@@ -1176,10 +1204,6 @@ class Conda(object):
             raise CondaException(
                 "Could not fetch packages -- see pretty-printed errors above."
             )
-
-    def get_datastore_path_to_env(self, env_id: EnvID) -> str:
-        # Returns a path to where we store a resolved environment's information
-        return os.path.join("envs", env_id.arch, env_id.req_id, env_id.full_id, "env")
 
     def _resolve_env_with_micromamba_server(
         self, deps: Sequence[TStr], channels: Sequence[TStr], architecture: str
@@ -1258,10 +1282,21 @@ class Conda(object):
                 os.path.join(mamba_dir, "prefix"),
                 "--dry-run",
             ]
+            have_channels = False
             for c in sources:
                 if c.category == "conda":
+                    have_channels = True
                     args.extend(["-c", c.value])
 
+            if not have_channels:
+                have_channels = any(
+                    ["::" in d.value for d in deps if d.category == "conda"]
+                )
+            if have_channels:
+                # Add no-channel-priority because otherwise if a version
+                # is present in the other channels but not in the higher
+                # priority channels, it is not found.
+                args.append("--no-channel-priority")
             args.extend([d.value for d in deps if d.category == "conda"])
 
             addl_env = {
@@ -1350,6 +1385,12 @@ class Conda(object):
             for c in self._info["channels"]:
                 lines.append("  - %s\n" % c.replace(my_arch, architecture))
 
+            if any(["::" in conda_deps]) or any(
+                [c.value for c in channels if c.category == "conda"]
+            ):
+                addl_env = {"CONDA_CHANNEL_PRIORITY": "flexible"}
+            else:
+                addl_env = {}
             # For poetry unfortunately, conda-lock does not support setting the
             # sources manually so we need to actually update the config.
             # We do this using the vendored version of poetry in conda_lock because
@@ -1468,6 +1509,7 @@ class Conda(object):
                         [
                             "      %s: %s-%s\n" % (pkg_name, pkg_version, pkg_id)
                             for pkg_name, pkg_version, pkg_id in virtual_pkgs
+                            if pkg_name != "__glibc"
                         ]
                     )
                     with tempfile.NamedTemporaryFile(
@@ -1477,9 +1519,9 @@ class Conda(object):
                         virtual_yml.flush()
                         args.extend(["--virtual-package-spec", virtual_yml.name])
 
-                        self._call_conda(args, binary="conda-lock")
+                        self._call_conda(args, binary="conda-lock", addl_env=addl_env)
                 else:
-                    self._call_conda(args, binary="conda-lock")
+                    self._call_conda(args, binary="conda-lock", addl_env=addl_env)
             # At this point, we need to read the explicit dependencies in the file created
             emit = False
             result = []  # type: List[PackageSpecification]
@@ -1768,6 +1810,15 @@ class Conda(object):
 
         return None
 
+    def _is_valid_env(self, dir_name: str) -> Optional[EnvID]:
+        mf_env_file = os.path.join(dir_name, ".metaflowenv")
+        if os.path.isfile(mf_env_file):
+            with open(mf_env_file, mode="r", encoding="utf-8") as f:
+                env_info = json.load(f)
+            debug.conda_exec("Found %s at dir_name %s" % (EnvID(*env_info), dir_name))
+            return EnvID(*env_info)
+        return None
+
     def _created_envs(
         self, prefix: str, full_match: bool = False
     ) -> Dict[EnvID, List[str]]:
@@ -1783,36 +1834,30 @@ class Conda(object):
             if (
                 full_match and dir_lastcomponent == prefix
             ) or dir_lastcomponent.startswith(prefix):
-                mf_env_file = os.path.join(dir_name, ".metaflowenv")
-                if os.path.isfile(mf_env_file):
-                    with open(mf_env_file, mode="r", encoding="utf-8") as f:
-                        env_info = json.load(f)
-                    debug.conda_exec(
-                        "Found %s at dir_name %s" % (EnvID(*env_info), dir_name)
+                possible_env_id = self._is_valid_env(dir_name)
+                if possible_env_id:
+                    return possible_env_id
+                elif full_match:
+                    self._echo(
+                        "Removing potentially corrupt directory at %s" % dir_name
                     )
-                    return EnvID(*env_info)
-                else:
-                    debug.conda_exec(
-                        "Found directory at %s but no .metaflowenv" % dir_name
-                    )
-                    if full_match:
-                        self._echo(
-                            "Removing potentially corrupt directory at %s" % dir_name
-                        )
+                    self._remove(os.path.basename(dir_name))
             return None
 
         if self._have_micromamba:
             env_dir = os.path.join(self._info["base environment"], "envs")
-            for entry in os.scandir(env_dir):
-                if entry.is_dir():
-                    possible_env_id = _check_match(entry.path)
-                    if possible_env_id:
-                        ret.setdefault(possible_env_id, []).append(entry.path)
+            with CondaLock(self._env_lock_file(os.path.join(env_dir, "_"))):
+                # Grab a lock *once* on the parent directory so we pick anyname for
+                # the "directory".
+                for entry in os.scandir(env_dir):
+                    if entry.is_dir():
+                        possible_env_id = _check_match(entry.path)
+                        if possible_env_id:
+                            ret.setdefault(possible_env_id, []).append(entry.path)
         else:
             envs = self._info["envs"]  # type: List[str]
             for env in envs:
-                # Named environments are always $CONDA_PREFIX/envs/
-                if "/envs/" in env:
+                with CondaLock(self._env_lock_file(env)):
                     possible_env_id = _check_match(env)
                     if possible_env_id:
                         ret.setdefault(possible_env_id, []).append(env)
@@ -1885,8 +1930,38 @@ class Conda(object):
 
     def _create(self, env: ResolvedEnvironment, env_name: str) -> None:
 
+        # We first check to see if the environment exists -- if it does, we skip it
+        env_dir = os.path.join(self._root_env_dir, env_name)
+
+        if os.path.isdir(env_dir):
+            possible_env_id = self._is_valid_env(env_dir)
+            if possible_env_id and possible_env_id == env.env_id:
+                # The environment is already created -- we can skip
+                self._echo("Environment at '%s' already created and valid" % env_dir)
+                return
+            else:
+                # Invalid environment
+                if possible_env_id is None:
+                    self._echo(
+                        "Environment at '%s' is incomplete -- re-creating" % env_dir
+                    )
+                else:
+                    self._echo(
+                        "Environment at '%s' expected to be for %s (%s) but found %s (%s) -- re-creating"
+                        % (
+                            env_dir,
+                            env.env_id.req_id,
+                            env.env_id.full_id,
+                            possible_env_id.req_id,
+                            possible_env_id.full_id,
+                        )
+                    )
+                self._remove(env_name)
+
         # We first get all the packages needed
-        self.lazy_fetch_packages(env.packages)
+        self._lazy_fetch_packages(
+            env.packages, self._package_dirs[0], search_dirs=self._package_dirs
+        )
 
         # We build the list of explicit URLs to pass to conda to create the environment
         # We know here that we have all the packages present one way or another, we just
@@ -1938,8 +2013,6 @@ class Conda(object):
 
         start = time.time()
         self._echo("    Extracting and linking Conda environment ...", nl=False)
-
-        env_dir = os.path.join(self._root_env_dir, env_name)
 
         if pip_paths:
             self._echo(" (conda packages) ...", timestamp=False, nl=False)
@@ -2040,10 +2113,16 @@ class Conda(object):
         self._storage.save_bytes(paths_and_handles(), len_hint=len(files))
 
     def _env_lock_file(self, env_directory: str):
-        return os.path.join(self._root_env_dir, "mf_env-creation.lock")
+        # env_directory is either a name or a directory -- if name, it is assumed
+        # to be rooted at _root_env_dir
+        parent_dir = os.path.split(env_directory)[0]
+        if parent_dir == "":
+            parent_dir = self._root_env_dir
+        return os.path.join(parent_dir, "mf_env-creation.lock")
 
-    def _package_dir_lock_file(self, dir_path: str) -> str:
-        return os.path.join(dir_path, "mf_pkgs-update.lock")
+    @property
+    def _package_dir_lockfile_name(self) -> str:
+        return "mf_pkgs-update.lock"
 
     def _make_urlstxt_from_url(
         self,
@@ -2057,7 +2136,7 @@ class Conda(object):
         file_path, filename = convert_filepath(url.path, file_format)
         return os.path.join(
             get_conda_root(self._datastore_type),
-            cast(str, ENV_PACKAGES_DIRNAME),
+            cast(str, CONDA_PACKAGES_DIRNAME),
             "conda",
             TRANSMUT_PATHCOMPONENT,
             url.netloc,
@@ -2069,14 +2148,14 @@ class Conda(object):
         if TRANSMUT_PATHCOMPONENT in cache_url:
             return os.path.join(
                 get_conda_root(self._datastore_type),
-                cast(str, ENV_PACKAGES_DIRNAME),
+                cast(str, CONDA_PACKAGES_DIRNAME),
                 "conda",
                 os.path.split(os.path.split(cache_url)[0])[
                     0
                 ],  # Strip off last two (hash and filename)
             )
         else:
-            # Format is ENV_PACKAGES_DIRNAME/conda/url/hash/file so we strip
+            # Format is CONDA_PACKAGES_DIRNAME/conda/url/hash/file so we strip
             # first 2 and last 2
             components = cache_url.split("/")
             return "https://" + "/".join(components[2:-2])
@@ -2242,9 +2321,6 @@ class Conda(object):
         )
 
 
-TCondaLock = TypeVar("TCondaLock", bound="CondaLock")
-
-
 class CondaLock(object):
     def __init__(self, lock: str, timeout: int = CONDA_LOCK_TIMEOUT, delay: int = 10):
         self.lock = lock
@@ -2281,7 +2357,70 @@ class CondaLock(object):
             os.unlink(self.lock)
             self.locked = False
 
-    def __enter__(self: TCondaLock) -> TCondaLock:
+    def __enter__(self: "CondaLock") -> "CondaLock":
+        if not self.locked:
+            self._acquire()
+        return self
+
+    def __exit__(self, type: Any, value: Any, traceback: Any) -> None:
+        self.__del__()
+
+    def __del__(self) -> None:
+        self._release()
+
+
+class CondaLockMultiDir(object):
+    def __init__(
+        self,
+        dirs: List[str],
+        lockfile: str,
+        timeout: int = CONDA_LOCK_TIMEOUT,
+        delay: int = 10,
+    ):
+        self.lockfile = lockfile
+        self.dirs = sorted(dirs)
+        self.locked = False
+        self.timeout = timeout
+        self.delay = delay
+        self.fd = []  # type: List[int]
+
+    def _acquire(self) -> None:
+        start = time.time()
+        for d in self.dirs:
+            full_file = os.path.join(d, self.lockfile)
+            try:
+                os.makedirs(d)
+            except OSError as x:
+                if x.errno != errno.EEXIST:
+                    raise
+            while True:
+                try:
+                    self.fd.append(
+                        os.open(full_file, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                    )
+                    break
+                except OSError as e:
+                    if e.errno != errno.EEXIST:
+                        raise
+                    if self.timeout is None:
+                        raise CondaException(
+                            "Could not acquire lock {}".format(full_file)
+                        )
+                    if (time.time() - start) >= self.timeout:
+                        raise CondaException(
+                            "Timeout occurred while acquiring lock {}".format(full_file)
+                        )
+                    time.sleep(self.delay)
+        self.locked = True
+
+    def _release(self) -> None:
+        if self.locked:
+            for d, fd in zip(self.dirs, self.fd):
+                os.close(fd)
+                os.unlink(os.path.join(d, self.lockfile))
+        self.locked = False
+
+    def __enter__(self: "CondaLockMultiDir") -> "CondaLockMultiDir":
         if not self.locked:
             self._acquire()
         return self

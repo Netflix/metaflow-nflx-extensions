@@ -1,6 +1,6 @@
 from setuptools import setup, find_namespace_packages
 
-version = "0.0.9"
+version = "0.0.10"
 
 setup(
     name="metaflow-netflixext",
@@ -15,7 +15,6 @@ setup(
         "Operating System :: MacOS :: MacOS X",
         "Operating System :: POSIX :: Linux",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.6",
         "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
@@ -32,6 +31,6 @@ setup(
     py_modules=[
         "metaflow_extensions",
     ],
-    python_requires='>3.5',
+    python_requires='>=3.7.2',
     install_requires=["metaflow>=2.7.22"],
 )

@@ -158,8 +158,10 @@ class CondaStepDecorator(StepDecorator):
             TStr("conda", "%s==%s" % (name, ver))
             for name, ver in self._conda_deps().items()
         )
+        # If we have an empty version, we consider that the name is a direct
+        # link to a package like a URL
         deps.extend(
-            TStr("pip", "%s==%s" % (name, ver))
+            TStr("pip", "%s==%s" % (name, ver) if ver else name)
             for name, ver in self._pip_deps().items()
         )
         return deps
@@ -195,6 +197,9 @@ class CondaStepDecorator(StepDecorator):
         self._base_attributes = self._get_base_attributes()
 
         self._archs = self._architectures(decorators)
+        self._is_remote = any(
+            [deco.name in CONDA_REMOTE_COMMANDS for deco in decorators]
+        )
 
         self.__class__._local_root = LocalStorage.get_datastore_root_from_config(
             self._echo
@@ -266,18 +271,18 @@ class CondaStepDecorator(StepDecorator):
         max_user_code_retries: int,
         ubf_context: str,
     ):
-        no_remote = all([x not in cli_args.commands for x in CONDA_REMOTE_COMMANDS])
-        if self.is_enabled(ubf_context) and no_remote:
-            self._get_conda(self._echo, self._flow_datastore_type)
-            assert self.conda
-            resolved_env = cast(
-                ResolvedEnvironment, self.conda.environment(self.env_id)
-            )
-            my_env_id = resolved_env.env_id
-            # Export this for local runs, we will use it to read the "resolved"
-            # environment ID in task_pre_step; this makes it compatible with the remote
-            # bootstrap which also exports it.
-            cli_args.env["_METAFLOW_CONDA_ENV"] = json.dumps(my_env_id)
+        self._get_conda(self._echo, self._flow_datastore_type)
+        assert self.conda
+        resolved_env = cast(ResolvedEnvironment, self.conda.environment(self.env_id))
+        my_env_id = resolved_env.env_id
+        # Export this for local runs, we will use it to read the "resolved"
+        # environment ID in task_pre_step; this makes it compatible with the remote
+        # bootstrap which also exports it. We do this even for UBF control tasks as
+        # this environment variable is then passed to the actual tasks. We don't create
+        # the environment for the control task -- just for the actual tasks.
+        cli_args.env["_METAFLOW_CONDA_ENV"] = json.dumps(my_env_id)
+
+        if self.is_enabled(ubf_context) and not self._is_remote:
             # Create the environment we are going to use
             if self.conda.created_environment(my_env_id):
                 self._echo(

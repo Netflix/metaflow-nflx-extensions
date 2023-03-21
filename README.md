@@ -23,6 +23,8 @@ some modification (in which case it will be removed from this package) but that 
 not a guarantee. If you find this functionality useful and would like to see it make
 it to the main Metaflow package, let us know. Feedback is always welcome!
 
+This extension is currently tested on python 3.7+.
+
 If you have any question, feel free to open an issue here or contact us on the usual
 Metaflow slack channels.
 
@@ -86,6 +88,10 @@ The useful configuration values are listed below:
   `CONDA_S3ROOT`/`CONDA_AZUREROOT`/`CONDA_GSROOT` under
   which fully created conda environments for local execution are cached. If not set,
   the local machine's Conda installation is used.
+- `CONDA_PACKAGES_DIRNAME`: directory within `CONDA_S3ROOT`/`CONDA_AZUREROOT`/`CONDA_GSROOT`
+  under which cached packages are stored (defaults to `packages`)
+- `CONDA_ENVS_DIRNAME`: same thing a `CONDA_PACKAGES_DIRNAME` but for environments
+  (defaults to `envs`)
 - `CONDA_LOCAL_DIST`: if set architecture specific tar ball in `CONDA_LOCAL_DIST_DIRNAME`.
 - `CONDA_LOCAL_PATH`: if set, installs the tarball in `CONDA_LOCAL_DIST` in this path.
 - `CONDA_PREFERRED_FORMAT`: `.tar.bz2` or `.conda`. Prefer `.conda` for speed gains; any
