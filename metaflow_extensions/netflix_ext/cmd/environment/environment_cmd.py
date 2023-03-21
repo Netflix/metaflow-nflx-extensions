@@ -72,7 +72,7 @@ def cli(ctx):
 
 @cli.group(help="Execution environment related commands.")
 @click.option(
-    "--quiet/--not-quiet",
+    "--quiet/--no-quiet",
     show_default=True,
     default=False,
     help="Suppress unnecessary messages",
@@ -296,10 +296,6 @@ def environment(
 
 
 @environment.command()
-@click.argument(
-    "envspec",
-    nargs=-1,
-)
 @click.option("--name", default=None, help="Name of the environment to create")
 @click.option(
     "--recreate/--no-recreate",
@@ -314,16 +310,29 @@ def environment(
     type=click.Path(file_okay=False, writable=True, readable=True, resolve_path=True),
     help="If specified and for pathspec ENVSPEC, downloads the code to this directory",
 )
+@click.argument(
+    "envspec",
+    help="Environment to create: either a Step pathspec or a name/tag for the environment",
+)
 @click.pass_obj
-def create_local(obj, name, recreate, into, envspec):
+def create(
+    obj,
+    name: Optional[str] = None,
+    recreate: bool = False,
+    into: Optional[str] = None,
+    envspec: str = "",
+):
     """
     Create a local environment based on ENVSPEC.
 
     ENVSPEC can either be:
       - a pathspec in the form <flowname>/<runid>/<stepname>
-      - two values: the requirement hash and the full hash of the environment.
-
-    The latter two values are returned for example when using `list` for example
+      - a partial hash (in the form of <req id>) -- this assumes the default environment
+        for that hash.
+      - a full hash (in the form of <req id>:<full id> as returned by `list` for
+        example)
+      - a name for the environment (as added using `--tag` when resolving the environment
+        or using `metaflow tag`)
     """
     if into:
         if os.path.exists(into):

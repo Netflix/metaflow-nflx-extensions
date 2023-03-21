@@ -3,7 +3,7 @@ import os
 
 from functools import partial
 from itertools import chain
-from typing import Any, Dict, Iterable, Tuple, List, Union, Optional, cast
+from typing import Any, Dict, List, Set, Tuple, Union, Optional, cast
 
 from metaflow._vendor import click
 
@@ -24,74 +24,6 @@ _RED = 31
 _GREEN = 32
 _YELLOW = 33
 _BLUE = 34
-
-
-def _color_str(
-    s: str,
-    style: Optional[Union[int, List[int]]] = None,
-    fg: Optional[int] = None,
-    bg: Optional[int] = None,
-) -> str:
-    if style is None:
-        style = []
-    elif isinstance(style, int):
-        style = [style]
-    if fg is not None:
-        style.append(fg)
-    if bg is not None:
-        style.append(bg + 10)
-    return "\033[%sm%s\033[0m" % (";".join((str(x) for x in style)), s)
-
-
-def _get_envs(
-    conda: Conda, flow: FlowSpec, skip_known: bool, local_only: bool
-) -> List[Tuple[str, Dict[str, ResolvedEnvironment], str, Tuple[str]]]:
-    reqs_to_steps = {}  # type: Dict[Tuple[str, Tuple[str]], List[str]]
-    for step in flow:
-        step_conda_dec = get_conda_decorator(flow, step.__name__)
-        # We want to gather steps by the type of requirements they have. This is
-        # basically their req ID as well as the requested architectures.
-        env_id = step_conda_dec.env_id
-        archs = tuple(sorted(step_conda_dec.requested_architectures))
-        req_id = env_id.req_id
-        reqs_to_steps.setdefault((req_id, archs), []).append(step.__name__)
-    # We now look for environments that have the proper req_id and a superset of the
-    # architectures asked for
-    if debug.conda:
-        debug.conda_exec("Requirements to resolve are:")
-        for (req_id, archs), steps in reqs_to_steps.items():
-            debug.conda_exec(
-                "%s (archs: %s) for %s" % (req_id, ", ".join(archs), ", ".join(steps))
-            )
-
-    steps_to_potentials = (
-        []
-    )  # type: List[Tuple[str, Dict[str, ResolvedEnvironment], str, Tuple[str]]]
-    for (req_id, archs), steps in reqs_to_steps.items():
-        # We can pick just a single arch to look for potentials; we know we need
-        # at least that one
-        arch = archs[0]
-        need_archs = set(archs)
-        possible_envs = conda.environments(req_id, arch, local_only=local_only)
-        possible_envs = [
-            r for r in possible_envs if need_archs.issubset(r[1].co_resolved_archs)
-        ]
-        if skip_known:
-            default_env_id = conda.get_default_environment(req_id, arch)
-            if default_env_id and default_env_id in [env[0] for env in possible_envs]:
-                debug.conda_exec(
-                    "Have known local default for %s -- skipping" % ", ".join(steps)
-                )
-                continue
-        steps_to_potentials.append(
-            (
-                ", ".join(steps),
-                {env_id.full_id: env for env_id, env in possible_envs},
-                req_id,
-                archs,
-            )
-        )
-    return steps_to_potentials
 
 
 @click.group()
@@ -118,13 +50,24 @@ def environment(obj):
     "--menu/--no-menu",
     show_default=True,
     default=True,
-    help="Use a menu to display the environment or print",
+    help="Use a menu to display the environment or print -- menu is incompatible with quiet",
+)
+@click.argument(
+    "steps-to-list",
+    required=False,
+    nargs=-1,
+    help="Steps to list -- if absent environments for all steps are listed",
 )
 @click.pass_obj
-def list(obj: Any, local_only: bool = True, menu: bool = False):
+def list(
+    obj: Any,
+    local_only: bool = True,
+    menu: bool = False,
+    steps_to_list: Optional[Tuple[str]] = None,
+):
     conda = Conda(obj.echo, obj.flow_datastore.TYPE)
     steps_to_potentials = _get_envs(
-        conda, obj.flow, skip_known=False, local_only=local_only
+        conda, obj.flow, skip_known=False, local_only=local_only, steps=steps_to_list
     )
     for steps_query, potentials, req_id, _ in steps_to_potentials:
         local_instances = _local_instances_for_req_id(conda, req_id)
@@ -137,6 +80,10 @@ def list(obj: Any, local_only: bool = True, menu: bool = False):
                 )
             continue
         if menu:
+            if obj.is_quiet:
+                raise click.UsageError(
+                    message="Menu flag is incompatible with quiet flag", ctx=obj
+                )
             m = TerminalMenu(
                 menu_entries=(
                     _format_resolved_env_for_menu(conda, env)
@@ -181,10 +128,10 @@ def list(obj: Any, local_only: bool = True, menu: bool = False):
 
 @environment.command(help="Select resolved environments for steps in a flow")
 @click.option(
-    "--skip-known/--no-skip-known",
+    "--only-unknown/--no-only-unknown",
     show_default=True,
     default=True,
-    help="Skip steps with a locally known resolved environment",
+    help="If True, skip steps for which an environment is already resolved/known",
 )
 @click.option(
     "--local-only/--no-local-only",
@@ -198,14 +145,32 @@ def list(obj: Any, local_only: bool = True, menu: bool = False):
     default=False,
     help="Dry-run -- do not update cached environments",
 )
+@click.argument(
+    "steps-to-select",
+    required=False,
+    nargs=-1,
+    help="Steps to re-resolve -- if absent, all steps will be presented",
+)
 @click.pass_obj
 def select_resolved(
-    obj: Any, skip_known: bool = True, local_only: bool = False, dry_run: bool = False
+    obj: Any,
+    only_unknown: bool = True,
+    local_only: bool = False,
+    dry_run: bool = False,
+    steps_to_select: Optional[Tuple[str]] = None,
 ):
 
+    if obj.is_quiet:
+        raise click.UsageError(
+            message="select-resolved not compatible with quiet flag", ctx=obj
+        )
     conda = Conda(obj.echo, obj.flow_datastore.TYPE)
     steps_to_potentials = _get_envs(
-        conda, obj.flow, skip_known=skip_known, local_only=local_only
+        conda,
+        obj.flow,
+        skip_known=only_unknown,
+        local_only=local_only,
+        steps=steps_to_select,
     )
     for steps_query, potentials, req_id, archs in steps_to_potentials:
         local_instances = _local_instances_for_req_id(conda, req_id)
@@ -256,6 +221,215 @@ def select_resolved(
 
     if not dry_run:
         conda.write_out_environments()
+
+
+@environment.command(help="Resolve environments for steps in a flow")
+@click.option(
+    "--tag",
+    default=None,
+    multiple=True,
+    help="Tag the resolved environment; can be name or name:tag",
+)
+@click.option(
+    "--force/--no-force",
+    show_default=True,
+    default=False,
+    help="Force re-resolution of already resolved environments",
+)
+@click.option(
+    "--dry-run/--no-dry-run",
+    show_default=True,
+    default=False,
+    help="Dry-run -- only resolve, do not download, cache, persist or tag anything",
+)
+@click.argument(
+    "steps-to-resolve",
+    required=False,
+    nargs=-1,
+    help="Steps to resolve -- if absent all steps are resolved",
+)
+@click.pass_obj
+def resolve(
+    obj: Any,
+    tag: Optional[str] = None,
+    force: bool = False,
+    dry_run: bool = False,
+    steps_to_resolve: Optional[Tuple[str]] = None,
+):
+    conda = Conda(obj.echo, obj.flow_datastore.TYPE)
+    resolver = EnvsResolver(conda)
+    for step in obj.flow:
+        if steps_to_resolve is None or step.name in steps_to_resolve:
+            step_conda_dec = get_conda_decorator(obj.flow, step.name)
+            resolver.add_environment_for_step(step.name, step_conda_dec, force=force)
+    per_req_id = {}  # type: Dict[str, Set[str]]
+    for env_id, steps in resolver.non_resolved_environments():
+        per_req_id.setdefault(env_id.req_id, set()).update(steps)
+    if len(per_req_id) == 0:
+        # Nothing to do
+        obj.echo("No environments to resolve, use --force to force re-resolution")
+        return
+    if tag and len(per_req_id) > 1:
+        raise CommandException(
+            "Cannot specify a tag if more than one environment to resolve "
+            "-- found %d environments: one for each of steps %s"
+            % (
+                len(per_req_id),
+                ", and ".join(", ".join(s) for s in per_req_id.values()),
+            )
+        )
+
+    resolver.resolve_environments(obj.echo)
+    # We group by req_id which will effectively be by set of steps. We only
+    # print newly resolved environments
+    resolved_per_req_id = (
+        {}
+    )  # type: Dict[str, Tuple[List[ResolvedEnvironment], Set[str]]]
+    for env_id, env, steps in resolver.new_environments():
+        v = resolved_per_req_id.setdefault(env_id.req_id, ([], set()))
+        v[0].append(env)
+        v[1].update(steps)
+
+    if obj.is_quiet:
+        for req_id, (envs, steps) in resolved_per_req_id.items():
+            obj.echo_always(",".join(steps))
+            local_instances = _local_instances_for_req_id(conda, req_id)
+            for env in envs:
+                _quiet_print_env(obj, env, local_instances.get(env.env_id.full_id))
+    else:
+        for req_id, (envs, steps) in resolved_per_req_id.items():
+            local_instances = _local_instances_for_req_id(conda, req_id)
+            obj.echo(
+                "### Environment%s for step%s *%s* (hash: %s) ###"
+                % (
+                    plural_marker(len(envs)),
+                    plural_marker(len(steps)),
+                    ", ".join(steps),
+                    req_id,
+                )
+            )
+            first_env = True
+            for env in envs:
+                if not first_env:
+                    obj.echo("\n*~~~*\n")
+                first_env = False
+                _pretty_print_env(
+                    obj,
+                    env,
+                    env.env_id
+                    == conda.get_default_environment(
+                        env.env_id.req_id, env.env_id.arch
+                    ),
+                    local_instances.get(env.env_id.full_id),
+                )
+            obj.echo("\n\n")
+    if dry_run:
+        obj.echo("Dry-run -- not caching or tagging")
+        return
+
+    # If this is not a dry-run, we cache the environments and write out the resolved
+    # information
+    update_envs = []  # type: List[ResolvedEnvironment]
+    if obj.flow_datastore.TYPE != "local":
+        # We may need to update caches
+        # Note that it is possible that something we needed to resolve, we don't need
+        # to cache (if we resolved to something already cached).
+        formats = set()  # type: Set[str]
+        for _, resolved_env, f, _ in resolver.need_caching_environments():
+            update_envs.append(resolved_env)
+            formats.update(f)
+
+        conda.cache_environments(update_envs, {"conda": list(formats)})
+    else:
+        update_envs = [
+            resolved_env for _, resolved_env, _ in resolver.new_environments()
+        ]
+
+    conda.add_environments(update_envs)
+
+    # Update the default environment
+    for env_id, resolved_env, _ in resolver.resolved_environments():
+        if env_id.full_id == "_default":
+            conda.set_default_environment(resolved_env.env_id)
+        if tag:
+            resolved_env.env_alias = tag
+
+    # We are done -- write back out the environments
+    conda.write_out_environments()
+
+
+def _color_str(
+    s: str,
+    style: Optional[Union[int, List[int]]] = None,
+    fg: Optional[int] = None,
+    bg: Optional[int] = None,
+) -> str:
+    if style is None:
+        style = []
+    elif isinstance(style, int):
+        style = [style]
+    if fg is not None:
+        style.append(fg)
+    if bg is not None:
+        style.append(bg + 10)
+    return "\033[%sm%s\033[0m" % (";".join((str(x) for x in style)), s)
+
+
+def _get_envs(
+    conda: Conda,
+    flow: FlowSpec,
+    skip_known: bool,
+    local_only: bool,
+    steps: Optional[Tuple[str]] = None,
+) -> List[Tuple[str, Dict[str, ResolvedEnvironment], str, Tuple[str]]]:
+    reqs_to_steps = {}  # type: Dict[Tuple[str, Tuple[str]], List[str]]
+    for step in flow:
+        if steps and step.name not in steps:
+            continue
+        step_conda_dec = get_conda_decorator(flow, step.__name__)
+        # We want to gather steps by the type of requirements they have. This is
+        # basically their req ID as well as the requested architectures.
+        env_ids = step_conda_dec.env_ids
+        archs = tuple(sorted(env.arch for env in env_ids))
+        req_id = env_ids[0].req_id
+        reqs_to_steps.setdefault((req_id, archs), []).append(step.__name__)
+    # We now look for environments that have the proper req_id and a superset of the
+    # architectures asked for
+    if debug.conda:
+        debug.conda_exec("Requirements to resolve are:")
+        for (req_id, archs), steps in reqs_to_steps.items():
+            debug.conda_exec(
+                "%s (archs: %s) for %s" % (req_id, ", ".join(archs), ", ".join(steps))
+            )
+
+    steps_to_potentials = (
+        []
+    )  # type: List[Tuple[str, Dict[str, ResolvedEnvironment], str, Tuple[str]]]
+    for (req_id, archs), steps in reqs_to_steps.items():
+        # We can pick just a single arch to look for potentials; we know we need
+        # at least that one
+        arch = archs[0]
+        need_archs = set(archs)
+        possible_envs = conda.environments(req_id, arch, local_only=local_only)
+        possible_envs = [
+            r for r in possible_envs if need_archs.issubset(r[1].co_resolved_archs)
+        ]
+        if skip_known:
+            default_env_id = conda.get_default_environment(req_id, arch)
+            if default_env_id and default_env_id in [env[0] for env in possible_envs]:
+                debug.conda_exec(
+                    "Have known local default for %s -- skipping" % ", ".join(steps)
+                )
+                continue
+        steps_to_potentials.append(
+            (
+                ", ".join(steps),
+                {env_id.full_id: env for env_id, env in possible_envs},
+                req_id,
+                archs,
+            )
+        )
+    return steps_to_potentials
 
 
 def _info_for_env(
@@ -327,6 +501,12 @@ def _format_resolved_env_for_menu(conda: Conda, env: ResolvedEnvironment) -> Lis
     is_default = env.env_id == conda.get_default_environment(
         env.env_id.req_id, env.env_id.arch
     )
+    tags = env.env_alias if env.env_alias else ""
+    if is_default:
+        if tags:
+            tags += ", [default]"
+        tags = "[default]"
+
     return [
         "%s|%s" % (env.env_id.full_id, env.env_id.full_id),
         ", ".join(env.co_resolved_archs),
@@ -362,10 +542,11 @@ def _quiet_print_env(
     pip_packages.sort(key=lambda x: x.package_name)
     conda_packages.sort(key=lambda x: x.package_name)
     obj.echo_always(
-        "%s %s %s %s %s %s %s %s conda:%s pip:%s %s"
+        "%s %s %s %s %s %s %s %s %s conda:%s pip:%s %s"
         % (
             env_id.req_id,
             env_id.full_id,
+            env.env_alias if env.env_alias else "",
             env_id.arch,
             env.resolved_on.isoformat(),
             env.resolved_by,
@@ -404,6 +585,8 @@ def _pretty_print_env(
         "*%sEnvironment full hash* %s\n"
         % ("DEFAULT " if is_default else "", env.env_id.full_id)
     )
+    if env.env_alias:
+        obj.echo("*Tag* %s" % env.env_alias)
     obj.echo("*Arch* %s" % env.env_id.arch)
     obj.echo("*Available on* %s\n" % ", ".join(env.co_resolved_archs))
     obj.echo("*Resolved on* %s" % env.resolved_on)

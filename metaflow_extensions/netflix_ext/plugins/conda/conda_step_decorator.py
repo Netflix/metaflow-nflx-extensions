@@ -63,9 +63,15 @@ class CondaStepDecorator(StepDecorator):
 
     Parameters
     ----------
+    env : Optional[str]
+        If specified, can refer to a specific environment. The format for this string
+        is <env name>:<version>. The <env name> can optionally contain "/" to help
+        with unique naming. This functions very similarly to Docker tags.
     libraries : Dict[str, str]
         Libraries to use for this step. The key is the name of the package
-        and the value is the version to use (default: `{}`).
+        and the value is the version to use (default: `{}`). Note that versions can
+        be specified either as a specific version or as a comma separated string
+        of constraints like "<2.0,>=1.5".
     channels : List[str]
         Additional channels to search
     pip_packages : Dict[str, str]
@@ -84,6 +90,7 @@ class CondaStepDecorator(StepDecorator):
 
     name = "conda"
     defaults = {
+        "env": None,
         "libraries": {},
         "channels": [],
         "pip_packages": {},
