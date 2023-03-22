@@ -409,3 +409,30 @@ def create(
         "Created environment '%s' locally, activate with `%s activate %s`"
         % (name, obj.conda.binary("conda"), name)
     )
+
+
+@environment.command()
+@click.argument(
+    "source_env",
+    help="Source environment to tag (either <req id>:<full id> or pathspec or alias)",
+)
+@click.argument("dest_tag", help="Tag to use")
+@click.pass_obj
+def tag(obj, source_env: str, dest_tag: str):
+    pass
+
+
+@environment.command()
+@click.option(
+    "--default/--no-default",
+    default=True,
+    show_default=True,
+    help="Set the downloaded environment as default for its requirement ID",
+)
+@click.argument(
+    "source_env",
+    help="Source environment to get",
+)
+@click.pass_obj
+def tag(obj, default: bool, source_env: str):
+    pass
