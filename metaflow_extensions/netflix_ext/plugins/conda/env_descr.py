@@ -4,8 +4,14 @@ import errno
 import fcntl
 import json
 import os
+from enum import Enum
 from hashlib import md5, sha1, sha256
 from itertools import chain
+
+from metaflow_extensions.netflix_ext.vendor.packaging.utils import (
+    parse_sdist_filename,
+    parse_wheel_filename,
+)
 from typing import (
     Any,
     Dict,
@@ -18,7 +24,6 @@ from typing import (
     Sequence,
     Tuple,
     Type,
-    TypeVar,
     Union,
     cast,
 )
@@ -28,16 +33,25 @@ from metaflow.metaflow_config import CONDA_PACKAGES_DIRNAME
 from metaflow.util import get_username
 
 from .utils import (
-    CONDA_FORMATS,
     TRANSMUT_PATHCOMPONENT,
-    CondaException,
+    AliasType,
     arch_id,
     convert_filepath,
     get_conda_manifest_path,
+    is_alias_mutable,
+    unresolve_env_alias,
 )
 
 # Order should be maintained
 EnvID = NamedTuple("EnvID", [("req_id", str), ("full_id", str), ("arch", str)])
+
+VALID_IMAGE_NAME_RE = "[^a-z0-9_]"
+
+
+class EnvType(Enum):
+    CONDA_ONLY = "conda-only"
+    PIP_ONLY = "pip-only"
+    MIXED = "mixed"
 
 
 class TStr:
@@ -196,7 +210,7 @@ class PackageSpecification:
         self,
         filename: str,
         url: str,
-        url_format: Optional[str] = None,
+        url_format: str,
         hashes: Optional[Dict[str, str]] = None,
         cache_info: Optional[Dict[str, CachePackage]] = None,
     ):
@@ -208,11 +222,6 @@ class PackageSpecification:
         # if self.TYPE != "conda" and not filename.startswith("%s/" % self.TYPE):  # type: ignore
         #     filename = "/".join([self.TYPE, filename])
         self._filename = filename
-        (
-            self._package_name,
-            self._package_version,
-            self._package_detailed_version,
-        ) = self._split_filename()
 
         self._url = url
         if url_format is None:
@@ -228,6 +237,12 @@ class PackageSpecification:
         self._url_format = url_format
         self._hashes = hashes or {}
         self._cache_info = cache_info or {}
+
+        (
+            self._package_name,
+            self._package_version,
+            self._package_detailed_version,
+        ) = self._split_filename()
 
         # Additional information used for local book-keeping as we are updating
         # the package
@@ -413,7 +428,7 @@ class PackageSpecification:
             cls._class_per_type = {c.TYPE: c for c in cls.__subclasses__()}
 
         cache_info = d.get("cache_info", {})  # type: Dict[str, Any]
-        url_format = d.get("url_format")
+        url_format = d["url_format"]
         return cls._class_per_type[d["_type"]](
             filename=d["filename"],
             url=d["url"],
@@ -431,6 +446,10 @@ class PackageSpecification:
 
     @classmethod
     def base_hash(cls):
+        raise NotImplementedError()
+
+    @classmethod
+    def base_hash_name(cls) -> str:
         raise NotImplementedError()
 
     @classmethod
@@ -459,6 +478,10 @@ class CondaPackageSpecification(PackageSpecification):
     def base_hash(cls):
         return md5()
 
+    @classmethod
+    def base_hash_name(cls) -> str:
+        return "md5"
+
     def _split_filename(self) -> Tuple[str, str, str]:
         pkg, v, addl = self._filename.rsplit("-", 2)
         return pkg, v, "-".join([v, addl])
@@ -479,16 +502,23 @@ class PipPackageSpecification(PackageSpecification):
     def base_hash(cls):
         return sha256()
 
+    @classmethod
+    def base_hash_name(cls) -> str:
+        return "sha256"
+
     def _split_filename(self) -> Tuple[str, str, str]:
-        name, version, _, _, _ = self._filename.rsplit("-", 4)
-        if "." in name and "-" in name:
-            # This means the version is actually a build identifier and version
-            # is in name -- TODO: this is not very stable (find a better way)
-            name, version = name.rsplit("-", 1)
-        return (name, version, version)
-
-
-TResolvedEnvironment = TypeVar("TResolvedEnvironment", bound="ResolvedEnvironment")
+        if self._url_format == ".whl":
+            name, version, buildtag, _ = parse_wheel_filename(
+                ".".join([self._filename, "whl"])
+            )
+            return (
+                str(name),
+                str(version),
+                "" if len(buildtag) == 0 else "%s-%s" % (buildtag[0], buildtag[1]),
+            )
+        # In the case of a source distribution
+        name, version = parse_sdist_filename(".".join([self._filename, ".tar.gz"]))
+        return (str(name), str(version), "")
 
 
 class ResolvedEnvironment:
@@ -498,27 +528,37 @@ class ResolvedEnvironment:
         user_sources: Optional[Sequence[TStr]],
         arch: Optional[str] = None,
         env_id: Optional[EnvID] = None,
-        user_alias: Optional[str] = None,
         all_packages: Optional[Sequence[PackageSpecification]] = None,
         resolved_on: Optional[datetime] = None,
         resolved_by: Optional[str] = None,
         co_resolved: Optional[List[str]] = None,
+        env_type: EnvType = EnvType.MIXED,
     ):
+        self._env_type = env_type
         self._user_dependencies = list(user_dependencies)
         self._user_sources = list(user_sources) if user_sources else []
+        if all_packages is not None:
+            # It should already be sorted but being very safe
+            all_packages = sorted(all_packages, key=lambda p: p.filename)
+
         if not env_id:
             env_req_id = ResolvedEnvironment.get_req_id(
                 self._user_dependencies, self._user_sources
             )
             env_full_id = "_unresolved"
             if all_packages is not None:
-                env_full_id = self._compute_hash([p.filename for p in all_packages])
+                env_full_id = self._compute_hash(
+                    [
+                        "%s#%s" % (p.filename, p.pkg_hash(p.url_format))
+                        for p in all_packages
+                    ]
+                    + [arch or arch_id()]
+                )
             self._env_id = EnvID(
                 req_id=env_req_id, full_id=env_full_id, arch=arch or arch_id()
             )
         else:
             self._env_id = env_id
-        self._alias = user_alias
         self._all_packages = list(all_packages) if all_packages else []
         self._resolved_on = resolved_on or datetime.now()
         self._resolved_by = resolved_by or get_username() or "unknown"
@@ -526,7 +566,8 @@ class ResolvedEnvironment:
 
     @staticmethod
     def get_req_id(
-        deps: Sequence[TStr], sources: Optional[Sequence[TStr]] = None
+        deps: Sequence[TStr],
+        sources: Optional[Sequence[TStr]] = None,
     ) -> str:
         # Extract per category so we can sort independently for each category
         deps_by_category = {}  # type: Dict[str, List[str]]
@@ -544,14 +585,16 @@ class ResolvedEnvironment:
         )
 
     @staticmethod
-    def set_coresolved_full_id(envs: Sequence[TResolvedEnvironment]) -> None:
+    def set_coresolved_full_id(envs: Sequence["ResolvedEnvironment"]) -> None:
         envs = sorted(envs, key=lambda x: x.env_id.arch)
         to_hash = []  # type: List[str]
         archs = []  # type: List[str]
         for env in envs:
             archs.append(env.env_id.arch)
             to_hash.append(env.env_id.arch)
-            to_hash.extend([p.filename for p in env.packages])
+            to_hash.extend(
+                ["%s#%s" % (p.filename, p.pkg_hash(p.url_format)) for p in env.packages]
+            )
         new_full_id = ResolvedEnvironment._compute_hash(to_hash)
         for env in envs:
             env.set_coresolved(archs, new_full_id)
@@ -567,16 +610,19 @@ class ResolvedEnvironment:
     @property
     def env_id(self) -> EnvID:
         if self._env_id.full_id in ("_default", "_unresolved") and self._all_packages:
-            env_full_id = self._compute_hash([p.filename for p in self._all_packages])
+            self._all_packages.sort(key=lambda p: p.filename)
+            env_full_id = self._compute_hash(
+                [p.filename for p in self._all_packages]
+                + [self._env_id.arch or arch_id()]
+            )
             self._env_id = self._env_id._replace(full_id=env_full_id)
         return self._env_id
 
     @property
-    def env_alias(self) -> Optional[str]:
-        return self._alias
-
-    @property
     def packages(self) -> Iterable[PackageSpecification]:
+        # We always make sure it is sorted and we can do this by checking the env_id
+        # which will sort _all_packages if not sorted
+        _ = self.env_id
         for p in self._all_packages:
             yield p
 
@@ -591,6 +637,10 @@ class ResolvedEnvironment:
     @property
     def co_resolved_archs(self) -> List[str]:
         return self._co_resolved
+
+    @property
+    def env_type(self) -> EnvType:
+        return self._env_type
 
     def add_package(self, pkg: PackageSpecification):
         self._all_packages.append(pkg)
@@ -610,11 +660,11 @@ class ResolvedEnvironment:
         return {
             "deps": [str(x) for x in self._user_dependencies],
             "sources": [str(x) for x in self._user_sources],
-            "packages": [p.to_dict() for p in self._all_packages],
-            "alias": self._alias,
+            "packages": [p.to_dict() for p in self.packages],
             "resolved_on": self._resolved_on.isoformat(),
             "resolved_by": self._resolved_by,
             "resolved_archs": self._co_resolved,
+            "env_type": self._env_type.value,
         }
 
     @classmethod
@@ -628,11 +678,11 @@ class ResolvedEnvironment:
             user_dependencies=[TStr.from_str(x) for x in d["deps"]],
             user_sources=[TStr.from_str(x) for x in d["sources"]],
             env_id=env_id,
-            user_alias=d["alias"],
             all_packages=all_packages,
             resolved_on=datetime.fromisoformat(d["resolved_on"]),
             resolved_by=d["resolved_by"],
             co_resolved=d["resolved_archs"],
+            env_type=EnvType(d.get("env_type", EnvType.MIXED.value)),
         )
 
     @staticmethod
@@ -645,13 +695,15 @@ class CachedEnvironmentInfo:
         self,
         version: int = 1,
         step_mappings: Optional[Dict[str, Tuple[str, str]]] = None,
-        env_aliases: Optional[Dict[str, Dict[str, Tuple[str, str]]]] = None,
+        env_mutable_aliases: Optional[Dict[str, Tuple[str, str]]] = None,
+        env_aliases: Optional[Dict[str, Tuple[str, str]]] = None,
         resolved_environments: Optional[
             Dict[str, Dict[str, Dict[str, Union[ResolvedEnvironment, str]]]]
         ] = None,
     ):
         self._version = version
         self._step_mappings = step_mappings if step_mappings else {}
+        self._env_mutable_aliases = env_mutable_aliases if env_mutable_aliases else {}
         self._env_aliases = env_aliases if env_aliases else {}
         self._resolved_environments = (
             resolved_environments if resolved_environments else {}
@@ -699,9 +751,37 @@ class CachedEnvironmentInfo:
         per_arch_envs = self._resolved_environments.setdefault(env_id.arch, {})
         per_req_id_envs = per_arch_envs.setdefault(env_id.req_id, {})
         per_req_id_envs[env_id.full_id] = env
-        if env.env_alias:
-            alias_info = self._env_aliases.setdefault(env.env_alias, {})
-            alias_info[env_id.arch] = (env_id.req_id, env_id.full_id)
+
+        # Update _env_aliases adding the full_id so we can look up an environment
+        # directly by the full_id
+        v = self._env_aliases.setdefault(
+            env_id.full_id, (env_id.req_id, env_id.full_id)
+        )
+        if v != (env_id.req_id, env_id.full_id):
+            # This can happen if two req_ids resolve to the same full_id
+            # For now we ignore and we will just use the first resolved environment
+            # for that full-id
+            pass
+
+    def add_alias(
+        self, alias_type: AliasType, resolved_alias: str, req_id: str, full_id: str
+    ):
+        if alias_type == AliasType.PATHSPEC:
+            v = self._step_mappings.setdefault(resolved_alias, (req_id, full_id))
+            if v != (req_id, full_id):
+                raise ValueError(
+                    "Assigning (%s, %s) to step '%s' but already have (%s, %s)"
+                    % (req_id, full_id, resolved_alias, v[0], v[1])
+                )
+        elif alias_type == AliasType.FULL_ID or alias_type == AliasType.GENERIC:
+            if is_alias_mutable(alias_type, resolved_alias):
+                self._env_mutable_aliases[resolved_alias] = (req_id, full_id)
+            else:
+                # At this point, this is not a mutable alias
+                v = self._env_aliases.setdefault(resolved_alias, (req_id, full_id))
+                if v != (req_id, full_id):
+                    raise ValueError("Alias '%s' is not mutable" % resolved_alias)
+        # Missing AliasType.REQ_FULL_ID but we don't record aliases for that.
 
     def env_for(
         self, req_id: str, full_id: str = "_default", arch: Optional[str] = None
@@ -732,6 +812,52 @@ class CachedEnvironmentInfo:
                     # when we get to the actual environment for it so we don't output
                     # anything.
 
+    def env_id_for_alias(
+        self, alias_type: AliasType, resolved_alias: str, arch: Optional[str] = None
+    ) -> Optional[EnvID]:
+        if alias_type == AliasType.REQ_FULL_ID:
+            req_id, full_id = resolved_alias.rsplit(":", 1)
+        elif alias_type == AliasType.PATHSPEC:
+            req_id, full_id = self._step_mappings.get(resolved_alias, (None, None))
+        elif alias_type == AliasType.GENERIC or alias_type == AliasType.FULL_ID:
+            req_id, full_id = self._env_aliases.get(
+                resolved_alias,
+                self._env_mutable_aliases.get(resolved_alias, (None, None)),
+            )
+        else:
+            raise ValueError("Alias type not supported")
+        if req_id and full_id:
+            return EnvID(req_id=req_id, full_id=full_id, arch=arch or arch_id())
+        return None
+
+    def env_for_alias(
+        self,
+        alias_type: AliasType,
+        resolved_alias: str,
+        arch: Optional[str] = None,
+    ) -> Optional[ResolvedEnvironment]:
+        env_id = self.env_id_for_alias(alias_type, resolved_alias, arch)
+        if env_id:
+            return self.env_for(resolved_alias[0], resolved_alias[1], arch)
+
+    def aliases_for_env(self, env_id: EnvID) -> Tuple[List[str], List[str]]:
+        # Returns immutable and mutable aliases
+        # We don't cache this as this is fairly infrequent use (just CLI)
+        immutable_aliases = [
+            k
+            for k, v in self._env_aliases.items()
+            if v == (env_id.req_id, env_id.full_id)
+        ]
+        mutable_aliases = [
+            k
+            for k, v in self._env_mutable_aliases.items()
+            if v == (env_id.req_id, env_id.full_id)
+        ]
+        return (
+            list(map(unresolve_env_alias, immutable_aliases)),
+            list(map(unresolve_env_alias, mutable_aliases)),
+        )
+
     @property
     def envs(self) -> Iterator[Tuple[EnvID, ResolvedEnvironment]]:
         for arch, per_arch_envs in self._resolved_environments.items():
@@ -749,10 +875,9 @@ class CachedEnvironmentInfo:
                 "Cannot update an environment of version %d with one of version %d"
                 % (self._version, cached_info._version)
             )
-        for alias, per_arch_aliases in cached_info._env_aliases.items():
-            to_update = self._env_aliases.setdefault(alias, {})
-            to_update.update(per_arch_aliases)
-        # Ignore _step_mappings as not currently used
+        self._step_mappings.update(cached_info._step_mappings)
+        self._env_mutable_aliases.update(cached_info._env_mutable_aliases)
+        self._env_aliases.update(cached_info._env_aliases)
 
         for arch, per_arch_envs in cached_info._resolved_environments.items():
             per_arch_resolved_env = self._resolved_environments.setdefault(arch, {})
@@ -764,6 +889,7 @@ class CachedEnvironmentInfo:
         result = {
             "version": 1,
             "mappings": self._step_mappings,
+            "mutable_aliases": self._env_mutable_aliases,
             "aliases": self._env_aliases,
         }  # type: Dict[str, Any]
         resolved_envs = {}
@@ -791,15 +917,25 @@ class CachedEnvironmentInfo:
         if version != 1:
             raise ValueError("Wrong version information for CachedInformationInfo")
 
-        aliases = d.get("aliases", {})  # type: Dict[str, Dict[str, Tuple[str, str]]]
+        step_mappings = d.get("mappings", {})  # type: Dict[str, Tuple[str, str]]
+        aliases = d.get("aliases", {})  # type: Dict[str, Tuple[str, str]]
+        mutable_aliases = d.get(
+            "mutable_aliases", {}
+        )  # type: Dict[str, Tuple[str, str]]
+
+        for k, v in step_mappings.items():
+            step_mappings[k] = tuple(v)
+        for k, v in aliases.items():
+            aliases[k] = tuple(v)
+        for k, v in mutable_aliases.items():
+            mutable_aliases[k] = tuple(v)
+
         resolved_environments_dict = d.get("environments", {})
         resolved_environments = (
             {}
         )  # type: Dict[str, Dict[str, Dict[str, Union[ResolvedEnvironment, str]]]]
         for arch, per_arch_envs in resolved_environments_dict.items():
             # Parse the aliases first to make sure we have all of them
-            aliases_per_arch = aliases.get(arch, {})
-            reverse_map = {v: k for k, v in aliases_per_arch.items()}
             resolved_per_req_id = {}
             for req_id, per_req_id_envs in per_arch_envs.items():
                 resolved_per_full_id = (
@@ -812,30 +948,17 @@ class CachedEnvironmentInfo:
                         # mapping
                         resolved_per_full_id[full_id] = env
                     else:
-                        alias = reverse_map.get((req_id, full_id), None)
                         resolved_env = ResolvedEnvironment.from_dict(
                             EnvID(req_id=req_id, full_id=full_id, arch=arch), env
                         )
-                        if alias:
-                            if resolved_env.env_alias != alias:
-                                raise ValueError(
-                                    "Alias '%s' does not match the one set in the environment '%s'"
-                                    % (alias, resolved_env.env_alias)
-                                )
-                            del reverse_map[(req_id, full_id)]
                         resolved_per_full_id[full_id] = resolved_env
                 resolved_per_req_id[req_id] = resolved_per_full_id
             resolved_environments[arch] = resolved_per_req_id
-            if reverse_map:
-                # If there is something left, it means we have aliases that are not resolved
-                raise CondaException(
-                    "Aliases %s do not map to known environments"
-                    % ", ".join(d["aliases"].keys())
-                )
         return cls(
             version,
-            step_mappings=d["mappings"],
-            env_aliases=d["aliases"],
+            step_mappings=step_mappings,
+            env_mutable_aliases=mutable_aliases,
+            env_aliases=aliases,
             resolved_environments=resolved_environments,
         )
 

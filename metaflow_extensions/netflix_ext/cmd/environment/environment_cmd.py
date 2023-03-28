@@ -1,35 +1,27 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import platform
+import shutil
 
 from functools import wraps
-from threading import local
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional, cast
 from metaflow._vendor import click
 
 from metaflow.cli import echo_dev_null, echo_always
 
 
-from metaflow import Step, metaflow_config, namespace
+from metaflow import Step, metaflow_config
 from metaflow.plugins import DATASTORES
 from metaflow.metaflow_config import DEFAULT_DATASTORE, DEFAULT_METADATA
 from metaflow.plugins import METADATA_PROVIDERS
 from metaflow_extensions.netflix_ext.plugins.conda.conda import Conda
 from metaflow_extensions.netflix_ext.plugins.conda.env_descr import (
-    EnvID,
-    ResolvedEnvironment,
+    AliasType,
+    arch_id,
+    resolve_env_alias,
 )
-from metaflow_extensions.netflix_ext.plugins.conda.utils import arch_id
 
 from .utils import (
-    env_id_from_step,
     download_mf_version,
-    local_instances_for_req_id,
-    parse_channels,
-    parse_deps,
-    pretty_print_env,
-    quiet_print_env,
-    req_id_from_spec,
 )
 
 
@@ -89,7 +81,7 @@ def cli(ctx):
     default=DEFAULT_DATASTORE,
     show_default=True,
     type=click.Choice([d.TYPE for d in DATASTORES]),
-    help="Data backend type",
+    help="Datastore type",
 )
 # For later support of different environment types.
 @click.option(
@@ -100,7 +92,9 @@ def cli(ctx):
     help="Type of environment to manage",
 )
 @click.option(
-    "--conda-root", default=None, help="Root path for Conda cached information"
+    "--conda-root",
+    default=None,
+    help="Root path for Conda cached information -- if None, uses METAFLOW_CONDA_<DS>ROOT",
 )
 @click.pass_context
 def environment(
@@ -111,7 +105,6 @@ def environment(
     environment: str,
     conda_root: Optional[str],
 ):
-    global echo
     if quiet:
         echo = echo_dev_null
     else:
@@ -141,6 +134,166 @@ def environment(
 
     obj.conda = Conda(obj.echo, obj.datastore_type)
     ctx.obj = obj
+
+
+@environment.command()
+@click.option("--name", default=None, help="Name of the environment to create")
+@click.option(
+    "--local-only/--no-local-only",
+    show_default=True,
+    default=False,
+    help="Only create if environment is known locally",
+)
+@click.option(
+    "--force/--no-force",
+    default=False,
+    show_default=True,
+    help="Recreate the environment if it already exists and remove the `into` directory "
+    "if it exists",
+)
+@click.option(
+    "--into",
+    default=None,
+    show_default=False,
+    type=click.Path(file_okay=False, writable=True, readable=True, resolve_path=True),
+    help="If the `envspec` refers to a Metaflow executed Step, downloads the step's "
+    "code package into this directory",
+)
+@click.argument("env-name")
+@click.pass_obj
+def create(
+    obj,
+    name: Optional[str] = None,
+    local_only: bool = False,
+    force: bool = False,
+    into: Optional[str] = None,
+    env_name: str = "",
+):
+    """
+    Create a local environment based on env-name.
+
+    env-name can either be:
+      - a pathspec in the form <flowname>/<runid>/<stepname>
+      - a partial hash (in the form of <req id>) -- this assumes the default environment
+        for that hash.
+      - a full hash (in the form of <req id>:<full id> or <full-id>
+      - a name for the environment (as added using `--alias` when resolving the environment
+        or using `metaflow environment alias`)
+    """
+    if into:
+        if os.path.exists(into):
+            if force:
+                shutil.rmtree(into)
+            elif not os.path.isdir(into) or len(os.listdir(into)) != 0:
+                raise ValueError(
+                    "'%s' is not a directory or not empty -- use --force to force"
+                    % into
+                )
+        else:
+            os.makedirs(into)
+    code_pkg = None
+    mf_version = None
+
+    alias_type, resolved_alias = resolve_env_alias(env_name)
+    if alias_type == AliasType.PATHSPEC:
+        task = Step(resolved_alias).task
+        code_pkg = task.code
+        mf_version = task.metadata_dict["metaflow_version"]
+
+    env_id_for_alias = cast(Conda, obj.conda).env_id_from_alias(env_name, local_only)
+    if env_id_for_alias is None:
+        raise ValueError(
+            "Environment '%s' does not refer to a known environment" % env_name
+        )
+    env = cast(Conda, obj.conda).environment(env_id_for_alias, local_only)
+    if env is None:
+        raise ValueError(
+            "Environment '%s' does not exist for this architecture" % (env_name)
+        )
+
+    name = name or "metaflowtmp_%s_%s" % (env.env_id.req_id, env.env_id.full_id)
+
+    existing_env = obj.conda.created_environment(name)
+    if existing_env:
+        if not force:
+            raise ValueError(
+                "Environment '%s' already exists; use --force to force recreating"
+                % name
+            )
+        obj.conda.remove_for_name(name)
+
+    if into:
+        os.chdir(into)
+        obj.conda.create_for_name(name, env, do_symlink=True)
+        if code_pkg:
+            code_pkg.tarball.extractall(path=".")
+        elif alias_type == AliasType.PATHSPEC:
+            # We get metaflow version and recreate it in the directory
+            obj.echo(
+                "Step '%s' does not have a code package -- "
+                "downloading active Metaflow version only" % env_name
+            )
+            download_mf_version("./__conda_python", mf_version)
+        obj.echo(
+            "Code package for %s downloaded into '%s' -- `__conda_python` is "
+            "the executable to use" % (env_name, into)
+        )
+    else:
+        obj.conda.create_for_name(name, env)
+
+    obj.echo(
+        "Created environment '%s' locally, activate with `%s activate %s`"
+        % (name, obj.conda.binary("conda"), name)
+    )
+    cast(Conda, obj.conda).write_out_environments()
+
+
+@environment.command()
+@click.option(
+    "--local-only/--no-local-only",
+    show_default=True,
+    default=False,
+    help="Only resolve source env using local information",
+)
+@click.argument("source_env")
+@click.argument("alias")
+@click.pass_obj
+def alias(obj, local_only: bool, source_env: str, alias: str):
+
+    env_id_for_alias = cast(Conda, obj.conda).env_id_from_alias(source_env, local_only)
+    if env_id_for_alias is None:
+        raise ValueError(
+            "Environment '%s' does not refer to a known environment" % source_env
+        )
+    cast(Conda, obj.conda).alias_environment(env_id_for_alias, ["env:%s" % alias])
+    cast(Conda, obj.conda).write_out_environments()
+
+
+@environment.command()
+@click.option(
+    "--default/--no-default",
+    default=True,
+    show_default=True,
+    help="Set the downloaded environment as default for its requirement ID",
+)
+@click.option(
+    "--arch",
+    default=None,
+    show_default=True,
+    help="Request this architecture -- defaults to current architecture if not specified",
+)
+@click.argument("source_env")
+@click.pass_obj
+def get(obj, default: bool, arch: Optional[str], source_env: str):
+    env = cast(Conda, obj.conda).environment_from_alias(source_env, arch)
+    if env is None:
+        raise ValueError(
+            "Environment '%s' does not refer to a known environment for %s"
+            % (source_env, arch or arch_id())
+        )
+    if default:
+        cast(Conda, obj.conda).set_default_environment(env.env_id)
+    cast(Conda, obj.conda).write_out_environments()
 
 
 # @environment.command(help="List resolved environments for a set of dependencies")
@@ -293,146 +446,3 @@ def environment(
 #                 is_default=True,
 #                 local_instances=local_instances.get(env.env_id.full_id),
 #             )
-
-
-@environment.command()
-@click.option("--name", default=None, help="Name of the environment to create")
-@click.option(
-    "--recreate/--no-recreate",
-    default=False,
-    show_default=True,
-    help="Recreate the environment if it already exists",
-)
-@click.option(
-    "--into",
-    default=None,
-    show_default=False,
-    type=click.Path(file_okay=False, writable=True, readable=True, resolve_path=True),
-    help="If specified and for pathspec ENVSPEC, downloads the code to this directory",
-)
-@click.argument(
-    "envspec",
-    help="Environment to create: either a Step pathspec or a name/tag for the environment",
-)
-@click.pass_obj
-def create(
-    obj,
-    name: Optional[str] = None,
-    recreate: bool = False,
-    into: Optional[str] = None,
-    envspec: str = "",
-):
-    """
-    Create a local environment based on ENVSPEC.
-
-    ENVSPEC can either be:
-      - a pathspec in the form <flowname>/<runid>/<stepname>
-      - a partial hash (in the form of <req id>) -- this assumes the default environment
-        for that hash.
-      - a full hash (in the form of <req id>:<full id> as returned by `list` for
-        example)
-      - a name for the environment (as added using `--tag` when resolving the environment
-        or using `metaflow tag`)
-    """
-    if into:
-        if os.path.exists(into):
-            if len(os.listdir(into)) != 0:
-                raise ValueError("Directory '%s' is not empty" % into)
-        else:
-            os.makedirs(into)
-    code_pkg = None
-    if len(envspec) == 1:
-        # This should be a pathspec
-        if len(envspec[0].split("/")) != 3:
-            raise ValueError(
-                "Pathspec should be in the form <flowname>/<runid>/<stepname>"
-            )
-        namespace(None)
-        step = Step(
-            envspec[0]
-        )  # Will raise MetaflowNotFound as expected if it doesn't exist
-        env_id = env_id_from_step(step)
-        code_pkg = step.task.code
-        mf_version = step.task.metadata_dict["metaflow_version"]
-    elif len(envspec) == 2:
-        # This should be req_id and full_id
-        req_id, full_id = envspec
-        env_id = EnvID(req_id=req_id, full_id=full_id, arch=arch_id())
-        if into:
-            obj.echo("Ignoring --into option since a pathspec was not given")
-            into = None
-    else:
-        raise ValueError("envspec not in the expected format")
-
-    env = obj.conda.environment(env_id, local_only=True)
-    if env is None:
-        env = obj.conda.environment(env_id)
-        # We are going to cache locally as well
-        if env:
-            obj.conda.write_out_environments()
-    if env is None:
-        raise ValueError(
-            "Environment for requirement hash %s (full hash %s) does not exist for "
-            "this architecture" % (env_id.req_id, env_id.full_id)
-        )
-    name = name or "metaflowtmp_%s_%s" % (env_id.req_id, env_id.full_id)
-
-    existing_env = obj.conda.created_environment(name)
-    if existing_env:
-        if not recreate:
-            raise ValueError(
-                "Environment '%s' already exists; use --recreate to force recreating"
-                % name
-            )
-        obj.conda.remove_for_name(name)
-
-    if into:
-        os.chdir(into)
-        obj.conda.create_for_name(name, env, do_symlink=True)
-        if code_pkg:
-            code_pkg.tarball.extractall(path=".")
-        else:
-            # We get metaflow version and recreate it in the directory
-            obj.echo(
-                "Step '%s' does not have a code package -- "
-                "downloading active Metaflow version only" % envspec[0]
-            )
-            download_mf_version("./__conda_python", mf_version)
-        obj.echo(
-            "Code package for %s downloaded into '%s' -- `__conda_python` is "
-            "the executable to use" % (envspec[0], into)
-        )
-    else:
-        obj.conda.create_for_name(name, env)
-
-    obj.echo(
-        "Created environment '%s' locally, activate with `%s activate %s`"
-        % (name, obj.conda.binary("conda"), name)
-    )
-
-
-@environment.command()
-@click.argument(
-    "source_env",
-    help="Source environment to tag (either <req id>:<full id> or pathspec or alias)",
-)
-@click.argument("dest_tag", help="Tag to use")
-@click.pass_obj
-def tag(obj, source_env: str, dest_tag: str):
-    pass
-
-
-@environment.command()
-@click.option(
-    "--default/--no-default",
-    default=True,
-    show_default=True,
-    help="Set the downloaded environment as default for its requirement ID",
-)
-@click.argument(
-    "source_env",
-    help="Source environment to get",
-)
-@click.pass_obj
-def tag(obj, default: bool, source_env: str):
-    pass

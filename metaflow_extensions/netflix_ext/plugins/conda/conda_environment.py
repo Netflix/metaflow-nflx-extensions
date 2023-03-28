@@ -1,41 +1,36 @@
 # pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
 
-from itertools import chain
 import json
 import os
-import time
 import tarfile
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from typing import (
     Any,
     Callable,
     Dict,
     List,
-    Mapping,
     Optional,
-    Sequence,
+    Set,
     Tuple,
     cast,
 )
 
 from metaflow.plugins.datastores.local_storage import LocalStorage
-from metaflow.debug import debug
 from metaflow.flowspec import FlowSpec
 
 from metaflow.metaflow_config import (
     CONDA_MAGIC_FILE_V2,
-    CONDA_PREFERRED_FORMAT,
 )
 
 from metaflow.metaflow_environment import MetaflowEnvironment
 
-from .utils import get_conda_manifest_path, plural_marker
+from .envsresolver import EnvsResolver
+from .utils import get_conda_manifest_path
 
 from .env_descr import CachedEnvironmentInfo, EnvID, ResolvedEnvironment
 from .conda import Conda
-from .conda_step_decorator import CondaStepDecorator, get_conda_decorator
+from .conda_step_decorator import get_conda_decorator
 
 
 class CondaEnvironment(MetaflowEnvironment):
@@ -47,16 +42,6 @@ class CondaEnvironment(MetaflowEnvironment):
         self._flow = flow
 
         self._conda = None  # type: Optional[Conda]
-
-        # key: EnvID; value: dict containing:
-        #  - "id": key
-        #  - "steps": steps using this environment
-        #  - "arch": architecture of the environment
-        #  - "deps": array of requested dependencies
-        #  - "channels": additional channels to search
-        #  - "resolved": ResolvedEnvironment or None
-        #  - "already_resolved": T/F
-        self._requested_envs = {}  # type: Dict[EnvID, Dict[str, Any]]
 
         # A conda environment sits on top of whatever default environment
         # the user has so we get that environment to be able to forward
@@ -80,79 +65,39 @@ class CondaEnvironment(MetaflowEnvironment):
         echo("Bootstrapping Conda environment... (this could take a few minutes)")
 
         self._conda = cast(Conda, self._conda)
+
+        resolver = EnvsResolver(self._conda)
+
         for step in self._flow:
             # Figure out the environments that we need to resolve for all steps
             # We will resolve all unique environments in parallel
-            step_conda_dec = get_conda_decorator(self._flow, step.__name__)
-            env_ids = step_conda_dec.env_ids
-            for env_id in env_ids:
-                resolved_env = self._conda.environment(env_id)
-                if env_id not in self._requested_envs:
-                    self._requested_envs[env_id] = {
-                        "id": env_id,
-                        "steps": [step.name],
-                        "deps": step_conda_dec.step_deps,
-                        "sources": step_conda_dec.source_deps,
-                        "conda_format": [CONDA_PREFERRED_FORMAT]
-                        if CONDA_PREFERRED_FORMAT
-                        else [],
-                        "resolved": resolved_env,
-                        "already_resolved": resolved_env is not None,
-                    }
-                else:
-                    self._requested_envs[env_id]["steps"].append(step.name)
+            step_conda_dec = get_conda_decorator(self._flow, step.name)
+            resolver.add_environment_for_step(step.name, step_conda_dec)
 
-        # At this point, we check in our backend storage if we have the files we need
+        resolver.resolve_environments(echo)
 
-        need_resolution = [
-            env_id
-            for env_id, req in self._requested_envs.items()
-            if req["resolved"] is None
-        ]
-        if debug.conda:
-            debug.conda_exec("Resolving environments:")
-            for env_id in need_resolution:
-                info = self._requested_envs[env_id]
-                debug.conda_exec(
-                    "%s (%s): %s" % (env_id.req_id, env_id.full_id, str(info))
-                )
-        if len(need_resolution):
-            self._resolve_environments(echo, need_resolution)
-
+        update_envs = []  # type: List[ResolvedEnvironment]
         if self._datastore_type != "local":
             # We may need to update caches
             # Note that it is possible that something we needed to resolve, we don't need
             # to cache (if we resolved to something already cached).
-            update_envs = [
-                request["resolved"]
-                for request in self._requested_envs.values()
-                if not request["already_resolved"]
-                or not request["resolved"].is_cached({"conda": request["conda_format"]})
-            ]
-            formats = list(
-                set(
-                    chain(
-                        *[
-                            request["conda_format"]
-                            for request in self._requested_envs.values()
-                        ]
-                    )
-                )
-            )
+            formats = set()  # type: Set[str]
+            for _, resolved_env, f, _ in resolver.need_caching_environments():
+                update_envs.append(resolved_env)
+                formats.update(f)
 
-            self._conda.cache_environments(update_envs, {"conda": formats})
+            self._conda.cache_environments(update_envs, {"conda": list(formats)})
         else:
             update_envs = [
-                request["resolved"]
-                for request in self._requested_envs.values()
-                if not request["already_resolved"]
+                resolved_env for _, resolved_env, _ in resolver.new_environments()
             ]
+
         self._conda.add_environments(update_envs)
 
         # Update the default environment
-        for env_id, request in self._requested_envs.items():
+        for env_id, resolved_env, _ in resolver.resolved_environments():
             if env_id.full_id == "_default":
-                self._conda.set_default_environment(request["resolved"].env_id)
+                self._conda.set_default_environment(resolved_env.env_id)
 
         # We are done -- write back out the environments.
         # TODO: Not great that this is manual
@@ -173,106 +118,6 @@ class CondaEnvironment(MetaflowEnvironment):
     def decospecs(self) -> Tuple[str, ...]:
         # Apply conda decorator and base environment's decorators to all steps
         return ("conda",) + self.base_env.decospecs()
-
-    def _resolve_environments(
-        self, echo: Callable[..., None], env_ids: Sequence[EnvID]
-    ):
-        start = time.time()
-        if len(env_ids) == len(self._requested_envs):
-            echo(
-                "    Resolving %d environment%s in flow ..."
-                % (len(env_ids), plural_marker(len(env_ids))),
-                nl=False,
-            )
-        else:
-            echo(
-                "    Resolving %d of %d environment%s in flow (others are cached) ..."
-                % (
-                    len(env_ids),
-                    len(self._requested_envs),
-                    plural_marker(len(self._requested_envs)),
-                ),
-                nl=False,
-            )
-
-        def _resolve(env_desc: Mapping[str, Any]) -> Tuple[EnvID, ResolvedEnvironment]:
-            self._conda = cast(Conda, self._conda)
-            env_id = cast(EnvID, env_desc["id"])
-            return (
-                env_id,
-                self._conda.resolve(
-                    env_desc["steps"],
-                    env_desc["deps"],
-                    env_desc["sources"],
-                    env_id.arch,
-                ),
-            )
-
-        self._conda = cast(Conda, self._conda)
-        # NOTE: Co-resolved environments allow you to resolve a bunch of "equivalent"
-        # environments for different platforms. This is great as it can allow you to
-        # run code on Linux and then instantiate an environment to look at it on Mac.
-        # One issue though is that the set of packages on Linux may change while those
-        # on mac may not (or vice versa) so it is possible to get in the following
-        # situation:
-        # - Co-resolve at time A:
-        #   - Get linux full_id 123 and mac full_id 456
-        # - Co-resolve later at time B:
-        #   - Get linux full_id 123 and mac full_id 789
-        # This is a problem because now the 1:1 correspondence between co-resolved
-        # environments (important for figuring out which environment to use) is broken
-        #
-        # To solve this problem, we consider that co-resolved environments participate
-        # in the computation of the full_id (basically a concatenation of all packages
-        # across all co-resolved environments). This maintains the 1:1 correspondence.
-        # It has a side benefit that we can use that same full_id for all co-resolved
-        # environment making one easier to find from the other (instead of using indirect
-        # links)
-        co_resolved_envs = (
-            {}
-        )  # type: Dict[str, List[Tuple[EnvID, ResolvedEnvironment]]]
-        if len(env_ids):
-            with ThreadPoolExecutor() as executor:
-                resolution_result = [
-                    executor.submit(_resolve, v)
-                    for k, v in self._requested_envs.items()
-                    if k in env_ids
-                ]
-                for f in as_completed(resolution_result):
-                    env_id, resolved_env = f.result()
-                    # This checks if there is the same resolved environment already
-                    # cached (in which case, we don't have to check a bunch of things
-                    # so makes it nicer)
-                    co_resolved_envs.setdefault(env_id.req_id, []).append(
-                        (env_id, resolved_env)
-                    )
-
-            # Now we know all the co-resolved environments so we can compute the full
-            # ID for all those environments
-            for envs in co_resolved_envs.values():
-                if len(envs) > 1:
-                    ResolvedEnvironment.set_coresolved_full_id([x[1] for x in envs])
-
-                for orig_env_id, resolved_env in envs:
-                    resolved_env_id = resolved_env.env_id
-                    cached_resolved_env = self._conda.environment(resolved_env_id)
-                    if cached_resolved_env:
-                        resolved_env = cached_resolved_env
-                        self._requested_envs[orig_env_id]["already_resolved"] = True
-
-                    self._requested_envs[orig_env_id]["resolved"] = resolved_env
-                    debug.conda_exec(
-                        "For environment %s (%s) (deps: %s), need packages %s"
-                        % (
-                            orig_env_id.req_id,
-                            orig_env_id.full_id,
-                            ";".join(map(str, resolved_env.deps)),
-                            ", ".join([p.filename for p in resolved_env.packages]),
-                        )
-                    )
-
-        duration = int(time.time() - start)
-        echo(" done in %d second%s." % (duration, plural_marker(duration)))
 
     def _get_env_id(self, step_name: str) -> Optional[EnvID]:
         conda_decorator = get_conda_decorator(self._flow, step_name)
@@ -352,7 +197,7 @@ class CondaEnvironment(MetaflowEnvironment):
 
             cls._filecache = FileCache()
         info = metadata.get("code-package")
-        env_id = json.loads(metadata.get("conda_env_id", "{}"))
+        env_id = json.loads(metadata.get("conda_env_id", "[]"))
         if info is None or not env_id:
             return {"type": "conda"}
         info = json.loads(info)
@@ -366,12 +211,12 @@ class CondaEnvironment(MetaflowEnvironment):
         cached_env_info = CachedEnvironmentInfo.from_dict(
             json.loads(conda_file.read().decode("utf-8"))
         )
-        resolved_env = cached_env_info.env_for(env_id["req_id"], env_id["full_id"])
+        resolved_env = cached_env_info.env_for(env_id[0], env_id[1])
         if resolved_env:
             new_info = {
                 "type": "conda",
-                "req_id": env_id["req_id"],
-                "full_id": env_id["full_id"],
+                "req_id": env_id[0],
+                "full_id": env_id[1],
                 "user_deps": "; ".join(map(str, resolved_env.deps)),
                 "all_packages": "; ".join([p.filename for p in resolved_env.packages]),
             }

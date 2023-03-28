@@ -2,10 +2,14 @@
 
 import os
 import platform
+import re
 
-from shutil import which
+from enum import Enum
+from itertools import chain, product
 from typing import NamedTuple, Optional, Sequence, Tuple, Union
 from urllib.parse import urlparse
+
+from metaflow_extensions.netflix_ext.vendor.packaging.tags import cpython_tags
 
 from metaflow.exception import MetaflowException
 import metaflow.metaflow_config as mf_config
@@ -20,6 +24,16 @@ from metaflow.metaflow_environment import InvalidEnvironmentException
 # transmute code does (since you can only specify the infile -- the outformat and file
 # are inferred)
 _ALL_CONDA_FORMATS = (".tar.bz2", ".conda")
+_VALID_IMAGE_NAME = "[^a-z0-9_/]"
+_VALID_TAG_NAME = "[^a-z0-9]"
+
+
+class AliasType(Enum):
+    PATHSPEC = "pathspec"
+    FULL_ID = "full-id"
+    REQ_FULL_ID = "both-id"
+    GENERIC = "generic"
+
 
 # List of formats that guarantees the preferred format is first. This is important as
 # functions that rely on selecting the "preferred" source of a package rely on the
@@ -32,10 +46,6 @@ if CONDA_PREFERRED_FORMAT:
 else:
     CONDA_FORMATS = _ALL_CONDA_FORMATS  # type: Tuple[str, ...]
 TRANSMUT_PATHCOMPONENT = "_transmut"
-
-
-# On Linux systems, called md5sum and md5 on mac
-_md5sum_path = which("md5sum") or which("md5")
 
 
 class CondaException(MetaflowException):
@@ -90,7 +100,7 @@ def arch_id() -> str:
     if platform.system() == "Linux":
         return "linux-%s" % bit
     elif platform.system() == "Darwin":
-        # Support M1 Macmetaf
+        # Support M1 Mac
         if platform.machine() == "arm64":
             return "osx-arm64"
         else:
@@ -100,6 +110,47 @@ def arch_id() -> str:
             "The *@conda* decorator is not supported "
             "outside of Linux and Darwin platforms"
         )
+
+
+def pip_platform_args(python_version: str, arch: str) -> Sequence[str]:
+    # Converts a Conda architecture to the arguments we pass to pip
+    # to get packages for that platform
+    py_version = tuple(map(int, python_version.split(".")))
+    if arch.startswith("linux-"):
+        detail = arch.split("-")[-1]
+        if detail == "64":
+            detail = "x86_64"
+        platforms = [
+            "manylinux%s_%s" % (tag, arch) for tag in ["_2_17", "2014", "2010", "1"]
+        ]
+        platforms.append("linux_%s" % arch)
+    elif arch == "osx-64":
+        platforms = [
+            "macosx_10_9_x86_64",
+            *("macosx_10_%s_universal2" % v for v in range(16, 3, -1)),
+            *("macosx_10_%s_universal" % v for v in range(16, 3, -1)),
+        ]
+    elif arch == "osx-arm64":
+        platforms = [
+            "macosx_11_0_arm64",
+            *("macosx_10_%s_universal2" % v for v in range(16, 3, -1)),
+        ]
+    else:
+        raise InvalidEnvironmentException("Unsupported platform: %s" % arch)
+
+    platforms = []
+    # We now have all the platforms, we also need the abis for CPython.
+    abis = [
+        x
+        for x in map(lambda x: x.abi, cpython_tags(py_version, platforms=["_"]))
+        if x not in ["none", "abi3"]
+    ]
+    return [
+        "--implementation",
+        "cp",
+        *(chain.from_iterable(product(["--platform"], platforms))),
+        *(chain.from_iterable(product(["--abi"], abis))),
+    ]
 
 
 ParseExplicitResult = NamedTuple(
@@ -165,3 +216,67 @@ def parse_explicit_url_pip(url: str) -> ParseExplicitResult:
 
 def plural_marker(count: int) -> str:
     return "s" if count != 1 else ""
+
+
+def is_hexadecimal(s: str) -> bool:
+    return not re.search("[^0-9a-f]", s)
+
+
+def resolve_env_alias(env_alias: str) -> Tuple[AliasType, str]:
+    if env_alias.startswith("env:"):
+        env_alias = env_alias[4:]
+        splits = env_alias.rsplit(":", 1)
+        if len(splits) == 2:
+            image_name = splits[0]
+            image_tag = splits[1]
+        else:
+            image_name = env_alias
+            image_tag = "latest"
+        if re.search(_VALID_IMAGE_NAME, image_name):
+            raise MetaflowException(
+                "An environment name must contain only "
+                "lowercase alphanumeric characters, underscores and forward slashes."
+            )
+        if image_name[0] == "/" or image_name[-1] == "/":
+            raise MetaflowException(
+                "An environment name must not start or end with '/'"
+            )
+        if re.search(_VALID_TAG_NAME, image_tag):
+            raise MetaflowException(
+                "An environment tag name must contain only "
+                "lowercase alphanumeric characters and underscores."
+            )
+        return AliasType.GENERIC, "/".join([image_name, image_tag])
+    # If it doesn't start with env:, it can either be:
+    #  - a full-id
+    #  - a req-id:full-id
+    #  - a pathspec to a step
+    if len(env_alias) == 81 and env_alias[40] == ":":
+        # req-id:full-id possibly
+        req_id, full_id = env_alias.split(":", 1)
+        if is_hexadecimal(req_id) and is_hexadecimal(full_id):
+            return AliasType.REQ_FULL_ID, env_alias
+    elif len(env_alias) == 40 and is_hexadecimal(env_alias):
+        return AliasType.FULL_ID, env_alias
+    else:
+        path_spec_components = env_alias.split("/")
+        if len(path_spec_components) == 3:
+            return AliasType.PATHSPEC, env_alias
+    raise MetaflowException("Invalid format for environment alias: '%s'" % env_alias)
+
+
+# This function assumes the resolved_alias is *not* a pathspec
+def unresolve_env_alias(resolved_alias: str) -> str:
+    # if req-id/full-id
+    if (len(resolved_alias) == 81 and resolved_alias[40] == ":") or (
+        len(resolved_alias) == 40 and is_hexadecimal(resolved_alias)
+    ):
+        return resolved_alias
+    return "env:" + ":".join(resolved_alias.rsplit("/", 1))
+
+
+def is_alias_mutable(alias_type: AliasType, env_alias: str) -> bool:
+    if alias_type != AliasType.GENERIC:
+        return False
+    splits = env_alias.rsplit("/", 1)
+    return len(splits) == 2 and splits[1] in ("latest", "candidate", "stable")
