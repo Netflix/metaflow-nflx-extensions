@@ -126,9 +126,9 @@ class Conda(object):
         # We don't need much at all in remote mode.
         if self._mode == "local":
             self._resolvers = {
-                EnvType.PIP_ONLY: CONDA_PIP_DEPENDENCY_RESOLVER.lower(),
-                EnvType.MIXED: CONDA_MIXED_DEPENDENCY_RESOLVER.lower(),
-                EnvType.CONDA_ONLY: CONDA_DEPENDENCY_RESOLVER.lower(),
+                EnvType.PIP_ONLY: CONDA_PIP_DEPENDENCY_RESOLVER,
+                EnvType.MIXED: CONDA_MIXED_DEPENDENCY_RESOLVER,
+                EnvType.CONDA_ONLY: CONDA_DEPENDENCY_RESOLVER,
             }  # type: Dict[EnvType, Optional[str]]
         else:
             self._resolvers = {
