@@ -39,7 +39,6 @@ from .utils import (
     convert_filepath,
     get_conda_manifest_path,
     is_alias_mutable,
-    unresolve_env_alias,
 )
 
 # Order should be maintained
@@ -533,6 +532,7 @@ class ResolvedEnvironment:
         resolved_by: Optional[str] = None,
         co_resolved: Optional[List[str]] = None,
         env_type: EnvType = EnvType.MIXED,
+        accurate_source: bool = True,
     ):
         self._env_type = env_type
         self._user_dependencies = list(user_dependencies)
@@ -540,6 +540,8 @@ class ResolvedEnvironment:
         if all_packages is not None:
             # It should already be sorted but being very safe
             all_packages = sorted(all_packages, key=lambda p: p.filename)
+
+        self._accurate_source = accurate_source
 
         if not env_id:
             env_req_id = ResolvedEnvironment.get_req_id(
@@ -563,6 +565,7 @@ class ResolvedEnvironment:
         self._resolved_on = resolved_on or datetime.now()
         self._resolved_by = resolved_by or get_username() or "unknown"
         self._co_resolved = co_resolved or [arch or arch_id()]
+        self._parent = None  # type: Optional["CachedEnvironmentInfo"]
 
     @staticmethod
     def get_req_id(
@@ -598,6 +601,10 @@ class ResolvedEnvironment:
         new_full_id = ResolvedEnvironment._compute_hash(to_hash)
         for env in envs:
             env.set_coresolved(archs, new_full_id)
+
+    @property
+    def is_info_accurate(self) -> bool:
+        return not self.accurate_source
 
     @property
     def deps(self) -> List[TStr]:
@@ -642,6 +649,9 @@ class ResolvedEnvironment:
     def env_type(self) -> EnvType:
         return self._env_type
 
+    def set_parent(self, parent: "CachedEnvironmentInfo"):
+        self._parent = parent
+
     def add_package(self, pkg: PackageSpecification):
         self._all_packages.append(pkg)
         if self._env_id.full_id not in ("_default", "_unresolved"):
@@ -652,6 +662,152 @@ class ResolvedEnvironment:
             req_id=self._env_id.req_id, full_id=full_id, arch=self._env_id.arch
         )
         self._co_resolved = archs
+
+    def pretty_print(self, local_instances: Optional[List[str]]) -> str:
+        lines = []  # type: List[str]
+        pip_packages = []  # type: List[PackageSpecification]
+        conda_packages = []  # type: List[PackageSpecification]
+        for p in self.packages:
+            if p.TYPE == "pip":
+                pip_packages.append(p)
+            else:
+                conda_packages.append(p)
+
+        pip_packages.sort(key=lambda x: x.package_name)
+        conda_packages.sort(key=lambda x: x.package_name)
+
+        if self._parent:
+            immutable_aliases, mutable_aliases = self._parent.aliases_for_env(
+                self.env_id
+            )
+            immutable_aliases = [
+                a for a in immutable_aliases if a != self.env_id.full_id
+            ]
+            is_default = (
+                self._parent.get_default(self.env_id.req_id, self.env_id.arch)
+                == self.env_id
+            )
+        else:
+            immutable_aliases = []
+            mutable_aliases = []
+            is_default = False
+
+        lines.append(
+            "*%sEnvironment of type %s full hash* %s:%s"
+            % (
+                "DEFAULT " if is_default else "",
+                self.env_type.value,
+                self.env_id.req_id,
+                self.env_id.full_id,
+            )
+        )
+        if immutable_aliases or mutable_aliases:
+            lines.append(
+                "*Aliases* %s"
+                % ", ".join(
+                    chain(
+                        map(lambda x: ":".join(x.rsplit("/", 1)), immutable_aliases),
+                        (
+                            "%s (mutable)" % ":".join(a.rsplit("/", 1))
+                            for a in mutable_aliases
+                        ),
+                    )
+                )
+            )
+        lines.extend(
+            [
+                "*Arch* %s" % self.env_id.arch,
+                "*Available on* %s" % ", ".join(self.co_resolved_archs),
+                "",
+                "*Resolved on* %s" % self.resolved_on,
+                "*Resolved by* %s" % self.resolved_by,
+                "",
+            ]
+        )
+        if local_instances:
+            lines.extend(["*Locally present as* %s" % ", ".join(local_instances), ""])
+
+        lines.append(
+            "*User-requested packages* %s" % ", ".join([str(d) for d in self.deps])
+        )
+
+        if self.sources:
+            lines.append(
+                "*User sources* %s" % ", ".join([str(s) for s in self.sources])
+            )
+        lines.append("")
+
+        if conda_packages:
+            lines.append(
+                "*Conda Packages installed* %s"
+                % ", ".join(
+                    [
+                        "%s==%s" % (p.package_name, p.package_version)
+                        for p in conda_packages
+                    ]
+                )
+            )
+
+        if pip_packages:
+            lines.append(
+                "*Pip Packages installed* %s"
+                % ", ".join(
+                    [
+                        "%s==%s" % (p.package_name, p.package_version)
+                        for p in pip_packages
+                    ]
+                )
+            )
+        lines.append("")
+        return "\n".join(lines)
+
+    def quiet_print(self, local_instances: Optional[List[str]] = None) -> str:
+        pip_packages = []  # type: List[PackageSpecification]
+        conda_packages = []  # type: List[PackageSpecification]
+        for p in self.packages:
+            if p.TYPE == "pip":
+                pip_packages.append(p)
+            else:
+                conda_packages.append(p)
+
+        pip_packages.sort(key=lambda x: x.package_name)
+        conda_packages.sort(key=lambda x: x.package_name)
+
+        if self._parent:
+            immutable_aliases, mutable_aliases = self._parent.aliases_for_env(
+                self.env_id
+            )
+            immutable_aliases = [
+                a for a in immutable_aliases if a != self.env_id.full_id
+            ]
+        else:
+            immutable_aliases = []
+            mutable_aliases = []
+
+        aliases = ",".join(
+            chain(
+                map(lambda x: ":".join(x.rsplit("/", 1)), immutable_aliases),
+                ("%s(m)" % ":".join(a.rsplit("/", 1)) for a in mutable_aliases),
+            )
+        )
+        return "%s %s %s %s %s %s %s %s %s conda:%s pip:%s %s" % (
+            self.env_id.req_id,
+            self.env_id.full_id,
+            aliases,
+            self.env_id.arch,
+            self.resolved_on.isoformat(),
+            self.resolved_by,
+            ",".join(self.co_resolved_archs),
+            ",".join([str(d) for d in self.deps]),
+            ",".join([str(s) for s in self.sources]) if self.sources else "NONE",
+            ",".join(
+                ["%s==%s" % (p.package_name, p.package_version) for p in conda_packages]
+            ),
+            ",".join(
+                ["%s==%s" % (p.package_name, p.package_version) for p in pip_packages]
+            ),
+            ",".join(local_instances) if local_instances else "NONE",
+        )
 
     def is_cached(self, formats: Dict[str, List[str]]) -> bool:
         return all([pkg.is_cached(formats.get(pkg.TYPE, [])) for pkg in self.packages])
@@ -683,6 +839,7 @@ class ResolvedEnvironment:
             resolved_by=d["resolved_by"],
             co_resolved=d["resolved_archs"],
             env_type=EnvType(d.get("env_type", EnvType.MIXED.value)),
+            accurate_source=d.get("accurate_source", True),
         )
 
     @staticmethod
@@ -752,6 +909,7 @@ class CachedEnvironmentInfo:
         per_req_id_envs = per_arch_envs.setdefault(env_id.req_id, {})
         per_req_id_envs[env_id.full_id] = env
 
+        env.set_parent(self)
         # Update _env_aliases adding the full_id so we can look up an environment
         # directly by the full_id
         v = self._env_aliases.setdefault(
@@ -853,10 +1011,7 @@ class CachedEnvironmentInfo:
             for k, v in self._env_mutable_aliases.items()
             if v == (env_id.req_id, env_id.full_id)
         ]
-        return (
-            list(map(unresolve_env_alias, immutable_aliases)),
-            list(map(unresolve_env_alias, mutable_aliases)),
-        )
+        return (immutable_aliases, mutable_aliases)
 
     @property
     def envs(self) -> Iterator[Tuple[EnvID, ResolvedEnvironment]]:
@@ -954,13 +1109,20 @@ class CachedEnvironmentInfo:
                         resolved_per_full_id[full_id] = resolved_env
                 resolved_per_req_id[req_id] = resolved_per_full_id
             resolved_environments[arch] = resolved_per_req_id
-        return cls(
+        me = cls(
             version,
             step_mappings=step_mappings,
             env_mutable_aliases=mutable_aliases,
             env_aliases=aliases,
             resolved_environments=resolved_environments,
         )
+        for per_arch in resolved_environments.values():
+            for per_req in per_arch.values():
+                for env in per_req.values():
+                    if isinstance(env, ResolvedEnvironment):
+                        env.set_parent(me)
+
+        return me
 
 
 def read_conda_manifest(ds_root: str) -> CachedEnvironmentInfo:

@@ -223,8 +223,25 @@ def is_hexadecimal(s: str) -> bool:
 
 
 def resolve_env_alias(env_alias: str) -> Tuple[AliasType, str]:
-    if env_alias.startswith("env:"):
-        env_alias = env_alias[4:]
+    if env_alias.startswith("pathspec:"):
+        env_alias = env_alias[9:]
+        if len(env_alias.split("/")) == 3:
+            return AliasType.PATHSPEC, env_alias
+    elif len(env_alias) == 81 and env_alias[40] == ":":
+        # req-id:full-id possibly
+        req_id, full_id = env_alias.split(":", 1)
+        if is_hexadecimal(req_id) and is_hexadecimal(full_id):
+            return AliasType.REQ_FULL_ID, env_alias
+    elif len(env_alias) == 40 and is_hexadecimal(env_alias):
+        # For now we do not support this -- remove if you want to support
+        # The issue with supporting this is that a full-id can refer to multiple req-id
+        # so it is impossible to unambiguously identify the source environment (ie:
+        # the user requested dependencies, etc)
+        raise MetaflowException(
+            "Invalid format for environment alias: '%s'" % env_alias
+        )
+        # return AliasType.FULL_ID, env_alias
+    else:
         splits = env_alias.rsplit(":", 1)
         if len(splits) == 2:
             image_name = splits[0]
@@ -247,32 +264,7 @@ def resolve_env_alias(env_alias: str) -> Tuple[AliasType, str]:
                 "lowercase alphanumeric characters and underscores."
             )
         return AliasType.GENERIC, "/".join([image_name, image_tag])
-    # If it doesn't start with env:, it can either be:
-    #  - a full-id
-    #  - a req-id:full-id
-    #  - a pathspec to a step
-    if len(env_alias) == 81 and env_alias[40] == ":":
-        # req-id:full-id possibly
-        req_id, full_id = env_alias.split(":", 1)
-        if is_hexadecimal(req_id) and is_hexadecimal(full_id):
-            return AliasType.REQ_FULL_ID, env_alias
-    elif len(env_alias) == 40 and is_hexadecimal(env_alias):
-        return AliasType.FULL_ID, env_alias
-    else:
-        path_spec_components = env_alias.split("/")
-        if len(path_spec_components) == 3:
-            return AliasType.PATHSPEC, env_alias
     raise MetaflowException("Invalid format for environment alias: '%s'" % env_alias)
-
-
-# This function assumes the resolved_alias is *not* a pathspec
-def unresolve_env_alias(resolved_alias: str) -> str:
-    # if req-id/full-id
-    if (len(resolved_alias) == 81 and resolved_alias[40] == ":") or (
-        len(resolved_alias) == 40 and is_hexadecimal(resolved_alias)
-    ):
-        return resolved_alias
-    return "env:" + ":".join(resolved_alias.rsplit("/", 1))
 
 
 def is_alias_mutable(alias_type: AliasType, env_alias: str) -> bool:

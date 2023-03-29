@@ -121,11 +121,21 @@ class Conda(object):
         self._mode = mode
         self._bins = None  # type: Optional[Dict[str, Optional[str]]]
         self._conda_executable_type = None  # type: Optional[str]
-        self._resolvers = {
-            EnvType.PIP_ONLY: CONDA_PIP_DEPENDENCY_RESOLVER.lower(),
-            EnvType.MIXED: CONDA_MIXED_DEPENDENCY_RESOLVER.lower(),
-            EnvType.CONDA_ONLY: CONDA_DEPENDENCY_RESOLVER.lower(),
-        }  # type: Dict[EnvType, Optional[str]]
+
+        # For remote mode, make sure we are not going to try to check too much
+        # We don't need much at all in remote mode.
+        if self._mode == "local":
+            self._resolvers = {
+                EnvType.PIP_ONLY: CONDA_PIP_DEPENDENCY_RESOLVER.lower(),
+                EnvType.MIXED: CONDA_MIXED_DEPENDENCY_RESOLVER.lower(),
+                EnvType.CONDA_ONLY: CONDA_DEPENDENCY_RESOLVER.lower(),
+            }  # type: Dict[EnvType, Optional[str]]
+        else:
+            self._resolvers = {
+                EnvType.PIP_ONLY: None,
+                EnvType.MIXED: None,
+                EnvType.CONDA_ONLY: "micromamba",
+            }  # type: Dict[EnvType, Optional[str]]
 
         self._have_micromamba_server = False  # type: bool
         self._micromamba_server_port = None  # type: Optional[int]
@@ -280,6 +290,7 @@ class Conda(object):
         sources: Sequence[TStr],
         architecture: str,
         inputs_are_addl: bool = True,
+        cur_is_accurate: bool = True,
     ) -> ResolvedEnvironment:
         if self._mode != "local":
             # TODO: Maybe relax this later but for now assume that the remote environment
@@ -360,6 +371,7 @@ class Conda(object):
             architecture,
             all_packages=merged_packages,
             env_type=new_resolved_env.env_type,
+            accurate_source=cur_is_accurate,
         )
 
     def create_for_step(
@@ -1659,6 +1671,45 @@ class Conda(object):
             )
         self._start_micromamba_server()
 
+        def _poetry_exec(cmd: str, *args: str):
+            # Execute where conda-lock is installed since we are using that
+            # anyways
+            if CONDA_LOCAL_PATH:
+                python_exec = os.path.join(CONDA_LOCAL_PATH, "bin", "python")
+            else:
+                python_exec = sys.executable
+            try:
+                arg_list = [
+                    python_exec,
+                    "-c",
+                    cmd,
+                    *args,
+                ]
+                debug.conda_exec("Poetry repo management call: %s" % " ".join(arg_list))
+                subprocess.check_output(arg_list, stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError as e:
+                print(
+                    "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
+                    if e.output
+                    else "<None>",
+                    file=sys.stderr,
+                )
+                print(
+                    "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
+                    if e.stderr
+                    else "<None>",
+                    file=sys.stderr,
+                )
+                raise CondaException(
+                    "Could not manage poetry's dependency using '{cmd}' -- got error"
+                    "code {code}'; see pretty-printed error above".format(
+                        cmd=e.cmd, code=e.returncode
+                    )
+                )
+
+        pip_channels = (CONDA_DEFAULT_PIP_SOURCES or []) + [
+            c.value for c in channels if c.category == "pip"
+        ]  # type: List[str]
         try:
             # We resolve the environment using conda-lock
 
@@ -1688,71 +1739,25 @@ class Conda(object):
             # some change in where the config file lives on mac so if there is
             # a version mismatch, if we set with poetry, conda-lock may not be able
             # to read it.
-            pip_channels = (CONDA_DEFAULT_PIP_SOURCES or []) + [
-                c.value for c in channels if c.category == "pip"
-            ]  # type: List[str]
             if pip_channels:
-                if CONDA_LOCAL_PATH is not None:
-                    # Execute where conda-lock is installed since we are using that
-                    # anyways
-                    python_exec = os.path.join(CONDA_LOCAL_PATH, "bin", "python")
-                    # This works with 1.1.15 which is what is bundled in conda-lock.
-                    # In newer versions, there is a Config.create() directly
-                    python_cmd = (
-                        "import json; import sys; "
-                        "from pathlib import Path; "
-                        "from conda_lock._vendor.poetry.factory import Factory; "
-                        "translation_table = str.maketrans(':/.', '___'); "
-                        "poetry_config = Factory.create_config(); "
-                        "Path(poetry_config.config_source.name).parent.mkdir(parents=True, exist_ok=True); "
-                        "channels = json.loads(sys.argv[1]); "
-                        "[poetry_config.config_source.add_property("
-                        "'repositories.%s.url' % c.translate(translation_table), c) "
-                        "for c in channels]"
-                    )
-                    try:
-                        arg_list = [
-                            python_exec,
-                            "-c",
-                            python_cmd,
-                            json.dumps(pip_channels),
-                        ]
-                        debug.conda_exec(
-                            "Set poetry repos call: %s" % " ".join(arg_list)
-                        )
-                        subprocess.check_output(arg_list, stderr=subprocess.STDOUT)
-                    except subprocess.CalledProcessError as e:
-                        print(
-                            "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
-                            if e.output
-                            else "<None>",
-                            file=sys.stderr,
-                        )
-                        print(
-                            "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
-                            if e.stderr
-                            else "<None>",
-                            file=sys.stderr,
-                        )
-                        raise CondaException(
-                            "Could not set poetry's dependency using '{cmd}' -- got error"
-                            "code {code}'; see pretty-printed error above".format(
-                                cmd=e.cmd, code=e.returncode
-                            )
-                        )
-                else:
-                    # This works with more recent versions of poetry.
-                    from pathlib import Path
-                    from conda_lock._vendor.poetry.config.config import Config
-
-                    translation_table = str.maketrans(":/.", "___")
-                    poetry_config = Config.create()
-                    Path(poetry_config.config_source.name).parent.mkdir(
-                        parents=True, exist_ok=True
-                    )
-                    for c in pip_channels:
-                        k = "repositories.%s.url" % c.translate(translation_table)
-                        poetry_config.config_source.add_property(k, c)
+                # This works with 1.1.15 which is what is bundled in conda-lock.
+                # In newer versions, there is a Config.create() directly
+                # TODO: Check what to do based on version of conda-lock if conda-lock
+                # changes the bundled version.
+                python_cmd = (
+                    "import json; import sys; "
+                    "from pathlib import Path; "
+                    "from conda_lock._vendor.poetry.factory import Factory; "
+                    "translation_table = str.maketrans(':/.', '___'); "
+                    "poetry_config = Factory.create_config(); "
+                    "Path(poetry_config.config_source.name).parent.mkdir(parents=True, exist_ok=True); "
+                    "channels = json.loads(sys.argv[1]); "
+                    "[poetry_config.config_source.add_property("
+                    "'repositories.metaflow_inserted_%s.url' % "
+                    "c.translate(translation_table), c) "
+                    "for c in channels]"
+                )
+                _poetry_exec(python_cmd, json.dumps(pip_channels))
 
             # Add deps
 
@@ -1865,6 +1870,18 @@ class Conda(object):
         finally:
             if outfile_name and os.path.isfile(outfile_name):
                 os.unlink(outfile_name)
+            if pip_channels:
+                # Clean things up in poetry
+                python_cmd = (
+                    "from pathlib import Path; "
+                    "from conda_lock._vendor.poetry.factory import Factory; "
+                    "poetry_config = Factory.create_config(); "
+                    "Path(poetry_config.config_source.name).parent.mkdir(parents=True, exist_ok=True); "
+                    "[poetry_config.config_source.remove_property('repositories.%s' % p) for p in "
+                    "poetry_config.all().get('repositories', {}) "
+                    "if p.startswith('metaflow_inserted_')]; "
+                )
+                _poetry_exec(python_cmd)
 
     def _find_conda_binary(self):
         # Lock as we may be trying to resolve multiple environments at once and therefore
@@ -1990,6 +2007,7 @@ class Conda(object):
             self._bins = {
                 "conda": subprocess.check_output(args).decode("utf-8").strip()
             }
+            self._bins["micromamba"] = self._bins["conda"]
             self._conda_executable_type = "micromamba"
 
     def _install_remote_conda(self):
@@ -2030,7 +2048,7 @@ class Conda(object):
             | stat.S_IROTH
             | stat.S_IXOTH,
         )
-        self._bins = {"conda": final_path}
+        self._bins = {"conda": final_path, "micromamba": final_path}
         self._conda_executable_type = "micromamba"
 
     def _validate_conda_installation(self) -> Optional[Exception]:

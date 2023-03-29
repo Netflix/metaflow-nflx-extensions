@@ -64,10 +64,14 @@ class CondaStepDecorator(StepDecorator):
 
     Parameters
     ----------
-    from_env : Optional[str]
-        If specified, can refer to a specific environment. The format for this string
-        is <env name>:<version>. The <env name> can optionally contain "/" to help
-        with unique naming. This functions very similarly to Docker tags.
+    name : Optional[str]
+        If specified, can refer to a named environment. The environment referred to
+        here will be the one used for this step. If specified, nothing else can be
+        specified in this decorator
+    pathspec : Optional[str]
+        If specified, can refer to the pathspec of an existing step. The environment
+        of this referred step will be used here. If specified, nothing else can be
+        specified in this decorator.
     libraries : Dict[str, str]
         Libraries to use for this step. The key is the name of the package
         and the value is the version to use (default: `{}`). Note that versions can
@@ -79,7 +83,7 @@ class CondaStepDecorator(StepDecorator):
         Same as libraries but for pip packages
     pip_sources : List[str]
         Same as channels but for pip sources
-    python : string
+    python : str
         Version of Python to use, e.g. '3.7.4'
         (default: None, i.e. the current Python version).
     disabled : bool
@@ -88,7 +92,8 @@ class CondaStepDecorator(StepDecorator):
 
     name = "conda"
     defaults = {
-        "from_env": None,
+        "name": None,
+        "pathspec": None,
         "libraries": {},
         "channels": [],
         "pip_packages": {},
@@ -166,8 +171,9 @@ class CondaStepDecorator(StepDecorator):
             deps = []
         else:
             deps = [TStr("conda", "python==%s" % self._python_version())]
+        # Empty version will just be "I want this package with no version constraints"
         deps.extend(
-            TStr("conda", "%s==%s" % (name, ver))
+            TStr("conda", "%s==%s" % (name, ver) if ver else name)
             for name, ver in self._conda_deps().items()
         )
         # If we have an empty version, we consider that the name is a direct
@@ -225,7 +231,7 @@ class CondaStepDecorator(StepDecorator):
     ):
         if environment.TYPE != "conda":
             raise InvalidEnvironmentException(
-                "The *@conda* decorator requires " "--environment=conda"
+                "The *@%s* decorator requires " "--environment=conda" % self.name
             )
 
         self._echo = logger
@@ -253,6 +259,18 @@ class CondaStepDecorator(StepDecorator):
         self._from_env_conda_channels = None  # type: Optional[List[str]]
         self._from_env_pip_deps = None  # type: Optional[Dict[str, str]]
         self._from_env_pip_sources = None  # type: Optional[List[str]]
+
+        if (self.attributes["name"] or self.attributes["pathspec"]) and len(
+            [
+                k
+                for k, v in self.attributes.items()
+                if v and k not in ("name", "pathspec")
+            ]
+        ):
+            raise InvalidEnvironmentException(
+                "You cannot specify `name` or `pathspec` along with other attributes in @%s"
+                % self.name
+            )
 
         os.environ["PYTHONNOUSERSITE"] = "1"
 
@@ -422,8 +440,14 @@ class CondaStepDecorator(StepDecorator):
             next(
                 x
                 for x in [
-                    self.attributes["from_env"],
-                    self._base_attributes["from_env"],
+                    self.attributes["name"],
+                    "pathspec:%s" % self.attributes["pathspec"]
+                    if self.attributes["pathspec"]
+                    else None,
+                    self._base_attributes["name"],
+                    "pathspec:%s" % self._base_attributes["pathspec"]
+                    if self._base_attributes["pathspec"]
+                    else None,
                     "",
                 ]
                 if x is not None
@@ -443,14 +467,12 @@ class CondaStepDecorator(StepDecorator):
             # Take care of dependencies first
             all_deps = base.deps
             for d in all_deps:
+                vals = d.value.split("==")
+                if len(vals) == 1:
+                    vals.append("")
                 if d.category == "pip":
-                    vals = d.value.split("==")
-                    if len(vals) == 2:
-                        self._from_env_pip_deps[vals[0]] = vals[1]
-                    else:
-                        self._from_env_pip_deps[vals[0]] = ""
+                    self._from_env_pip_deps[vals[0]] = vals[1]
                 elif d.category == "conda":
-                    vals = d.value.split("==")
                     self._from_env_conda_deps[vals[0]] = vals[1]
 
             # Now of channels/sources
@@ -511,6 +533,7 @@ class CondaStepDecorator(StepDecorator):
         ):
             if c in seen:
                 continue
+            seen.add(c)
             result.append(c)
         return result
 
@@ -539,6 +562,7 @@ class CondaStepDecorator(StepDecorator):
         ):
             if c in seen:
                 continue
+            seen.add(c)
             result.append(c)
         return result
 
@@ -559,10 +583,14 @@ class PipStepDecorator(CondaStepDecorator):
 
     Parameters
     ----------
-    from_env : Optional[str]
-        If specified, can refer to a specific environment. The format for this string
-        is <env name>:<version>. The <env name> can optionally contain "/" to help
-        with unique naming. This functions very similarly to Docker tags.
+    name : Optional[str]
+        If specified, can refer to a named environment. The environment referred to
+        here will be the one used for this step. If specified, nothing else can be
+        specified in this decorator
+    pathspec : Optional[str]
+        If specified, can refer to the pathspec of an existing step. The environment
+        of this referred step will be used here. If specified, nothing else can be
+        specified in this decorator.
     packages : Dict[str, str]
         Packages to use for this step. The key is the name of the package
         and the value is the version to use (default: `{}`).
@@ -578,7 +606,8 @@ class PipStepDecorator(CondaStepDecorator):
     name = "pip"
 
     defaults = {
-        "from_env": None,
+        "name": None,
+        "pathspec": None,
         "packages": {},
         "sources": [],
         "python": None,
@@ -620,6 +649,7 @@ class PipStepDecorator(CondaStepDecorator):
         ):
             if c in seen:
                 continue
+            seen.add(c)
             result.append(c)
         return result
 

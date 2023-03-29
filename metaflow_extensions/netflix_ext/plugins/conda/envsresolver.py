@@ -13,6 +13,7 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Set,
     Tuple,
 )
 
@@ -23,7 +24,8 @@ from metaflow.metaflow_environment import InvalidEnvironmentException
 from .env_descr import EnvID, ResolvedEnvironment
 from .conda import Conda
 from .conda_step_decorator import CondaStepDecorator
-from .utils import plural_marker
+from .env_descr import TStr
+from .utils import AliasType, plural_marker, resolve_env_alias
 
 
 class EnvsResolver(object):
@@ -38,9 +40,63 @@ class EnvsResolver(object):
         #  - "already_resolved": T/F
         self._requested_envs = {}  # type: Dict[EnvID, Dict[str, Any]]
         self._conda = conda
+        self._non_step_envs = False
+        self._co_resolved_force_resolve = set()  # type: Set[str]
+
+    def add_environment(
+        self,
+        env_id: EnvID,
+        deps: Sequence[TStr],
+        sources: Sequence[TStr],
+        base_env: Optional[ResolvedEnvironment] = None,
+        base_from_full_id: bool = False,
+        local_only: bool = False,
+        force: bool = False,
+        force_co_resolve: bool = False,
+    ):
+        self._non_step_envs = True
+        resolved_env = (
+            self._conda.environment(env_id, local_only) if not force else None
+        )
+        if env_id not in self._requested_envs:
+            if force_co_resolve:
+                if resolved_env is None:
+                    # Invalidate any previously resolved environment with the same req_id
+                    for other_env_id, other_env in self._requested_envs.items():
+                        if other_env_id.req_id == env_id.req_id:
+                            other_env["resolved"] = None
+                            other_env["already_resolved"] = False
+                    self._co_resolved_force_resolve.add(env_id.req_id)
+                elif env_id.req_id in self._co_resolved_force_resolve:
+                    # If another environment for the same req-id is not resolved, we
+                    # need to resolve this one too.
+                    resolved_env = None
+
+            self._requested_envs[env_id] = {
+                "id": env_id,
+                "steps": ["ad-hoc"],
+                "deps": deps,
+                "sources": sources,
+                "conda_format": [CONDA_PREFERRED_FORMAT]
+                if CONDA_PREFERRED_FORMAT
+                else [],
+                "base": base_env,
+                "base_accurate": base_env
+                and base_env.is_info_accurate
+                and not base_from_full_id,
+                "resolved": resolved_env,
+                "already_resolved": resolved_env is not None,
+            }
+            debug.conda_exec(
+                "Added environment to resolve %s" % str(self._requested_envs[env_id])
+            )
 
     def add_environment_for_step(
-        self, step_name: str, decorator: CondaStepDecorator, force: bool = False
+        self,
+        step_name: str,
+        decorator: CondaStepDecorator,
+        force: bool = False,
+        archs: Optional[List[str]] = None,
     ):
         from_env = decorator.from_env
         if from_env:
@@ -51,6 +107,13 @@ class EnvsResolver(object):
             )
 
         env_ids = decorator.env_ids
+        base_req_id = env_ids[0].req_id
+        base_full_id = env_ids[0].full_id
+        env_ids = [
+            EnvID(req_id=base_req_id, full_id=base_full_id, arch=arch)
+            for arch in set((archs or []) + [env_id.arch for env_id in env_ids])
+        ]
+
         for env_id in env_ids:
             resolved_env = self._conda.environment(env_id) if not force else None
             if env_id not in self._requested_envs:
@@ -63,6 +126,10 @@ class EnvsResolver(object):
                     if CONDA_PREFERRED_FORMAT
                     else [],
                     "base": from_env,
+                    "base_accurate": from_env
+                    and from_env.is_info_accurate
+                    and resolve_env_alias(cast(str, decorator.from_env_name))[0]
+                    != AliasType.FULL_ID,
                     "resolved": resolved_env,
                     "already_resolved": resolved_env is not None,
                 }
@@ -147,17 +214,22 @@ class EnvsResolver(object):
         start = time.time()
         if len(env_ids) == len(self._requested_envs):
             echo(
-                "    Resolving %d environment%s in flow ..."
-                % (len(env_ids), plural_marker(len(env_ids))),
+                "    Resolving %d environment%s %s..."
+                % (
+                    len(env_ids),
+                    plural_marker(len(env_ids)),
+                    "in flow " if not self._non_step_envs else "",
+                ),
                 nl=False,
             )
         else:
             echo(
-                "    Resolving %d of %d environment%s in flow (others are cached) ..."
+                "    Resolving %d of %d environment%s %s(others are cached) ..."
                 % (
                     len(env_ids),
                     len(self._requested_envs),
                     plural_marker(len(self._requested_envs)),
+                    "in flow " if not self._non_step_envs else "",
                 ),
                 nl=False,
             )
@@ -174,6 +246,7 @@ class EnvsResolver(object):
                         env_desc["sources"],
                         env_id.arch,
                         inputs_are_addl=False,
+                        cur_is_accurate=env_desc["accurate_base"],
                     ),
                 )
             return (

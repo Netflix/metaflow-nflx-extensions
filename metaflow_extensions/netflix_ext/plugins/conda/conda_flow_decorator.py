@@ -11,10 +11,14 @@ class CondaFlowDecorator(FlowDecorator):
 
     Parameters
     ----------
-    from_env : Optional[str]
-        If specified, can refer to a specific environment. The format for this string
-        is <env name>:<version>. The <env name> can optionally contain "/" to help
-        with unique naming. This functions very similarly to Docker tags.
+    name : Optional[str]
+        If specified, can refer to a named environment. The environment referred to
+        here will be the one used as a base environment for all steps.
+        If specified, nothing else can be specified in this decorator
+    pathspec : Optional[str]
+        If specified, can refer to the pathspec of an existing step. The environment
+        of this referred step will be uased as a base environment for all steps.
+        If specified, nothing else can be specified in this decorator.
     libraries : Dict[str, str]
         Libraries to use for this step. The key is the name of the package
         and the value is the version to use (default: `{}`). Note that versions can
@@ -35,7 +39,8 @@ class CondaFlowDecorator(FlowDecorator):
 
     name = "conda_base"
     defaults = {
-        "from_env": None,
+        "name": None,
+        "pathspec": None,
         "libraries": {},
         "channels": [],
         "pip_packages": {},
@@ -57,6 +62,18 @@ class CondaFlowDecorator(FlowDecorator):
                 "The *@conda_base* decorator requires " "--environment=conda"
             )
 
+        if (self.attributes["name"] or self.attributes["pathspec"]) and len(
+            [
+                k
+                for k, v in self.attributes.items()
+                if v and k not in ("name", "pathspec")
+            ]
+        ):
+            raise InvalidEnvironmentException(
+                "You cannot specify `name` or `pathspec` along with other attributes in @%s"
+                % self.name
+            )
+
 
 class PipFlowDecorator(FlowDecorator):
     """
@@ -69,10 +86,14 @@ class PipFlowDecorator(FlowDecorator):
 
     Parameters
     ----------
-    from_env : Optional[str]
-        If specified, can refer to a specific environment. The format for this string
-        is <env name>:<version>. The <env name> can optionally contain "/" to help
-        with unique naming. This functions very similarly to Docker tags.
+    name : Optional[str]
+        If specified, can refer to a named environment. The environment referred to
+        here will be the one used as a base environment for all steps.
+        If specified, nothing else can be specified in this decorator
+    pathspec : Optional[str]
+        If specified, can refer to the pathspec of an existing step. The environment
+        of this referred step will be uased as a base environment for all steps.
+        If specified, nothing else can be specified in this decorator.
     packages : Dict[str, str]
         Packages to use for this step. The key is the name of the package
         and the value is the version to use (default: `{}`).
@@ -88,7 +109,8 @@ class PipFlowDecorator(FlowDecorator):
     name = "pip_base"
 
     defaults = {
-        "from_env": None,
+        "name": None,
+        "pathspec": None,
         "packages": {},
         "sources": [],
         "python": None,
@@ -106,4 +128,16 @@ class PipFlowDecorator(FlowDecorator):
         if environment.TYPE != "conda":
             raise InvalidEnvironmentException(
                 "The *@pip_base* decorator requires --environment=conda"
+            )
+
+        if (self.attributes["name"] or self.attributes["pathspec"]) and len(
+            [
+                k
+                for k, v in self.attributes.items()
+                if v and k not in ("name", "pathspec")
+            ]
+        ):
+            raise InvalidEnvironmentException(
+                "You cannot specify `name` or `pathspec` along with other attributes in @%s"
+                % self.name
             )
