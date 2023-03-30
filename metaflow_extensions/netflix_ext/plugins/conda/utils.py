@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from metaflow_extensions.netflix_ext.vendor.packaging.tags import cpython_tags
 
+from metaflow.debug import debug
 from metaflow.exception import MetaflowException
 import metaflow.metaflow_config as mf_config
 from metaflow.metaflow_config import (
@@ -90,6 +91,7 @@ def get_conda_root(datastore_type: str) -> str:
         raise MetaflowException(
             msg="METAFLOW_DATASTORE_SYSROOT_%s must be set!" % datastore_type.upper()
         )
+    debug.conda_exec("Conda root is at %s" % conda_root)
     return conda_root  # type: ignore
 
 

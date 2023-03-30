@@ -139,7 +139,7 @@ class CondaStepDecorator(StepDecorator):
 
     @property
     def env_id(self) -> EnvID:
-        arch = arch_id()
+        arch = self.requested_arch
         my_arch_env = [i for i in self.env_ids if i.arch == arch]
         if my_arch_env:
             return my_arch_env[0]
@@ -339,6 +339,9 @@ class CondaStepDecorator(StepDecorator):
         max_user_code_retries: int,
         ubf_context: str,
     ):
+        # If remote -- we don't do anything
+        if self._is_remote:
+            return
         self._get_conda(self._echo, self._flow_datastore_type)
         assert self.conda
         resolved_env = cast(ResolvedEnvironment, self.conda.environment(self.env_id))
@@ -350,7 +353,7 @@ class CondaStepDecorator(StepDecorator):
         # the environment for the control task -- just for the actual tasks.
         cli_args.env["_METAFLOW_CONDA_ENV"] = json.dumps(my_env_id)
 
-        if self.is_enabled(ubf_context) and not self._is_remote:
+        if self.is_enabled(ubf_context):
             # Create the environment we are going to use
             if self.conda.created_environment(my_env_id):
                 self._echo(

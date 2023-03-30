@@ -17,7 +17,7 @@ class CondaFlowDecorator(FlowDecorator):
         If specified, nothing else can be specified in this decorator
     pathspec : Optional[str]
         If specified, can refer to the pathspec of an existing step. The environment
-        of this referred step will be uased as a base environment for all steps.
+        of this referred step will be used as a base environment for all steps.
         If specified, nothing else can be specified in this decorator.
     libraries : Dict[str, str]
         Libraries to use for this step. The key is the name of the package
@@ -52,7 +52,7 @@ class CondaFlowDecorator(FlowDecorator):
     def flow_init(
         self, flow, graph, environment, flow_datastore, metadata, logger, echo, options
     ):
-        if "pip_base" in flow._flow_decorator:
+        if "pip_base" in flow._flow_decorators:
             raise InvalidEnvironmentException(
                 "conda_base decorator is not compatible with pip_base. "
                 "Please specify only one of them."
@@ -92,7 +92,7 @@ class PipFlowDecorator(FlowDecorator):
         If specified, nothing else can be specified in this decorator
     pathspec : Optional[str]
         If specified, can refer to the pathspec of an existing step. The environment
-        of this referred step will be uased as a base environment for all steps.
+        of this referred step will be used as a base environment for all steps.
         If specified, nothing else can be specified in this decorator.
     packages : Dict[str, str]
         Packages to use for this step. The key is the name of the package

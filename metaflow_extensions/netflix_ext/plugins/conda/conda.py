@@ -501,7 +501,6 @@ class Conda(object):
                 env = env[0]
             else:
                 env = None
-        debug.conda_exec("%s%sfound remotely" % (str(env_id), " " if env else " not "))
         return env
 
     def environments(
@@ -570,11 +569,6 @@ class Conda(object):
             env_id = self._remote_fetch_alias([(alias_type, resolved_alias)], arch)
             if env_id:
                 env_id = env_id[0]
-
-        debug.conda_exec(
-            "%s (type %s)%sfound remotely (resolved %s)"
-            % (env_alias, alias_type.value, " " if env_id else " not ", resolved_alias)
-        )
 
     def environment_from_alias(
         self, env_alias: str, arch: Optional[str] = None, local_only: bool = False
@@ -2231,7 +2225,8 @@ class Conda(object):
                             )
                         self._cached_environment.add_resolved_env(resolved_env)
                 debug.conda_exec(
-                    "%s%sfound remotely" % (str(env_id), " " if tmpfile else " not ")
+                    "%s%sfound remotely at %s"
+                    % (str(env_id), " " if tmpfile else " not ", key)
                 )
         if addl_env_ids:
             self._remote_env_fetch(addl_env_ids, ignore_co_resolved=True)
@@ -2264,6 +2259,10 @@ class Conda(object):
                         alias_type, env_alias, req_id, full_id
                     )
                     result[cast(str, key)] = EnvID(req_id, full_id, arch)
+                debug.conda_exec(
+                    "%s%sfound remotely at %s"
+                    % (env_alias, " " if tmpfile else " not ", key)
+                )
         return [x if isinstance(x, EnvID) else None for x in result.values()]
 
     # TODO: May not be needed
