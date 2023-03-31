@@ -225,8 +225,8 @@ def is_hexadecimal(s: str) -> bool:
 
 
 def resolve_env_alias(env_alias: str) -> Tuple[AliasType, str]:
-    if env_alias.startswith("pathspec:"):
-        env_alias = env_alias[9:]
+    if env_alias.startswith("step:"):
+        env_alias = env_alias[5:]
         if len(env_alias.split("/")) == 3:
             return AliasType.PATHSPEC, env_alias
     elif len(env_alias) == 81 and env_alias[40] == ":":

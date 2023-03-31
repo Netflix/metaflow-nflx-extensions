@@ -143,6 +143,7 @@ class CondaStepDecorator(StepDecorator):
         my_arch_env = [i for i in self.env_ids if i.arch == arch]
         if my_arch_env:
             return my_arch_env[0]
+
         raise InvalidEnvironmentException(
             "Architecture '%s' not requested for step" % arch
         )
@@ -342,6 +343,7 @@ class CondaStepDecorator(StepDecorator):
         # If remote -- we don't do anything
         if self._is_remote:
             return
+
         self._get_conda(self._echo, self._flow_datastore_type)
         assert self.conda
         resolved_env = cast(ResolvedEnvironment, self.conda.environment(self.env_id))
@@ -444,11 +446,11 @@ class CondaStepDecorator(StepDecorator):
                 x
                 for x in [
                     self.attributes["name"],
-                    "pathspec:%s" % self.attributes["pathspec"]
+                    "step:%s" % self.attributes["pathspec"]
                     if self.attributes["pathspec"]
                     else None,
                     self._base_attributes["name"],
-                    "pathspec:%s" % self._base_attributes["pathspec"]
+                    "step:%s" % self._base_attributes["pathspec"]
                     if self._base_attributes["pathspec"]
                     else None,
                     "",

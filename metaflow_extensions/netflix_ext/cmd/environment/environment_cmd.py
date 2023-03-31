@@ -1,9 +1,14 @@
+import json
 import os
 import platform
 import shutil
+import subprocess
+import tempfile
+import time
 
 from functools import wraps
 from itertools import chain
+from shutil import copy
 from typing import Any, Dict, List, Optional, Set, Tuple, cast
 from metaflow._vendor import click
 
@@ -14,6 +19,7 @@ from metaflow import Step, metaflow_config
 from metaflow.exception import CommandException
 from metaflow.plugins import DATASTORES
 from metaflow.metaflow_config import (
+    CONDA_PREFERRED_FORMAT,
     DEFAULT_DATASTORE,
     DEFAULT_METADATA,
     get_pinned_conda_libs,
@@ -25,6 +31,7 @@ from metaflow_extensions.netflix_ext.plugins.conda.conda import (
 )
 from metaflow_extensions.netflix_ext.plugins.conda.env_descr import (
     EnvID,
+    EnvType,
     ResolvedEnvironment,
     TStr,
 )
@@ -131,7 +138,8 @@ def cli(ctx):
 @click.option(
     "--conda-root",
     default=None,
-    help="Root path for Conda cached information -- if None, uses METAFLOW_CONDA_<DS>ROOT",
+    help="Root path for Conda cached information. If not set, "
+    "looks for METAFLOW_CONDA_S3ROOT (for S3)",
 )
 @click.pass_context
 def environment(
@@ -176,7 +184,7 @@ def environment(
 @environment.command()
 @click.option("--name", default=None, help="Name of the environment to create")
 @click.option(
-    "--local-only/--no-local-only",
+    "--local-only/--non-local",
     show_default=True,
     default=False,
     help="Only create if environment is known locally",
@@ -189,22 +197,37 @@ def environment(
     "if it exists",
 )
 @click.option(
-    "--into",
+    "--into-dir",
     default=None,
     show_default=False,
     type=click.Path(file_okay=False, writable=True, readable=True, resolve_path=True),
     help="If the `envspec` refers to a Metaflow executed Step, downloads the step's "
     "code package into this directory",
 )
+@click.option(
+    "--install-notebook/--no-install-notebook",
+    default=False,
+    show_default=True,
+    help="Install the created environment as a Jupyter kernel -- requires --name.",
+)
+@click.option(
+    "--pathspec",
+    default=False,
+    is_flag=True,
+    show_default=True,
+    help="The environment name given is a pathspec",
+)
 @click.argument("env-name")
 @click.pass_obj
 def create(
     obj,
-    name: Optional[str] = None,
-    local_only: bool = False,
-    force: bool = False,
-    into: Optional[str] = None,
-    env_name: str = "",
+    name: Optional[str],
+    local_only: bool,
+    force: bool,
+    into_dir: Optional[str],
+    install_notebook: bool,
+    pathspec: bool,
+    env_name: str,
 ):
     """
     Create a local environment based on env-name.
@@ -217,25 +240,42 @@ def create(
       - a name for the environment (as added using `--alias` when resolving the environment
         or using `metaflow environment alias`)
     """
-    if into:
-        if os.path.exists(into):
+    if into_dir:
+        into_dir = os.path.abspath(into_dir)
+        if os.path.exists(into_dir):
             if force:
-                shutil.rmtree(into)
-            elif not os.path.isdir(into) or len(os.listdir(into)) != 0:
+                shutil.rmtree(into_dir)
+                os.makedirs(into_dir)
+            elif not os.path.isdir(into_dir) or len(os.listdir(into_dir)) != 0:
                 raise CommandException(
                     "'%s' is not a directory or not empty -- use --force to force"
-                    % into
+                    % into_dir
                 )
         else:
-            os.makedirs(into)
+            os.makedirs(into_dir)
+    if install_notebook and name is None:
+        raise click.BadOptionUsage("--install-notebook requires --name")
+
     code_pkg = None
     mf_version = None
 
+    if pathspec:
+        env_name = "step:%s" % env_name
+
     alias_type, resolved_alias = resolve_env_alias(env_name)
     if alias_type == AliasType.PATHSPEC:
+        if not pathspec:
+            raise click.BadOptionUsage(
+                "--pathspec used but environment name is not a pathspec"
+            )
         task = Step(resolved_alias).task
         code_pkg = task.code
         mf_version = task.metadata_dict["metaflow_version"]
+    else:
+        if pathspec:
+            raise click.BadOptionUsage(
+                "--pathspec not used but environment name is a pathspec"
+            )
 
     env_id_for_alias = cast(Conda, obj.conda).env_id_from_alias(env_name, local_only)
     if env_id_for_alias is None:
@@ -248,6 +288,26 @@ def create(
             "Environment '%s' does not exist for this architecture" % (env_name)
         )
 
+    if install_notebook:
+        start = time.time()
+        # We need to install ipykernel into the resolved environment
+        obj.echo("    Resolving an environment compatible with Jupyter ...", nl=False)
+        # We don't pin to avoid issues with python versions -- it will take the
+        # best one it can.
+        env = cast(Conda, obj.conda).add_to_resolved_env(
+            env,
+            using_steps=["ipykernel"],
+            deps=[TStr(category="conda", value="ipykernel")],
+            sources=[],
+            architecture=arch_id(),
+        )
+        # Cache this information for the next time around
+        cast(Conda, obj.conda).cache_environments([env])
+        cast(Conda, obj.conda).add_environments([env])
+        cast(Conda, obj.conda).set_default_environment(env.env_id)
+        delta_time = int(time.time() - start)
+        obj.echo(" done in %d second%s." % (delta_time, plural_marker(delta_time)))
+
     name = name or "metaflowtmp_%s_%s" % (env.env_id.req_id, env.env_id.full_id)
 
     existing_env = obj.conda.created_environment(name)
@@ -259,8 +319,8 @@ def create(
             )
         obj.conda.remove_for_name(name)
 
-    if into:
-        os.chdir(into)
+    if into_dir:
+        os.chdir(into_dir)
         obj.conda.create_for_name(name, env, do_symlink=True)
         if code_pkg:
             code_pkg.tarball.extractall(path=".")
@@ -273,10 +333,70 @@ def create(
             download_mf_version("./__conda_python", mf_version)
         obj.echo(
             "Code package for %s downloaded into '%s' -- `__conda_python` is "
-            "the executable to use" % (env_name, into)
+            "the executable to use" % (env_name, into_dir)
         )
     else:
         obj.conda.create_for_name(name, env)
+
+    if install_notebook:
+        start = time.time()
+        obj.echo("    Installing Jupyter kernel ...", nl=False)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                kernel_info = {
+                    "argv": [
+                        obj.conda.python(name),
+                        "-m",
+                        "ipykernel_launcher",
+                        "-f",
+                        "{connection_file}",
+                    ],
+                    "display_name": "Metaflow %s" % resolved_alias,
+                    "language": "python",
+                    "metadata": {"debugger": True},
+                }
+                if into_dir:
+                    kernel_info["env"] = {"PYTHONPATH": into_dir}
+                images_dir = os.path.abspath(
+                    os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "..",
+                        "..",
+                        "plugins",
+                        "conda",
+                        "resources",
+                    )
+                )
+                for image in ("logo-32x32.png", "logo-64x64.png", "logo-svg.svg"):
+                    copy(os.path.join(images_dir, image), os.path.join(d, image))
+                with open(
+                    os.path.join(d, "kernel.json"), mode="w", encoding="utf-8"
+                ) as f:
+                    json.dump(kernel_info, f)
+
+                # Kernel name
+                translation_table = str.maketrans(":/.-", "____")
+                kernel_name = "mf_%s" % resolved_alias.translate(translation_table)
+                try:
+                    # Clean up in case it already exists -- ignore failures if it
+                    # doesn't
+                    subprocess.check_call(
+                        ["jupyter", "kernelspec", "uninstall", "-y", kernel_name],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except subprocess.CalledProcessError:
+                    pass
+                subprocess.check_call(
+                    ["jupyter", "kernelspec", "install", "--name", kernel_name, d],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except Exception as e:
+            obj.echo("Error installing into Jupyter: %s" % e)
+        else:
+            delta_time = int(time.time() - start)
+            obj.echo(" done in %d second%s." % (delta_time, plural_marker(delta_time)))
 
     obj.echo(
         "Created environment '%s' locally, activate with `%s activate %s`"
@@ -299,7 +419,7 @@ def create(
     help="Force resolution of already resolved environments",
 )
 @click.option(
-    "--local-only/--no-local-only",
+    "--local-only/--non-local",
     show_default=True,
     default=False,
     help="Only look locally for using environments",
@@ -313,7 +433,7 @@ def create(
 @click.option(
     "--set-default/--no-set-default",
     show_default=True,
-    default=False,
+    default=True,
     help="Set the resolved environment as the default environment for this set of requirements",
 )
 @env_spec_options
@@ -350,7 +470,7 @@ def resolve(
     if using:
         using_str = using
     if using_pathspec:
-        using_str = "pathspec:%s" % using_pathspec
+        using_str = "step:%s" % using_pathspec
 
     archs = list(arch) if arch else [arch_id()]
     base_env_id = None
@@ -370,14 +490,14 @@ def resolve(
             EnvID(
                 req_id=base_env_id.req_id,
                 full_id=base_env_id.full_id,
-                arch=cur_arch,
+                arch=archs[0],
             ),
             local_only,
         )
         if base_env is None:
             raise CommandException(
                 "Environment for '%s' is not available on architecture '%s'"
-                % (using_str, cur_arch)
+                % (using_str, archs[0])
             )
         # TODO: This code is duplicated in the conda_step_decorator.py
         # Take care of dependencies first
@@ -389,9 +509,11 @@ def resolve(
             if d.category == "pip":
                 base_env_pip_deps[vals[0]] = vals[1]
             elif d.category == "conda":
-                base_env_conda_deps[vals[0]] = vals[1]
                 if vals[0] == "python":
                     base_env_python = vals[1]
+                else:
+                    # We will re-add python later
+                    base_env_conda_deps[vals[0]] = vals[1]
 
         # Now of channels/sources
         all_sources = base_env.sources
@@ -412,7 +534,9 @@ def resolve(
         python = platform.python_version()
 
     # Compute the deps
-    if len(new_conda_deps) <= 1:
+    if len(new_conda_deps) == 0 and (
+        not base_env or base_env.env_type == EnvType.PIP_ONLY
+    ):
         # Assume a pip environment for base deps
         pip_deps = get_pinned_conda_libs(base_env_python, obj.datastore_type)
         conda_deps = {}
@@ -541,7 +665,7 @@ def resolve(
 
 @environment.command(help="Show information about an environment")
 @click.option(
-    "--local-only/--no-local-only",
+    "--local-only/--non-local",
     show_default=True,
     default=False,
     help="Only resolve source env using local information",
@@ -600,7 +724,7 @@ def show(obj, local_only: bool, arch: str, envs: Tuple[str]):
 
 @environment.command(help="Alias an existing environment")
 @click.option(
-    "--local-only/--no-local-only",
+    "--local-only/--non-local",
     show_default=True,
     default=False,
     help="Only resolve source env using local information",
@@ -651,6 +775,7 @@ def get(obj, default: bool, arch: Optional[str], source_env: str):
 def _parse_req_file(file_name: str, sources: List[TStr], deps: Dict[str, str]):
     with open(file_name, mode="r", encoding="utf-8") as f:
         for line in f:
+            line = line.strip()
             if not line:
                 continue
             elif line.startswith("-i") or line.startswith("--index-url"):
@@ -683,12 +808,12 @@ def _parse_yml_file(
         for line in f:
             if not line:
                 continue
-            elif line[0] != " ":
+            elif line[0] not in (" ", "-"):
                 line = line.strip()
                 if line == "channels:":
-                    mode == "sources"
+                    mode = "sources"
                 elif line == "dependencies:":
-                    mode == "deps"
+                    mode = "deps"
                 else:
                     mode = "ignore"
             elif mode == "sources":

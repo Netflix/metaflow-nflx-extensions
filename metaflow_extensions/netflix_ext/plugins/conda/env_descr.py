@@ -361,7 +361,9 @@ class PackageSpecification:
             self._is_transmuted.append(pkg_format)
 
     def cached_version(self, pkg_format: str) -> Optional[CachePackage]:
-        return self._cache_info.get(pkg_format)
+        return self._cache_info.get(
+            self._url_format if pkg_format == "_any" else pkg_format
+        )
 
     @property
     def cached_versions(self) -> Iterable[Tuple[str, CachePackage]]:
@@ -399,7 +401,12 @@ class PackageSpecification:
 
     def is_cached(self, formats: List[str]) -> bool:
         if formats:
-            return all([f in self._cache_info for f in formats])
+            return all(
+                [
+                    self._url_format if f == "_any" else f in self._cache_info
+                    for f in formats
+                ]
+            )
         return len(self._cache_info) > 0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -604,7 +611,7 @@ class ResolvedEnvironment:
 
     @property
     def is_info_accurate(self) -> bool:
-        return not self.accurate_source
+        return not self._accurate_source
 
     @property
     def deps(self) -> List[TStr]:
@@ -821,6 +828,7 @@ class ResolvedEnvironment:
             "resolved_by": self._resolved_by,
             "resolved_archs": self._co_resolved,
             "env_type": self._env_type.value,
+            "accurate_source": self._accurate_source,
         }
 
     @classmethod

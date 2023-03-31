@@ -79,7 +79,7 @@ class EnvsResolver(object):
                 "sources": sources,
                 "conda_format": [CONDA_PREFERRED_FORMAT]
                 if CONDA_PREFERRED_FORMAT
-                else [],
+                else ["_any"],
                 "base": base_env,
                 "base_accurate": base_env
                 and base_env.is_info_accurate
@@ -124,7 +124,7 @@ class EnvsResolver(object):
                     "sources": decorator.source_deps,
                     "conda_format": [CONDA_PREFERRED_FORMAT]
                     if CONDA_PREFERRED_FORMAT
-                    else [],
+                    else ["_any"],
                     "base": from_env,
                     "base_accurate": from_env
                     and from_env.is_info_accurate
@@ -246,7 +246,7 @@ class EnvsResolver(object):
                         env_desc["sources"],
                         env_id.arch,
                         inputs_are_addl=False,
-                        cur_is_accurate=env_desc["accurate_base"],
+                        cur_is_accurate=env_desc["base_accurate"],
                     ),
                 )
             return (

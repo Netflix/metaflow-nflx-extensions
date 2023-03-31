@@ -545,8 +545,8 @@ class Conda(object):
 
             try:
                 s = Step(resolved_alias)
-                req_id, full_id, _ = s.task.metadata_dict.get(
-                    "conda_env_id", '["", "", ""]'
+                req_id, full_id, _ = json.loads(
+                    s.task.metadata_dict.get("conda_env_id", '["", "", ""]')
                 )
                 if len(req_id) != 0:
                     env_id = EnvID(req_id=req_id, full_id=full_id, arch=arch)
@@ -665,7 +665,7 @@ class Conda(object):
         my_arch_id = arch_id()
         cache_formats = cache_formats or {
             "pip": ["_any"],
-            "conda": [CONDA_PREFERRED_FORMAT] if CONDA_PREFERRED_FORMAT else [],
+            "conda": [CONDA_PREFERRED_FORMAT] if CONDA_PREFERRED_FORMAT else ["_any"],
         }
         # Contains the architecture, the list of packages that need the URL
         # and the list of formats needed
@@ -2158,9 +2158,9 @@ class Conda(object):
 
         def _check_match(dir_name: str) -> Optional[EnvID]:
             dir_lastcomponent = os.path.basename(dir_name)
-            if (
-                full_match and dir_lastcomponent == prefix
-            ) or dir_lastcomponent.startswith(prefix):
+            if (full_match and dir_lastcomponent == prefix) or (
+                not full_match and dir_lastcomponent.startswith(prefix)
+            ):
                 possible_env_id = self._is_valid_env(dir_name)
                 if possible_env_id:
                     return possible_env_id
@@ -2249,12 +2249,12 @@ class Conda(object):
         )  # type: OrderedDict[str, Optional[Union[Tuple[AliasType, str], EnvID]]]
         with self._storage.load_bytes(result.keys()) as loaded:
             for key, tmpfile, _ in loaded:
+                alias_type, env_alias = cast(
+                    Tuple[AliasType, str], result[cast(str, key)]
+                )
                 if tmpfile:
                     with open(tmpfile, mode="r", encoding="utf-8") as f:
                         req_id, full_id = json.load(f)
-                    alias_type, env_alias = cast(
-                        Tuple[AliasType, str], result[cast(str, key)]
-                    )
                     self._cached_environment.add_alias(
                         alias_type, env_alias, req_id, full_id
                     )
