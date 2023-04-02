@@ -249,6 +249,7 @@ class PackageSpecification:
         self._local_path = {}  # type: Dict[str, str]
         self._is_fetched = []  # type: List[str]
         self._is_transmuted = []  # type: List[str]
+        self._dirty = False
 
     @property
     def filename(self) -> str:
@@ -274,6 +275,10 @@ class PackageSpecification:
     def url_format(self) -> str:
         return self._url_format
 
+    @property
+    def dirty(self) -> bool:
+        return self._dirty
+
     @classmethod
     def cache_pkg_type(cls) -> Type[CachePackage]:
         raise NotImplementedError
@@ -288,11 +293,15 @@ class PackageSpecification:
 
     def add_pkg_hash(self, pkg_format: str, pkg_hash: str):
         old_hash = self.pkg_hash(pkg_format)
-        if old_hash and old_hash != pkg_hash:
-            raise ValueError(
-                "Attempting to add an inconsistent hash for package %s; "
-                "adding %s when already have %s" % (self.filename, pkg_hash, old_hash)
-            )
+        if old_hash:
+            if old_hash != pkg_hash:
+                raise ValueError(
+                    "Attempting to add an inconsistent hash for package %s; "
+                    "adding %s when already have %s"
+                    % (self.filename, pkg_hash, old_hash)
+                )
+            return
+        self._dirty = True
         self._hashes[pkg_format] = pkg_hash
 
     @property
@@ -320,12 +329,15 @@ class PackageSpecification:
     def add_local_dir(self, local_path: str):
         # Add a local directory that is present for this package
         local_dir = self.local_dir
-        if local_dir and local_dir != local_path:
-            raise ValueError(
-                "Attempting to add an inconsistent local directory for package %s; "
-                "adding %s when already have %s"
-                % (self.filename, local_path, local_dir)
-            )
+        if local_dir:
+            if local_dir != local_path:
+                raise ValueError(
+                    "Attempting to add an inconsistent local directory for package %s; "
+                    "adding %s when already have %s"
+                    % (self.filename, local_path, local_dir)
+                )
+            return
+        self._dirty = True
         self._local_dir = local_path
 
     def add_local_file(
@@ -339,25 +351,33 @@ class PackageSpecification:
         # Add a local file for this package indicating whether it was downloaded or
         # transmuted
         existing_path = self.local_file(pkg_format)
-        if existing_path and local_path != existing_path:
-            raise ValueError(
-                "Attempting to add inconsistent local files of format %s for a package %s; "
-                "adding %s when already have %s"
-                % (pkg_format, self.filename, local_path, existing_path)
-            )
-        self._local_path[pkg_format] = local_path
+        if existing_path:
+            if local_path != existing_path:
+                raise ValueError(
+                    "Attempting to add inconsistent local files of format %s for a package %s; "
+                    "adding %s when already have %s"
+                    % (pkg_format, self.filename, local_path, existing_path)
+                )
+        else:
+            self._dirty = True
+            self._local_path[pkg_format] = local_path
         known_hash = self._hashes.get(pkg_format)
         added_hash = pkg_hash or self._hash_pkg(local_path)
-        if known_hash and known_hash != added_hash:
-            raise ValueError(
-                "Attempting to add inconsistent local files of format %s for package %s; "
-                "got a hash of %s but expected %s"
-                % (pkg_format, self.filename, added_hash, known_hash)
-            )
-        self._hashes[pkg_format] = added_hash
-        if downloaded:
+        if known_hash:
+            if known_hash != added_hash:
+                raise ValueError(
+                    "Attempting to add inconsistent local files of format %s for package %s; "
+                    "got a hash of %s but expected %s"
+                    % (pkg_format, self.filename, added_hash, known_hash)
+                )
+        else:
+            self._dirty = True
+            self._hashes[pkg_format] = added_hash
+        if downloaded and pkg_format not in self._is_fetched:
+            self._dirty = True
             self._is_fetched.append(pkg_format)
-        if transmuted:
+        if transmuted and pkg_format not in self._is_transmuted:
+            self._dirty = True
             self._is_transmuted.append(pkg_format)
 
     def cached_version(self, pkg_format: str) -> Optional[CachePackage]:
@@ -378,26 +398,31 @@ class PackageSpecification:
             )
 
         old_cache_info = self.cached_version(pkg_format)
-        if old_cache_info and (
-            old_cache_info.url != cache_info.url
-            or old_cache_info.hash != cache_info.hash
-        ):
-            raise ValueError(
-                "Attempting to add inconsistent cache information for format %s of package %s; "
-                "adding %s when already have %s"
-                % (pkg_format, self.filename, cache_info, old_cache_info)
-            )
+        if old_cache_info:
+            if (
+                old_cache_info.url != cache_info.url
+                or old_cache_info.hash != cache_info.hash
+            ):
+                raise ValueError(
+                    "Attempting to add inconsistent cache information for format %s of package %s; "
+                    "adding %s when already have %s"
+                    % (pkg_format, self.filename, cache_info, old_cache_info)
+                )
+        else:
+            self._dirty = True
+            self._cache_info[pkg_format] = cache_info
 
         old_pkg_hash = self.pkg_hash(pkg_format)
-        if old_pkg_hash and old_pkg_hash != cache_info.hash:
-            raise ValueError(
-                "Attempting to add inconsistent cache information for format %s of package %s; "
-                "adding a package with hash %s when expected %s"
-                % (pkg_format, self.filename, cache_info.hash, old_pkg_hash)
-            )
-
-        self._cache_info[pkg_format] = cache_info
-        self._hashes[pkg_format] = cache_info.hash
+        if old_pkg_hash:
+            if old_pkg_hash != cache_info.hash:
+                raise ValueError(
+                    "Attempting to add inconsistent cache information for format %s of package %s; "
+                    "adding a package with hash %s when expected %s"
+                    % (pkg_format, self.filename, cache_info.hash, old_pkg_hash)
+                )
+        else:
+            self._dirty = True
+            self._hashes[pkg_format] = cache_info.hash
 
     def is_cached(self, formats: List[str]) -> bool:
         if formats:
@@ -573,6 +598,7 @@ class ResolvedEnvironment:
         self._resolved_by = resolved_by or get_username() or "unknown"
         self._co_resolved = co_resolved or [arch or arch_id()]
         self._parent = None  # type: Optional["CachedEnvironmentInfo"]
+        self._dirty = False
 
     @staticmethod
     def get_req_id(
@@ -656,15 +682,23 @@ class ResolvedEnvironment:
     def env_type(self) -> EnvType:
         return self._env_type
 
+    @property
+    def dirty(self) -> bool:
+        if self._dirty:
+            return True
+        return any((p.dirty for p in self._all_packages))
+
     def set_parent(self, parent: "CachedEnvironmentInfo"):
         self._parent = parent
 
     def add_package(self, pkg: PackageSpecification):
+        self._dirty = True
         self._all_packages.append(pkg)
         if self._env_id.full_id not in ("_default", "_unresolved"):
             self._env_id._replace(full_id="_unresolved")
 
     def set_coresolved(self, archs: List[str], full_id: str) -> None:
+        self._dirty = True
         self._env_id = EnvID(
             req_id=self._env_id.req_id, full_id=full_id, arch=self._env_id.arch
         )

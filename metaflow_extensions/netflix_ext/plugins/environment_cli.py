@@ -103,10 +103,28 @@ def resolve(
     for env_id, steps in resolver.non_resolved_environments():
         per_req_id.setdefault(env_id.req_id, set()).update(steps)
     if len(per_req_id) == 0:
-        # Nothing to do
-        obj.echo("No environments to resolve, use --force to force re-resolution")
+        # Nothing to do but we may still need to alias
+        if aliases is not None and not dry_run:
+            all_resolved_envs = list(resolver.resolved_environments())
+            if len(all_resolved_envs) == 0:
+                obj.echo("No environments to resolve")
+            elif len(all_resolved_envs) == 1:
+                obj.echo("Environment already resolved -- aliasing only")
+                conda.alias_environment(all_resolved_envs[0][0], aliases)
+                conda.write_out_environments()
+            else:
+                raise CommandException(
+                    "Cannot specify aliases if more than one environments to alias "
+                    "-- found %d environments: one for each of steps %s"
+                    % (
+                        len(all_resolved_envs),
+                        ", and ".join(", ".join(v[2]) for v in all_resolved_envs),
+                    )
+                )
+        else:
+            obj.echo("No environments to resolve, use --force to force re-resolution")
         return
-    if alias is not None and len(per_req_id) > 1:
+    if aliases is not None and len(per_req_id) > 1:
         raise CommandException(
             "Cannot specify aliases if more than one environment to resolve "
             "-- found %d environments: one for each of steps %s"

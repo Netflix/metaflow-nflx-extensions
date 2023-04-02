@@ -40,6 +40,7 @@ from metaflow_extensions.netflix_ext.plugins.conda.utils import (
     AliasType,
     arch_id,
     resolve_env_alias,
+    plural_marker,
 )
 
 from .utils import (
@@ -606,7 +607,23 @@ def resolve(
         break
     if not has_something:
         # Nothing to do
-        obj.echo("No environments to resolve, use --force to force re-resolution")
+        if alias and not dry_run:
+            # We don't care about arch for aliasing so pick one
+            obj.echo(
+                "Not environments to resolve, aliasing only. Use --force to force "
+                "re-resolution"
+            )
+            obj.conda.alias_environment(
+                EnvID(
+                    requested_req_id,
+                    next(resolver.all_environments())[1].env_id.full_id,
+                    arch=arch_id(),
+                ),
+                list(alias),
+            )
+            cast(Conda, obj.conda).write_out_environments()
+        else:
+            obj.echo("No environments to resolve, use --force to force re-resolution")
         return
 
     resolver.resolve_environments(obj.echo)
@@ -769,6 +786,15 @@ def get(obj, default: bool, arch: Optional[str], source_env: str):
         )
     if default:
         cast(Conda, obj.conda).set_default_environment(env.env_id)
+    existing_envs_dict = cast(Conda, obj.conda).created_environments(env.env_id.req_id)
+    if existing_envs_dict:
+        existing_envs = existing_envs_dict.get(env.env_id, [])
+    else:
+        existing_envs = []
+    if obj.quiet:
+        obj.echo_always(env.quiet_print(existing_envs))
+    else:
+        obj.echo(env.pretty_print(existing_envs))
     cast(Conda, obj.conda).write_out_environments()
 
 
@@ -786,7 +812,7 @@ def _parse_req_file(file_name: str, sources: List[TStr], deps: Dict[str, str]):
                 continue
             elif line.startswith("-"):
                 raise InvalidEnvironmentException(
-                    "'%s' is not a supported line in a requirements.txt"
+                    "'%s' is not a supported line in a requirements.txt" % line
                 )
             else:
                 splits = line.split("=", 1)

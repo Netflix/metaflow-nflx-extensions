@@ -269,8 +269,8 @@ def resolve_env_alias(env_alias: str) -> Tuple[AliasType, str]:
     raise MetaflowException("Invalid format for environment alias: '%s'" % env_alias)
 
 
-def is_alias_mutable(alias_type: AliasType, env_alias: str) -> bool:
+def is_alias_mutable(alias_type: AliasType, resolved_alias: str) -> bool:
     if alias_type != AliasType.GENERIC:
         return False
-    splits = env_alias.rsplit("/", 1)
+    splits = resolved_alias.rsplit("/", 1)
     return len(splits) == 2 and splits[1] in ("latest", "candidate", "stable")

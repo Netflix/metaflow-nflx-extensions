@@ -69,6 +69,7 @@ from .utils import (
     arch_id,
     convert_filepath,
     get_conda_root,
+    is_alias_mutable,
     parse_explicit_url_conda,
     parse_explicit_url_pip,
     pip_platform_args,
@@ -568,7 +569,8 @@ class Conda(object):
         if not local_only and self._storage is not None:
             env_id = self._remote_fetch_alias([(alias_type, resolved_alias)], arch)
             if env_id:
-                env_id = env_id[0]
+                return env_id[0]
+        return None
 
     def environment_from_alias(
         self, env_alias: str, arch: Optional[str] = None, local_only: bool = False
@@ -599,8 +601,17 @@ class Conda(object):
 
     def alias_environment(self, env_id: EnvID, aliases: List[str]) -> None:
         if self._datastore_type != "local":
+            # We first fetch any aliases we have remotely because that way
+            # we will catch any non-mutable changes
+            resolved_aliases = [resolve_env_alias(a) for a in aliases]
+            aliases_to_fetch = [
+                (t, a) for t, a in resolved_aliases if t == AliasType.GENERIC
+            ]
+
+            self._remote_fetch_alias(aliases_to_fetch)
             # We are going to write out our aliases
-            upload_files = []  # type: List[Tuple[str, str]]
+            mutable_upload_files = []  # type: List[Tuple[str, str]]
+            immutable_upload_files = []  # type: List[Tuple[str, str]]
             with tempfile.TemporaryDirectory() as aliases_dir:
                 for alias in aliases:
                     alias_type, resolved_alias = resolve_env_alias(alias)
@@ -614,7 +625,10 @@ class Conda(object):
                         )
                         with open(local_filepath, mode="w", encoding="utf-8") as f:
                             json.dump([env_id.req_id, env_id.full_id], f)
-                        upload_files.append((cache_path, local_filepath))
+                        if is_alias_mutable(alias_type, resolved_alias):
+                            mutable_upload_files.append((cache_path, local_filepath))
+                        else:
+                            immutable_upload_files.append((cache_path, local_filepath))
                         debug.conda_exec(
                             "Aliasing and will upload alias %s to %s"
                             % (str(env_id), cache_path)
@@ -628,8 +642,10 @@ class Conda(object):
                     self._cached_environment.add_alias(
                         alias_type, resolved_alias, env_id.req_id, env_id.full_id
                     )
-                if upload_files:
-                    self._upload_to_ds(upload_files)
+                if mutable_upload_files:
+                    self._upload_to_ds(mutable_upload_files, overwrite=True)
+                if immutable_upload_files:
+                    self._upload_to_ds(immutable_upload_files)
         else:
             for alias in aliases:
                 alias_type, resolved_alias = resolve_env_alias(alias)
@@ -668,8 +684,23 @@ class Conda(object):
             "conda": [CONDA_PREFERRED_FORMAT] if CONDA_PREFERRED_FORMAT else ["_any"],
         }
         # Contains the architecture, the list of packages that need the URL
-        # and the list of formats needed
         url_to_pkgs = {}  # type: Dict[str, Tuple[str, List[PackageSpecification]]]
+
+        # We fetch the latest information from the cache about the environment.
+        # This is to have a quick path for:
+        #  - environment is resolved locally
+        #  - it resolves to something already in cache
+        cached_resolved_envs = self._remote_env_fetch(
+            [env.env_id for env in resolved_envs], ignore_co_resolved=True
+        )
+
+        # Here we take the resolved env (which has more information but maybe not
+        # all if we request a different package format for example) if it exists or
+        # the one we just resolved
+        resolved_env = [
+            cached_env if cached_env else env
+            for cached_env, env in zip(cached_resolved_envs, resolved_envs)
+        ]
 
         for resolved_env in resolved_envs:
             # We are now going to try to figure out all the locations we need to check
@@ -812,6 +843,8 @@ class Conda(object):
 
         # Fetch what we need; we fetch all formats for all packages (this is a superset
         # but simplifies the code)
+
+        # Contains cache_path, local_path
         upload_files = []  # type: List[Tuple[str, str]]
 
         def _cache_pkg(pkg: PackageSpecification, pkg_fmt: str, local_path: str) -> str:
@@ -914,39 +947,40 @@ class Conda(object):
                 self._echo(
                     " done in %d second%s." % (delta_time, plural_marker(delta_time))
                 )
+            else:
+                self._echo(
+                    "    All packages already cached in %s." % self._datastore_type
+                )
+            # If this is successful, we cache the environments. We do this *after*
+            # in case some packages fail to upload so we don't write corrupt
+            # information
+            upload_files = []
+            for resolved_env in resolved_envs:
+                if not resolved_env.dirty:
+                    continue
+                env_id = resolved_env.env_id
+                local_filepath = os.path.join(download_dir, "%s_%s_%s.env" % env_id)
+                cache_path = self.get_datastore_path_to_env(env_id)
+                with open(local_filepath, mode="w", encoding="utf-8") as f:
+                    json.dump(resolved_env.to_dict(), f)
+                upload_files.append((cache_path, local_filepath))
+                debug.conda_exec("Will upload env %s to %s" % (str(env_id), cache_path))
 
-                # If this is successful, we cache the environments. We do this *after*
-                # in case some packages fail to upload so we don't write corrupt
-                # information
-                upload_files = []
-                for resolved_env in resolved_envs:
-                    env_id = resolved_env.env_id
-                    local_filepath = os.path.join(download_dir, "%s_%s_%s.env" % env_id)
-                    cache_path = self.get_datastore_path_to_env(env_id)
+                # We also cache the full-id as an alias so we can access it directly
+                # later
+                local_filepath = os.path.join(download_dir, "%s.alias" % env_id.full_id)
+                if not os.path.isfile(local_filepath):
+                    # Don't upload the same thing for multiple arch
+                    cache_path = self.get_datastore_path_to_env_alias(
+                        AliasType.FULL_ID, env_id.full_id
+                    )
                     with open(local_filepath, mode="w", encoding="utf-8") as f:
-                        json.dump(resolved_env.to_dict(), f)
+                        json.dump([env_id.req_id, env_id.full_id], f)
                     upload_files.append((cache_path, local_filepath))
                     debug.conda_exec(
-                        "Will upload env %s to %s" % (str(env_id), cache_path)
+                        "Will upload alias for env %s to %s" % (str(env_id), cache_path)
                     )
-
-                    # We also cache the full-id as an alias so we can access it directly
-                    # later
-                    local_filepath = os.path.join(
-                        download_dir, "%s.alias" % env_id.full_id
-                    )
-                    if not os.path.isfile(local_filepath):
-                        # Don't upload the same thing for multiple arch
-                        cache_path = self.get_datastore_path_to_env_alias(
-                            AliasType.FULL_ID, env_id.full_id
-                        )
-                        with open(local_filepath, mode="w", encoding="utf-8") as f:
-                            json.dump([env_id.req_id, env_id.full_id], f)
-                        upload_files.append((cache_path, local_filepath))
-                        debug.conda_exec(
-                            "Will upload alias for env %s to %s"
-                            % (str(env_id), cache_path)
-                        )
+            if upload_files:
                 start = time.time()
                 self._echo(
                     "    Caching %d environments and aliases to %s ..."
@@ -962,7 +996,9 @@ class Conda(object):
                     " done in %d second%s." % (delta_time, plural_marker(delta_time))
                 )
             else:
-                self._echo("    All items already cached in %s." % self._datastore_type)
+                self._echo(
+                    "    All environments already cached in %s." % self._datastore_type
+                )
 
     def write_out_environments(self) -> None:
         write_to_conda_manifest(self._local_root, self._cached_environment)
@@ -1069,7 +1105,7 @@ class Conda(object):
         ) -> Tuple[PackageSpecification, Optional[str], Optional[Exception]]:
             pkg_spec, src_format = entry
             if pkg_spec.TYPE != "conda":
-                raise ValueError("Transmutation only supported for Conda packages")
+                raise CondaException("Transmutation only supported for Conda packages")
             debug.conda_exec("%s -> transmute %s" % (pkg_spec.filename, src_format))
 
             def _cph_transmute(src_file: str, dst_file: str, dst_format: str):
@@ -1094,7 +1130,7 @@ class Conda(object):
             try:
                 src_file = pkg_spec.local_file(src_format)
                 if src_file is None:
-                    raise ValueError(
+                    raise CondaException(
                         "Need to transmute %s but %s does not have a local file in that format"
                         % (src_format, pkg_spec.filename)
                     )
@@ -2512,13 +2548,17 @@ class Conda(object):
         self._call_conda(["env", "remove", "--name", env_name, "--yes", "--quiet"])
         self._cached_info = None
 
-    def _upload_to_ds(self, files: List[Tuple[str, str]]) -> None:
+    def _upload_to_ds(
+        self, files: List[Tuple[str, str]], overwrite: bool = False
+    ) -> None:
         def paths_and_handles():
             for cache_path, local_path in files:
                 with open(local_path, mode="rb") as f:
                     yield cache_path, f
 
-        self._storage.save_bytes(paths_and_handles(), len_hint=len(files))
+        self._storage.save_bytes(
+            paths_and_handles(), overwrite=overwrite, len_hint=len(files)
+        )
 
     def _env_lock_file(self, env_directory: str):
         # env_directory is either a name or a directory -- if name, it is assumed
