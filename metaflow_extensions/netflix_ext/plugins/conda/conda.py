@@ -1137,16 +1137,30 @@ class Conda(object):
                 dst_format = [f for f in CONDA_FORMATS if f != src_format][0]
                 dst_file = src_file[: -len(src_format)] + dst_format
 
-                # Micromamba transmute still has a few issues for now so
-                # forcing use of CPH which does not have these issues
+                # Micromamba transmute still has an issue with case insensitive
+                # OSs so force CPH use for cross-arch packages for now but use
+                # micromamba otherwise if available
                 # https://github.com/mamba-org/mamba/issues/2328
-                # if "micromamba" in cast(Dict[str, str], self._bins):
-                #    _micromamba_transmute(src_file, dst_file, dst_format)
-                if "cph" in cast(Dict[str, str], self._bins):
+                if (
+                    "micromamba" in cast(Dict[str, str], self._bins)
+                    and requested_arch == arch_id()
+                ):
+                    _micromamba_transmute(src_file, dst_file, dst_format)
+                elif "cph" in cast(Dict[str, str], self._bins):
                     _cph_transmute(src_file, dst_file, dst_format)
                 else:
+                    if requested_arch != arch_id() and "micromamba" not in cast(
+                        Dict[str, str], self._bins
+                    ):
+                        raise CondaException(
+                            "Transmuting a package with micromamba is not supported "
+                            "across architectures due to "
+                            "https://github.com/mamba-org/mamba/issues/2328. "
+                            "Please install conda-package-handling."
+                        )
                     raise CondaException(
-                        "Requesting to transmute package without cph"  # or micromamba
+                        "Requesting to transmute package without conda-package-handling "
+                        " or micromamba"
                     )
 
                 pkg_spec.add_local_file(dst_format, dst_file, transmuted=True)
@@ -2416,7 +2430,10 @@ class Conda(object):
             if p.TYPE == "pip":
                 local_path = p.local_file(p.url_format)
                 if local_path:
-                    pip_paths.append("%s\n" % p.local_file(p.url_format))
+                    debug.conda_exec(
+                        "For %s, using PIP package at '%s'" % (p.filename, local_path)
+                    )
+                    pip_paths.append("%s\n" % local_path)
                 else:
                     raise CondaException(
                         "Local file for package %s expected" % p.filename
@@ -2426,6 +2443,10 @@ class Conda(object):
                 if local_dir:
                     # If this is a local directory, we make sure we use the URL for that
                     # directory (so the conda system uses it properly)
+                    debug.conda_exec(
+                        "For %s, using local Conda directory at '%s'"
+                        % (p.filename, local_dir)
+                    )
                     with open(
                         os.path.join(local_dir, "info", "repodata_record.json"),
                         mode="r",
@@ -2437,6 +2458,10 @@ class Conda(object):
                     for f in CONDA_FORMATS:
                         cache_info = p.cached_version(f)
                         if cache_info:
+                            debug.conda_exec(
+                                "For %s, using cached package from '%s'"
+                                % (p.filename, cache_info.url)
+                            )
                             explicit_urls.append(
                                 "%s#%s\n"
                                 % (
@@ -2446,6 +2471,9 @@ class Conda(object):
                             )
                             break
                     else:
+                        debug.conda_exec(
+                            "For %s, using package from '%s'" % (p.filename, p.url)
+                        )
                         # Here we don't have any cache format so we just use the base URL
                         explicit_urls.append(
                             "%s#%s\n" % (p.url, p.pkg_hash(p.url_format))
@@ -2456,6 +2484,13 @@ class Conda(object):
                 )
 
         start = time.time()
+        if "micromamba" not in self._bins:
+            self._echo(
+                "WARNING: conda/mamba do not properly handle installing .conda "
+                "packages in offline mode. Creating environments may fail -- if so, "
+                "please install `micromamba`. "
+                "See https://github.com/conda/conda/issues/11775."
+            )
         self._echo("    Extracting and linking Conda environment ...", nl=False)
 
         if pip_paths:
