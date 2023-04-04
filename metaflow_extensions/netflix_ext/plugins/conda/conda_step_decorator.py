@@ -382,7 +382,7 @@ class CondaStepDecorator(StepDecorator):
                 # This should never happen -- it means the environment was not
                 # created somehow
                 raise InvalidEnvironmentException("No executable found for environment")
-            cli_args.entrypoint[0] = self.conda.python(my_env_id)
+            cli_args.entrypoint[0] = entrypoint
 
     def task_pre_step(
         self,

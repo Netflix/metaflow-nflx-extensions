@@ -2571,6 +2571,8 @@ class Conda(object):
                         )
                     )
 
+        self._cached_info = None
+
         # We write a `.metaflowenv` file to be able to get back the env_id from it in
         # case the name doesn't contain it. We also write it at the end to be able to
         # better determine if an environment is corrupt (if conda succeeds but not pip)
