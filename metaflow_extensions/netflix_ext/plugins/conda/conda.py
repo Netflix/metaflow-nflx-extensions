@@ -407,7 +407,7 @@ class Conda(object):
         # This is not great but doing so prevents errors when multiple runs run in
         # parallel. In a typical use-case, the locks are non-contended and it should
         # be very fast.
-        with CondaLock(self._echo, self._echo, self._env_lock_file(name)):
+        with CondaLock(self._echo, self._env_lock_file(name)):
             with CondaLockMultiDir(
                 self._echo, self._package_dirs, self._package_dir_lockfile_name
             ):
@@ -874,7 +874,9 @@ class Conda(object):
                     os.mkdir(search_dirs[0])
                 dest_dir = search_dirs[0]
 
-                with CondaLockMultiDir(search_dirs, self._package_dir_lockfile_name):
+                with CondaLockMultiDir(
+                    self._echo, search_dirs, self._package_dir_lockfile_name
+                ):
                     self._lazy_fetch_packages(
                         pkgs,
                         dest_dir,
@@ -2396,6 +2398,8 @@ class Conda(object):
         # We first check to see if the environment exists -- if it does, we skip it
         env_dir = os.path.join(self._root_env_dir, env_name)
 
+        self._cached_info = None
+
         if os.path.isdir(env_dir):
             possible_env_id = self._is_valid_env(env_dir)
             if possible_env_id and possible_env_id == env.env_id:
@@ -2567,8 +2571,6 @@ class Conda(object):
                         )
                     )
 
-        self._cached_info = None
-
         # We write a `.metaflowenv` file to be able to get back the env_id from it in
         # case the name doesn't contain it. We also write it at the end to be able to
         # better determine if an environment is corrupt (if conda succeeds but not pip)
@@ -2585,8 +2587,8 @@ class Conda(object):
 
     def _remove(self, env_name: str):
         # TODO: Verify that this is a proper metaflow environment to remove
-        self._call_conda(["env", "remove", "--name", env_name, "--yes", "--quiet"])
         self._cached_info = None
+        self._call_conda(["env", "remove", "--name", env_name, "--yes", "--quiet"])
 
     def _upload_to_ds(
         self, files: List[Tuple[str, str]], overwrite: bool = False

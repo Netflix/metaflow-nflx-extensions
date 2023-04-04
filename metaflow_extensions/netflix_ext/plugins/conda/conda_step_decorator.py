@@ -377,6 +377,11 @@ class CondaStepDecorator(StepDecorator):
                 python_path = os.pathsep.join([addl_paths, python_path])
 
             cli_args.env["PYTHONPATH"] = python_path
+            entrypoint = self.conda.python(my_env_id)
+            if entrypoint is None:
+                # This should never happen -- it means the environment was not
+                # created somehow
+                raise InvalidEnvironmentException("No executable found for environment")
             cli_args.entrypoint[0] = self.conda.python(my_env_id)
 
     def task_pre_step(
