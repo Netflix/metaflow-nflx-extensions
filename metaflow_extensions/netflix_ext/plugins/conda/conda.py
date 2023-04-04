@@ -407,8 +407,10 @@ class Conda(object):
         # This is not great but doing so prevents errors when multiple runs run in
         # parallel. In a typical use-case, the locks are non-contended and it should
         # be very fast.
-        with CondaLock(self._env_lock_file(name)):
-            with CondaLockMultiDir(self._package_dirs, self._package_dir_lockfile_name):
+        with CondaLock(self._echo, self._echo, self._env_lock_file(name)):
+            with CondaLockMultiDir(
+                self._echo, self._package_dirs, self._package_dir_lockfile_name
+            ):
                 self._create(env, name)
         if do_symlink:
             python_path = self.python(name)
@@ -430,7 +432,7 @@ class Conda(object):
     def remove_for_name(self, name: str):
         if not self._found_binaries:
             self._find_conda_binary()
-        with CondaLock(self._env_lock_file(name)):
+        with CondaLock(self._echo, self._env_lock_file(name)):
             self._remove(name)
 
     def python(self, env_desc: Union[EnvID, str]) -> Optional[str]:
@@ -1643,7 +1645,7 @@ class Conda(object):
                 "--target",
                 pip_dir,
                 "--report",
-                "out.json",
+                os.path.join(pip_dir, "out.json"),
             ]
             for c in chain(
                 CONDA_DEFAULT_PIP_SOURCES or [],
@@ -1680,7 +1682,9 @@ class Conda(object):
 
             # We should now have a json blob in out.json
             result = []  # type: List[PackageSpecification]
-            with open("out.json", mode="r", encoding="utf-8") as f:
+            with open(
+                os.path.join(pip_dir, "out.json"), mode="r", encoding="utf-8"
+            ) as f:
                 desc = json.load(f)
             for package_desc in desc["install"]:
                 parse_result = parse_explicit_url_pip(
@@ -1930,7 +1934,7 @@ class Conda(object):
     def _find_conda_binary(self):
         # Lock as we may be trying to resolve multiple environments at once and therefore
         # we may be trying to validate the installation multiple times.
-        with CondaLock("/tmp/mf-conda-check.lock"):
+        with CondaLock(self._echo, "/tmp/mf-conda-check.lock"):
             if self._found_binaries:
                 return
             if self._resolvers[EnvType.CONDA_ONLY] not in _CONDA_DEP_RESOLVERS:
@@ -1967,9 +1971,10 @@ class Conda(object):
             if self._validate_conda_installation():
                 # This means we have an exception so we are going to try to install
                 with CondaLock(
+                    self._echo,
                     os.path.abspath(
                         os.path.join(CONDA_LOCAL_PATH, "..", ".conda-install.lock")
-                    )
+                    ),
                 ):
                     if self._validate_conda_installation():
                         self._install_local_conda()
@@ -2223,7 +2228,7 @@ class Conda(object):
 
         if self._conda_executable_type == "micromamba":
             env_dir = os.path.join(self._info["root_prefix"], "envs")
-            with CondaLock(self._env_lock_file(os.path.join(env_dir, "_"))):
+            with CondaLock(self._echo, self._env_lock_file(os.path.join(env_dir, "_"))):
                 # Grab a lock *once* on the parent directory so we pick anyname for
                 # the "directory".
                 for entry in os.scandir(env_dir):
@@ -2234,7 +2239,7 @@ class Conda(object):
         else:
             envs = self._info["envs"]  # type: List[str]
             for env in envs:
-                with CondaLock(self._env_lock_file(env)):
+                with CondaLock(self._echo, self._env_lock_file(env)):
                     possible_env_id = _check_match(env)
                     if possible_env_id:
                         ret.setdefault(possible_env_id, []).append(env)
@@ -2862,11 +2867,18 @@ class Conda(object):
 
 
 class CondaLock(object):
-    def __init__(self, lock: str, timeout: int = CONDA_LOCK_TIMEOUT, delay: int = 10):
+    def __init__(
+        self,
+        echo: Callable[..., None],
+        lock: str,
+        timeout: Optional[int] = CONDA_LOCK_TIMEOUT,
+        delay: int = 10,
+    ):
         self.lock = lock
         self.locked = False
         self.timeout = timeout
         self.delay = delay
+        self.echo = echo
 
     def _acquire(self) -> None:
         start = time.time()
@@ -2875,6 +2887,7 @@ class CondaLock(object):
         except OSError as x:
             if x.errno != errno.EEXIST:
                 raise
+        try_count = 0
         while True:
             try:
                 self.fd = os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_RDWR)
@@ -2883,6 +2896,17 @@ class CondaLock(object):
             except OSError as e:
                 if e.errno != errno.EEXIST:
                     raise
+
+                if try_count < 3:
+                    try_count += 1
+                elif try_count == 3:
+                    self.echo(
+                        "Waited %ds to acquire lock at '%s' -- if unexpected, "
+                        "please remove that file and retry"
+                        % (try_count * self.delay, self.lock)
+                    )
+                    try_count += 1
+
                 if self.timeout is None:
                     raise CondaException("Could not acquire lock {}".format(self.lock))
                 if (time.time() - start) >= self.timeout:
@@ -2912,9 +2936,10 @@ class CondaLock(object):
 class CondaLockMultiDir(object):
     def __init__(
         self,
+        echo: Callable[..., None],
         dirs: List[str],
         lockfile: str,
-        timeout: int = CONDA_LOCK_TIMEOUT,
+        timeout: Optional[int] = CONDA_LOCK_TIMEOUT,
         delay: int = 10,
     ):
         self.lockfile = lockfile
@@ -2923,11 +2948,13 @@ class CondaLockMultiDir(object):
         self.timeout = timeout
         self.delay = delay
         self.fd = []  # type: List[int]
+        self.echo = echo
 
     def _acquire(self) -> None:
         start = time.time()
         for d in self.dirs:
             full_file = os.path.join(d, self.lockfile)
+            try_count = 0
             try:
                 os.makedirs(d)
             except OSError as x:
@@ -2942,6 +2969,17 @@ class CondaLockMultiDir(object):
                 except OSError as e:
                     if e.errno != errno.EEXIST:
                         raise
+
+                    if try_count < 3:
+                        try_count += 1
+                    elif try_count == 3:
+                        self.echo(
+                            "Waited %ds to acquire lock at '%s' -- if unexpected, "
+                            "please remove that file and retry"
+                            % (try_count * self.delay, full_file)
+                        )
+                        try_count += 1
+
                     if self.timeout is None:
                         raise CondaException(
                             "Could not acquire lock {}".format(full_file)

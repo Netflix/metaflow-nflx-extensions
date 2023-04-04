@@ -531,8 +531,8 @@ def resolve(
     if req_file:
         _parse_req_file(req_file, new_sources, new_pip_deps)
 
-    if python is None:
-        python = platform.python_version()
+    if base_env_python is None:
+        base_env_python = platform.python_version()
 
     # Compute the deps
     if len(new_conda_deps) == 0 and (
