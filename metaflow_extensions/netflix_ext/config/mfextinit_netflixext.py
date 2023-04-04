@@ -30,7 +30,21 @@ CONDA_MAGIC_FILE_V2 = "conda_v2.cnd"
 # Mamba promises faster package dependency resolution times, which
 # should result in an appreciable speedup in flow environment initialization.
 CONDA_DEPENDENCY_RESOLVER = from_conf(
-    "CONDA_DEPENDENCY_RESOLVER", "mamba", get_validate_choice_fn(["mamba", "conda"])
+    "CONDA_DEPENDENCY_RESOLVER",
+    "mamba",
+    get_validate_choice_fn(["mamba", "conda", "micromamba"]),
+)
+
+# For pure PIP environments, if you want to support those, set to the pip resolver
+CONDA_PIP_DEPENDENCY_RESOLVER = from_conf(
+    "CONDA_PIP_DEPENDENCY_RESOLVER", "pip", get_validate_choice_fn(["pip"])
+)
+
+# For mixed conda/pip environments, if you want to support those, set this to 'conda-lock'
+CONDA_MIXED_DEPENDENCY_RESOLVER = from_conf(
+    "CONDA_MIXED_DEPENDENCY_RESOLVER",
+    None,
+    get_validate_choice_fn(["conda-lock"]),
 )
 
 # Timeout trying to acquire the lock to create environments
@@ -73,13 +87,6 @@ CONDA_PREFERRED_FORMAT = from_conf(
     "CONDA_PREFERRED_FORMAT",
     None,
     get_validate_choice_fn([".tar.bz2", ".conda"]),
-)
-
-# Conda or conda-lock to resolve env
-CONDA_PREFERRED_RESOLVER = from_conf(
-    "CONDA_PREFERRED_RESOLVER",
-    "conda-lock",
-    get_validate_choice_fn(["conda", "conda-lock"]),
 )
 
 CONDA_DEFAULT_PIP_SOURCES = from_conf("CONDA_DEFAULT_PIP_SOURCES", [])

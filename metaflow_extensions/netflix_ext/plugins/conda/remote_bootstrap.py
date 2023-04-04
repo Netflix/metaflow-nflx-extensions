@@ -13,8 +13,9 @@ from metaflow.debug import debug
 
 from metaflow.plugins.env_escape import generate_trampolines, ENV_ESCAPE_PY
 
-from .env_descr import read_conda_manifest
 from .conda import Conda
+from .env_descr import EnvID
+from .utils import arch_id
 
 
 def my_echo_always(*args: Any, **kwargs: Any) -> Callable[..., None]:
@@ -27,12 +28,13 @@ def bootstrap_environment(
 ):
     start = time.time()
     my_echo_always("    Setting up Conda ...", nl=False)
-    my_conda = Conda(my_echo_always, datastore_type, mode="remote")
     setup_conda_manifest()
+    my_conda = Conda(my_echo_always, datastore_type, mode="remote")
     my_echo_always(" done in %d seconds." % int(time.time() - start))
 
-    cached_info = read_conda_manifest(DATASTORE_LOCAL_DIR)
-    resolved_env = cached_info.env_for(req_id, full_id)
+    resolved_env = my_conda.environment(
+        EnvID(req_id=req_id, full_id=full_id, arch=arch_id())
+    )
     if resolved_env is None:
         raise RuntimeError(
             "Cannot find cached environment for hash %s:%s" % (req_id, full_id)

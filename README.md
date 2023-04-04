@@ -42,15 +42,18 @@ on what is working and what is not is most welcome.
 This decorator improves several aspects of the included Conda decorator:
 - it has significant performance gains:
   - resolving environments in parallel
-  - supporting `.conda` packages (instead of only the older `.tar.bz2` packages)
   - using `micromamba` for environment creation
 - it allows the inclusion of `pypi` packages in the environment specification
+- it has a pure `@pip` decorator which is a frequently requested feature for
+  metaflow
 - it is more efficient in its use of caching
 - environment descriptions are also cached allowing anyone to reuse a previously
   resolved environment
 - it provides more visibility into the environments created
 - it allows you to recreate the environment used for a step locally to aid in
   accessing the artifacts produced and/or debug the execution of a step.
+- it adds support for named environments allowing you to name environments and share
+  them across your flows and amongst users.
 
 ### Installation
 To use, simply install this package alongside the `metaflow` package. This package
@@ -75,8 +78,12 @@ The useful configuration values are listed below:
   all the cached packages and environments
   as well as eventual conda distributions to use. For safety, do not point this to the
   same prefix as for the current Conda implementation.
-- `CONDA_DEPENDENCY_RESOLVER`: `mamba` or `conda`; `mamba` is recommended as
-  typically faster.
+- `CONDA_DEPENDENCY_RESOLVER`: `mamba`, `conda` or `micromamba`; `mamba` is recommended as
+  typically faster. `micromamba` is sometimes a bit more unstable but can be even faster
+- `CONDA_PIP_DEPENDENCY_RESOLVER`: `pip` or None; if None, you will not be able to resolve
+  environments specifying only pip dependencies.
+- `CONDA_MIXED_DEPENDENCY_RESOLVER`:  `conda-lock` or None; if None, you will not be able
+  to resolve environments specifying a mix of pip and conda dependencies.
 - `CONDA_REMOTE_INSTALLER_DIRNAME`: if set contains a prefix within
   `CONDA_S3ROOT`/`CONDA_AZUREROOT`/`CONDA_GSROOT`
   under which `micromamba` (or other similar executable) are cached. If not specified,
@@ -97,9 +104,6 @@ The useful configuration values are listed below:
 - `CONDA_PREFERRED_FORMAT`: `.tar.bz2` or `.conda`. Prefer `.conda` for speed gains; any
   package not available in the preferred format will be transmuted to it automatically.
   If left empty, whatever package is found will be used (ie: there is no preference)
-- `CONDA_PREFERRED_RESOLVER`: `conda` or `conda-lock`; use `conda`/`mamba` or `conda-lock`
-  to resolve environments. `conda-lock` is in more active development but allows for
-  the inclusion of `pypi` dependencies.
 - `CONDA_DEFAULT_PIP_SOURCES`: list of additional mirrors to search for packages. Useful
   if your company has an internal mirror.
 
@@ -114,10 +118,15 @@ For Azure, you need to do the following two steps once during setup:
 Your local conda environment or the cached environment (in `CONDA_LOCAL_DIST_DIRNAME`)
 needs to satisfy the following requirements:
 - `conda`
-- (optional but recommended) `mamba>=1.3.0`
+- (optional but recommended) `mamba>=1.4.0`
+- (strongly recommended) `micromamba>=1.4.0`
 
-##### `Pypi` package support
-If you want support for `pypi` packages, you will also need:
+##### Pure pip package support
+If you want support for environments containing only pip packages, you will also need:
+- `pip>=23.0`
+
+##### Mixed (pip + conda)  package support
+If you want support for environments containing both pip and conda packages, you will also need:
 - `conda-lock>=1.3.0`
 - `lockfile`
 
@@ -131,18 +140,35 @@ If you set `CONDA_PREFERRED_FORMAT` to either `.tar.bz2` or `.conda`, for some p
 we will need to transmute them from one format to the other. For example if a package
 is available for download as a `.tar.bz2` package but you request `.conda` packages,
 the system will transmute (convert) the `.tar.bz2` package into one that ends in
-`.conda`. To do so, you need to have the following package installed:
+`.conda`. To do so, you need to have one of the following package installed:
 - `conda-package-handling>=1.9.0`
+- `micromamba>=1.4.0` (not supported for cross-platform transmutation due to
+   https://github.com/mamba-org/mamba/issues/2328)
+
 
 Also due to a bug in `conda` and the way we use it, if your resolved environment
 contains `.conda` packages and you do not have `micromamba` installed, the
 environment creation will fail.
 
-#### Uninstallation
+### Known issues
+This plugin relies on conda, mamba, and micromamba. These technologies are being
+constantly improved and there are a few outstanding issues that we are aware of:
+- if you have an environment with both `.conda` and `.tar.bz2` packages, conda/mamba
+  will fail to create it because we use it in "offline" mode
+  (see: https://github.com/conda/conda/issues/11775). The workaround is to have
+  `micromamba` available which does not have this issue and which Metaflow will use
+  if it is present
+- `conda-lock` has issues with certain name clashes between conda and pip packages.
+  See https://github.com/conda/conda-lock/pull/290 for more information.
+- Transmuting packages with `micromamba` is not supported for cross-platform
+  transmutes due to https://github.com/mamba-org/mamba/issues/2328. Install
+  `conda-package-handling` as well to support this.
+
+### Uninstallation
 Uninstalling this package will revert the behavior of the conda decorator to the one
 currently present in Metaflow. It is safe to switch back and forth and there should
 be no conflict between both implementations provided they do not share the same
-caching prefix in S3/azure/gs.
+caching prefix in S3/azure/gs and that you do not use any of the new features.
 
 ### Usage
 Your current code with `conda` decorators will continue working as is. However, at this
@@ -152,42 +178,72 @@ resolved environments will be ignored and re-resolved.
 
 #### Additional decorator options
 The `conda` and `conda_base` decorators take the following additional options:
+- `name` and `pathspec`: An environment name or a pathspec to a previously executed
+  step. If specified, no other arguments are allowed. These options allow you to
+  refer to previously resolved environments, either by name or by referencing a
+  step that executed in that environment.
 - `channels`: A list of additional Conda channels to search. This is useful if the
   channel is not on `anaconda.org` and cannot be referred to as using the `::` notation.
 - `pip_packages`: A dictionary using the same format as the `libraries` option to
   specify packages present in `pypi`.
 - `pip_sources`: A list of additional `pypi` repositories.
-- `archs`: A list of strings indicating the architectures to resolve this environment
-  for. By default, the environment is resolved for the current platform and `linux-64`
-  if running on a remote environment.
 
-#### Additional decorator
-Additional decorators `pip` and `pip_base` add a syntactic sugar around the `conda`
-and `conda_base` decorators where you would specify just `pip_packages`. These may
-go away in the future.
+
+#### Additional `pip` decorator
+Additional decorators `pip` and `pip_base` allow you to specify pure pip-based
+environments. The arguments to these decorators are `python`, `disabled`, 
+`sources` and `packages` with the obvious meanings.
+
+You may wonder why the presence of a separate `pip` decorator when the `pip`
+dependencies could be just as easily specified in the `conda` decorator using the
+new `pip_packages` option. There is actually a major difference in how the
+environments are resolved. There are three cases:
+- a pure Conda environment with no pip decorator or packages: in this case, the
+  environment uses conda/mamba to resolve the set of dependencies
+- a pure Pip environment with only pip dependencies specified via the `pip` or
+  `pip_base` decorators: in this case, a base Python environment is resolved with
+  Conda (containing only `python`) and `pip` is then used to resolve all other
+  dependencies.
+- a mixed environment with a mixture of pip and conda packages (specified via
+  the `conda` decorator): in this case, `conda-lock` is used to resolve the
+  entire environment. `conda-lock` uses a two phased approach to resolving, first
+  resolving the conda environment and then using `poetry` to resolve the additional
+  `pip` packages within the confines of the defined `conda` environment.
 
 #### Additional command-line tool
 An additional `environment` command-line tool is available invoked as follows:
 `python myflow.py --environment=conda environment --help`.
 It provides the following two sub-commands:
-- `list`: will list all available resolved environments for the steps in the flow.
-  Environonments can be present locally or remotely cached.
-- `select-resolved`: will list all available resolved environments for the steps in
-  the flow and allow you to select which specific resolved environment should be used
-  for each step. This allows you to re-resolve an environment for example (without
-  changing the dependencies -- something not easily possible in the current
-  implementation) as well as select a different environment. Note that once selected,
-  the environment will apply to any step that has the same set of dependencies.
-
-In both of these commands, by default a menu is used to display the information. You can
-disable this using `--no-menu`. If using the menu, the list of environments can be
-sorted (use the `~` key) or searched (use the `/` key). Normal up/down/page-up/page-down
-navigation will also work (if you ever have that many environments).
+- `resolve`: will resolve one or more steps without executing the flow.
+- `show`: will show information about the environments for the flow (whether they exist,
+  need to be resolved, etc.)
 
 Finally, the `metaflow` command is also augmented with an `environment` subcommand which
-currently only has the `create-local` subcommand which allows you to specify the pathspec
-to a step and it will recreate a local Conda environment duplicating the one present
-for that step.
+has the following sub-commands:
+- `create`: locally creates/instantiates an environment
+- `resolve`: resolves an environment using either a requirements.txt file (for pip only
+  environments) or an environment.yml file (for conda or mixed environments)
+- `show`: shows information about an environment (packages, etc)
+- `alias`: aliases an environment giving it a name so it can be used later
+- `get`: fetches an environment from the remote environment store locally
+
+#### Named environments
+Environments can optionally be given aliases.
+
+Implicitly, the pathspec to a step that executed with a given Conda environment is
+an alias for that environment and you can refer to it using that pathspec. For
+example, if step `start` in run 456 of `MyFlow` executed within a certain
+environment, that environment can be referred to as `MyFlow/456/start`.
+
+You can also give more generic aliases to environments. A generic alias is simply
+a string but to simplify naming, we use the Docker tag convention:
+- the "name" part of the alias is a "/" separated alphanumerical string
+- the "tag" part of the alias is separated from the name with a ":" and
+  consists of an alphanumerical string as well. The "tag" is optional
+  and defaults to "latest" if not specified.
+
+Unlike in Docker, aliases are immutable except for the ones with the tags
+"latest", "candidate" or "stable".
 
 ### Technical details
 This section dives a bit more in the technical aspects of this implementation.
