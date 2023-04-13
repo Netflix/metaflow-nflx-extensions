@@ -89,7 +89,7 @@ CONDA_PREFERRED_FORMAT = from_conf(
     get_validate_choice_fn([".tar.bz2", ".conda"]),
 )
 
-CONDA_DEFAULT_PIP_SOURCES = from_conf("CONDA_DEFAULT_PIP_SOURCES", [])
+CONDA_DEFAULT_PIP_SOURCE = from_conf("CONDA_DEFAULT_PIP_SOURCE", None)
 
 CONDA_REMOTE_COMMANDS = ("batch", "kubernetes")
 

@@ -298,7 +298,12 @@ def create(
         env = cast(Conda, obj.conda).add_to_resolved_env(
             env,
             using_steps=["ipykernel"],
-            deps=[TStr(category="conda", value="ipykernel")],
+            deps=[
+                TStr(
+                    category="pip" if env.env_type == EnvType.PIP_ONLY else "conda",
+                    value="ipykernel",
+                )
+            ],
             sources=[],
             architecture=arch_id(),
         )
@@ -466,6 +471,7 @@ def resolve(
     new_conda_deps = {}  # type: Dict[str, str]
     new_pip_deps = {}  # type: Dict[str, str]
     new_sources = []  # type: List[TStr]
+    new_extras = []  # type: List[TStr]
 
     using_str = None  # type: Optional[str]
     if using:
@@ -479,6 +485,7 @@ def resolve(
     base_env_pip_deps = {}  # type: Dict[str, str]
     base_env_conda_channels = []  # type: List[str]
     base_env_pip_sources = []  # type: List[str]
+    base_env_extras = []  # type: List[TStr]
     base_env_python = python
     base_env = None  # type: Optional[ResolvedEnvironment]
     if using_str:
@@ -525,11 +532,14 @@ def resolve(
             [s.value for s in all_sources if s.category == "pip"]
         )
 
+        # Finally the extras
+        base_env_extras = base_env.extras
+
     # Parse yaml first to put conda sources first to be consistent with step decorator
     if yml_file:
-        _parse_yml_file(yml_file, new_sources, new_conda_deps, new_pip_deps)
+        _parse_yml_file(yml_file, new_extras, new_sources, new_conda_deps, new_pip_deps)
     if req_file:
-        _parse_req_file(req_file, new_sources, new_pip_deps)
+        _parse_req_file(req_file, new_extras, new_sources, new_pip_deps)
 
     if base_env_python is None:
         base_env_python = platform.python_version()
@@ -574,7 +584,9 @@ def resolve(
         )
     )
 
-    requested_req_id = ResolvedEnvironment.get_req_id(deps, sources)
+    extras = base_env_extras + new_extras
+
+    requested_req_id = ResolvedEnvironment.get_req_id(deps, sources, extras)
 
     for cur_arch in archs:
         if base_env_id:
@@ -595,6 +607,7 @@ def resolve(
             EnvID(requested_req_id, "_default", cur_arch),
             deps,
             sources,
+            extras,
             base_env,
             local_only=local_only,
             force=force,
@@ -798,22 +811,49 @@ def get(obj, default: bool, arch: Optional[str], source_env: str):
     cast(Conda, obj.conda).write_out_environments()
 
 
-def _parse_req_file(file_name: str, sources: List[TStr], deps: Dict[str, str]):
+def _parse_req_file(
+    file_name: str, extra_args: List[TStr], sources: List[TStr], deps: Dict[str, str]
+):
     with open(file_name, mode="r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            elif line.startswith("-i") or line.startswith("--index-url"):
-                sources.append(
-                    TStr(category="pip", value=line.split(" ", 1)[1].strip())
+            splits = line.split(maxsplit=1)
+            first_word = splits[0]
+            if len(splits) > 1:
+                rem = splits[1]
+            else:
+                rem = None
+            if first_word in ("-i", "--index-url"):
+                raise InvalidEnvironmentException(
+                    "To specify a base PIP index, set `METAFLOW_CONDA_DEFAULT_PIP_SOURCE; "
+                    "you can specify additional indices using --extra-index-url"
                 )
-            elif line.startswith("#"):
+            elif first_word == "--extra-index-url" and rem:
+                sources.append(TStr(category="pip", value=rem))
+            elif first_word in ("-f", "--find-links", "--trusted-host") and rem:
+                extra_args.append(
+                    TStr(category="pip", value=" ".join([first_word, rem]))
+                )
+            elif first_word in ("--pre", "--no-index"):
+                extra_args.append(TStr(category="pip", value=first_word))
+            elif first_word.startswith("#"):
                 continue
-            elif line.startswith("-"):
+            elif first_word.startswith("-"):
                 raise InvalidEnvironmentException(
                     "'%s' is not a supported line in a requirements.txt" % line
                 )
+            elif (
+                first_word.startswith("git+")
+                or first_word.startswith("hg+")
+                or first_word.startswith("bzr+")
+                or first_word.startswith("svn+")
+                or (rem and rem[0] == "@")
+            ):
+                if rem and rem[0] == "@":
+                    first_word = rem[1:].strip()
+                deps[first_word] = ""
             else:
                 splits = line.split("=", 1)
                 if len(splits) == 1:
@@ -824,6 +864,7 @@ def _parse_req_file(file_name: str, sources: List[TStr], deps: Dict[str, str]):
 
 def _parse_yml_file(
     file_name: str,
+    _: List[TStr],
     sources: List[TStr],
     conda_deps: Dict[str, str],
     pip_deps: Dict[str, str],

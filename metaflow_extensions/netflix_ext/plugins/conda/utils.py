@@ -6,10 +6,15 @@ import re
 
 from enum import Enum
 from itertools import chain, product
-from typing import NamedTuple, Optional, Sequence, Tuple, Union
-from urllib.parse import urlparse
+from typing import List, NamedTuple, Optional, Sequence, Tuple, Union
+from urllib.parse import urlparse, unquote
 
-from metaflow_extensions.netflix_ext.vendor.packaging.tags import cpython_tags
+from metaflow_extensions.netflix_ext.vendor.packaging.tags import (
+    compatible_tags,
+    _cpython_abis,
+    cpython_tags,
+    Tag,
+)
 
 from metaflow.debug import debug
 from metaflow.exception import MetaflowException
@@ -26,7 +31,7 @@ from metaflow.metaflow_environment import InvalidEnvironmentException
 # are inferred)
 _ALL_CONDA_FORMATS = (".tar.bz2", ".conda")
 _VALID_IMAGE_NAME = "[^a-z0-9_/]"
-_VALID_TAG_NAME = "[^a-z0-9]"
+_VALID_TAG_NAME = "[^a-z0-9_]"
 
 
 class AliasType(Enum):
@@ -114,10 +119,13 @@ def arch_id() -> str:
         )
 
 
-def pip_platform_args(python_version: str, arch: str) -> Sequence[str]:
-    # Converts a Conda architecture to the arguments we pass to pip
-    # to get packages for that platform
-    py_version = tuple(map(int, python_version.split(".")))
+def pip_tags_from_arch(python_version: str, arch: str) -> List[Tag]:
+    # Converts a Conda architecture to a tuple containing (implementation, platforms, abis)
+    # This function will assume a CPython implementation
+
+    # This is inspired by what pip does:
+    # https://github.com/pypa/pip/blob/0442875a68f19b0118b0b88c747bdaf6b24853ba/src/pip/_internal/utils/compatibility_tags.py
+    py_version = tuple(map(int, python_version.split(".")[:2]))
     if arch.startswith("linux-"):
         detail = arch.split("-")[-1]
         if detail == "64":
@@ -125,7 +133,7 @@ def pip_platform_args(python_version: str, arch: str) -> Sequence[str]:
         platforms = [
             "manylinux%s_%s" % (tag, arch) for tag in ["_2_17", "2014", "2010", "1"]
         ]
-        platforms.append("linux_%s" % arch)
+        platforms.append("linux_%s" % detail)
     elif arch == "osx-64":
         platforms = [
             "macosx_10_9_x86_64",
@@ -140,24 +148,19 @@ def pip_platform_args(python_version: str, arch: str) -> Sequence[str]:
     else:
         raise InvalidEnvironmentException("Unsupported platform: %s" % arch)
 
-    platforms = []
-    # We now have all the platforms, we also need the abis for CPython.
-    abis = [
-        x
-        for x in map(lambda x: x.abi, cpython_tags(py_version, platforms=["_"]))
-        if x not in ["none", "abi3"]
-    ]
-    return [
-        "--implementation",
-        "cp",
-        *(chain.from_iterable(product(["--platform"], platforms))),
-        *(chain.from_iterable(product(["--abi"], abis))),
-    ]
+    interpreter = "cp%s" % ("".join(map(str, py_version)))
+
+    abis = _cpython_abis(py_version)
+
+    supported = []  # type: List[Tag]
+    supported.extend(cpython_tags(py_version, abis, platforms))
+    supported.extend(compatible_tags(py_version, interpreter, platforms))
+    return supported
 
 
 ParseExplicitResult = NamedTuple(
     "ParseExplicitResult",
-    [("filename", str), ("url", str), ("url_format", str), ("hash", str)],
+    [("filename", str), ("url", str), ("url_format", str), ("hash", Optional[str])],
 )
 
 
@@ -176,7 +179,7 @@ def parse_explicit_url_conda(url: str) -> ParseExplicitResult:
     for f in _ALL_CONDA_FORMATS:
         if filename.endswith(f):
             url_format = f
-            filename = filename[: -len(f)]
+            filename = unquote(filename[: -len(f)])
             break
     else:
         raise CondaException(
@@ -184,6 +187,34 @@ def parse_explicit_url_conda(url: str) -> ParseExplicitResult:
         )
     return ParseExplicitResult(
         filename=filename, url=url_clean, url_format=url_format, hash=url_hash
+    )
+
+
+def parse_explicit_path_pip(path: str) -> ParseExplicitResult:
+    # Takes a filename in the form file://<path> and returns:
+    #  - the filename
+    #  - the URL (always file://local/<filename> so caching works across systems)
+    #  - the format of the URL
+    #  - the hash will be set to None
+    if not path.startswith("file://"):
+        raise CondaException("Local path '%s' does not start with file://" % path)
+    path = path[7:]
+    orig_filename = os.path.basename(path)
+    for f in [".whl", ".tar.gz"]:
+        if orig_filename.endswith(f):
+            url_format = f
+            filename = unquote(orig_filename[: -len(f)])
+            break
+    else:
+        raise CondaException(
+            "Path '%s' is not a supported format (%s)"
+            % (path, str([".whl", ".tar.gz"]))
+        )
+    return ParseExplicitResult(
+        filename=filename,
+        url="file://local-file/%s" % orig_filename,
+        url_format=url_format,
+        hash=None,
     )
 
 
@@ -205,7 +236,7 @@ def parse_explicit_url_pip(url: str) -> ParseExplicitResult:
     for f in [".whl", ".tar.gz"]:
         if filename.endswith(f):
             url_format = f
-            filename = filename[: -len(f)]
+            filename = unquote(filename[: -len(f)])
             break
     else:
         raise CondaException(
