@@ -48,6 +48,7 @@ class EnvsResolver(object):
         env_id: EnvID,
         deps: Sequence[TStr],
         sources: Sequence[TStr],
+        extras: Sequence[TStr],
         base_env: Optional[ResolvedEnvironment] = None,
         base_from_full_id: bool = False,
         local_only: bool = False,
@@ -77,6 +78,7 @@ class EnvsResolver(object):
                 "steps": ["ad-hoc"],
                 "deps": deps,
                 "sources": sources,
+                "extras": extras,
                 "conda_format": [CONDA_PREFERRED_FORMAT]
                 if CONDA_PREFERRED_FORMAT
                 else ["_any"],
@@ -122,6 +124,7 @@ class EnvsResolver(object):
                     "steps": [step_name],
                     "deps": decorator.step_deps,
                     "sources": decorator.source_deps,
+                    "extras": [],
                     "conda_format": [CONDA_PREFERRED_FORMAT]
                     if CONDA_PREFERRED_FORMAT
                     else ["_any"],
@@ -244,6 +247,7 @@ class EnvsResolver(object):
                         env_desc["steps"],
                         env_desc["deps"],
                         env_desc["sources"],
+                        env_desc["extras"],
                         env_id.arch,
                         inputs_are_addl=False,
                         cur_is_accurate=env_desc["base_accurate"],
@@ -255,6 +259,7 @@ class EnvsResolver(object):
                     env_desc["steps"],
                     env_desc["deps"],
                     env_desc["sources"],
+                    env_desc["extras"],
                     env_id.arch,
                 ),
             )

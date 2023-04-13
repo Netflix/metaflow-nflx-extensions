@@ -98,6 +98,19 @@ class CachePackage:
             }
 
     @classmethod
+    def make_partial_cache_url(cls, base_url: str):
+        if cls.TYPE != "pip":
+            raise ValueError("make_partial_cache_url only for pip packages")
+        cls._ensure_class_per_type()
+        url = urlparse(base_url)
+        return os.path.join(
+            cast(str, CONDA_PACKAGES_DIRNAME),
+            cls.TYPE,
+            url.netloc,
+            url.path.lstrip("/"),
+        )
+
+    @classmethod
     def make_cache_url(
         cls,
         base_url: str,
@@ -209,7 +222,7 @@ class PackageSpecification:
         self,
         filename: str,
         url: str,
-        url_format: str,
+        url_format: Optional[str] = None,
         hashes: Optional[Dict[str, str]] = None,
         cache_info: Optional[Dict[str, CachePackage]] = None,
     ):
@@ -557,6 +570,7 @@ class ResolvedEnvironment:
         self,
         user_dependencies: Sequence[TStr],
         user_sources: Optional[Sequence[TStr]],
+        user_extra_args: Optional[Sequence[TStr]],
         arch: Optional[str] = None,
         env_id: Optional[EnvID] = None,
         all_packages: Optional[Sequence[PackageSpecification]] = None,
@@ -569,6 +583,7 @@ class ResolvedEnvironment:
         self._env_type = env_type
         self._user_dependencies = list(user_dependencies)
         self._user_sources = list(user_sources) if user_sources else []
+        self._user_extra_args = list(user_extra_args) if user_extra_args else []
         if all_packages is not None:
             # It should already be sorted but being very safe
             all_packages = sorted(all_packages, key=lambda p: p.filename)
@@ -577,7 +592,7 @@ class ResolvedEnvironment:
 
         if not env_id:
             env_req_id = ResolvedEnvironment.get_req_id(
-                self._user_dependencies, self._user_sources
+                self._user_dependencies, self._user_sources, self._user_extra_args
             )
             env_full_id = "_unresolved"
             if all_packages is not None:
@@ -604,19 +619,25 @@ class ResolvedEnvironment:
     def get_req_id(
         deps: Sequence[TStr],
         sources: Optional[Sequence[TStr]] = None,
+        extra_args: Optional[Sequence[TStr]] = None,
     ) -> str:
         # Extract per category so we can sort independently for each category
         deps_by_category = {}  # type: Dict[str, List[str]]
         sources_by_category = {}  # type: Dict[str, List[str]]
+        extras_by_category = {}  # type: Dict[str, List[str]]
         for d in deps:
             deps_by_category.setdefault(d.category, []).append(d.value)
         if sources:
             for s in sources:
                 sources_by_category.setdefault(s.category, []).append(s.value)
+        if extra_args:
+            for e in extra_args:
+                extras_by_category.setdefault(e.category, []).append(e.value)
         return ResolvedEnvironment._compute_hash(
             chain(
                 *(sorted(deps_by_category[c]) for c in sorted(deps_by_category)),
-                *(sorted(sources_by_category[c]) for c in sorted(sources_by_category))
+                *(sorted(sources_by_category[c]) for c in sorted(sources_by_category)),
+                *(sorted(extras_by_category[c]) for c in sorted(extras_by_category))
             )
         )
 
@@ -646,6 +667,10 @@ class ResolvedEnvironment:
     @property
     def sources(self) -> List[TStr]:
         return self._user_sources
+
+    @property
+    def extras(self) -> List[TStr]:
+        return self._user_extra_args
 
     @property
     def env_id(self) -> EnvID:
@@ -768,13 +793,22 @@ class ResolvedEnvironment:
         if local_instances:
             lines.extend(["*Locally present as* %s" % ", ".join(local_instances), ""])
 
+        # The `replace` is because the echo function uses "*" to split in bold/not bold
+        # It is quite likely to have a package spec like "3.8.*" so we replace it with
+        # the similar looking "3.8.x"
         lines.append(
-            "*User-requested packages* %s" % ", ".join([str(d) for d in self.deps])
+            "*User-requested packages* %s"
+            % ", ".join([str(d).replace("*", "x") for d in self.deps])
         )
 
         if self.sources:
             lines.append(
                 "*User sources* %s" % ", ".join([str(s) for s in self.sources])
+            )
+
+        if self.extras:
+            lines.append(
+                "*Extra resolution flags* %s" % ", ".join([str(s) for s in self.extras])
             )
         lines.append("")
 
@@ -857,6 +891,7 @@ class ResolvedEnvironment:
         return {
             "deps": [str(x) for x in self._user_dependencies],
             "sources": [str(x) for x in self._user_sources],
+            "extras": [str(x) for x in self._user_extra_args],
             "packages": [p.to_dict() for p in self.packages],
             "resolved_on": self._resolved_on.isoformat(),
             "resolved_by": self._resolved_by,
@@ -875,6 +910,7 @@ class ResolvedEnvironment:
         return cls(
             user_dependencies=[TStr.from_str(x) for x in d["deps"]],
             user_sources=[TStr.from_str(x) for x in d["sources"]],
+            user_extra_args=[TStr.from_str(x) for x in d.get("extras", [])],
             env_id=env_id,
             all_packages=all_packages,
             resolved_on=datetime.fromisoformat(d["resolved_on"]),
