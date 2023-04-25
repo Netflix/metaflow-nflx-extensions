@@ -1,6 +1,7 @@
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -46,6 +47,9 @@ from metaflow_extensions.netflix_ext.plugins.conda.utils import (
 from .utils import (
     download_mf_version,
 )
+
+
+REQ_SPLIT_LINE = re.compile(r"([^~<=>]*)([~<=>]+.*)?")
 
 
 class CommandObj:
@@ -470,6 +474,7 @@ def resolve(
 
     new_conda_deps = {}  # type: Dict[str, str]
     new_pip_deps = {}  # type: Dict[str, str]
+    new_np_conda_deps = {}  # type: Dict[str, str]
     new_sources = []  # type: List[TStr]
     new_extras = []  # type: List[TStr]
 
@@ -482,10 +487,10 @@ def resolve(
     archs = list(arch) if arch else [arch_id()]
     base_env_id = None
     base_env_conda_deps = {}  # type: Dict[str, str]
+    base_env_np_conda_deps = {}  # type: Dict[str, str]
     base_env_pip_deps = {}  # type: Dict[str, str]
-    base_env_conda_channels = []  # type: List[str]
-    base_env_pip_sources = []  # type: List[str]
     base_env_extras = []  # type: List[TStr]
+    base_env_sources = []  # type: List[TStr]
     base_env_python = python
     base_env = None  # type: Optional[ResolvedEnvironment]
     if using_str:
@@ -522,15 +527,11 @@ def resolve(
                 else:
                     # We will re-add python later
                     base_env_conda_deps[vals[0]] = vals[1]
+            elif d.category == "npconda":
+                base_env_np_conda_deps[vals[0]] = vals[1]
 
         # Now of channels/sources
-        all_sources = base_env.sources
-        base_env_conda_channels.extend(
-            [s.value for s in all_sources if s.category == "conda"]
-        )
-        base_env_pip_sources.extend(
-            [s.value for s in all_sources if s.category == "pip"]
-        )
+        base_env_sources = base_env.sources
 
         # Finally the extras
         base_env_extras = base_env.extras
@@ -539,7 +540,9 @@ def resolve(
     if yml_file:
         _parse_yml_file(yml_file, new_extras, new_sources, new_conda_deps, new_pip_deps)
     if req_file:
-        _parse_req_file(req_file, new_extras, new_sources, new_pip_deps)
+        _parse_req_file(
+            req_file, new_extras, new_sources, new_pip_deps, new_np_conda_deps
+        )
 
     if base_env_python is None:
         base_env_python = platform.python_version()
@@ -560,11 +563,13 @@ def resolve(
 
     conda_deps.update(base_env_conda_deps)
     conda_deps.update(new_conda_deps)
+    np_conda_deps = dict(base_env_np_conda_deps)
+    np_conda_deps.update(new_np_conda_deps)
 
     # Compute the sources
-    seen = set()
-    sources = []  # type: List[str]
-    for c in chain(base_env_conda_channels, base_env_pip_sources, new_sources):
+    seen = set()  # ttype: List[TStr]
+    sources = []  # type: List[TStr]
+    for c in chain(base_env_sources, new_sources):
         if c in seen:
             continue
         seen.add(c)
@@ -580,6 +585,10 @@ def resolve(
             (
                 TStr("pip", "%s==%s" % (name, ver) if ver else name)
                 for name, ver in pip_deps.items()
+            ),
+            (
+                TStr("npconda", "%s==%s" % (name, ver) if ver else name)
+                for name, ver in np_conda_deps.items()
             ),
         )
     )
@@ -812,7 +821,11 @@ def get(obj, default: bool, arch: Optional[str], source_env: str):
 
 
 def _parse_req_file(
-    file_name: str, extra_args: List[TStr], sources: List[TStr], deps: Dict[str, str]
+    file_name: str,
+    extra_args: List[TStr],
+    sources: List[TStr],
+    deps: Dict[str, str],
+    np_deps: Dict[str, str],
 ):
     with open(file_name, mode="r", encoding="utf-8") as f:
         for line in f:
@@ -838,6 +851,18 @@ def _parse_req_file(
                 )
             elif first_word in ("--pre", "--no-index"):
                 extra_args.append(TStr(category="pip", value=first_word))
+            elif first_word == "--conda-pkg":
+                # Special extension to allow non-python conda package specification
+                split_res = REQ_SPLIT_LINE.match(splits[1])
+                if split_res is None:
+                    raise InvalidEnvironmentException(
+                        "Could not parse conda package '%s'" % splits[1]
+                    )
+                s = split_res.groups()
+                if s[1] is None:
+                    np_deps[s[0].replace(" ", "")] = ""
+                else:
+                    np_deps[s[0].replace(" ", "")] = s[1].replace(" ", "").lstrip("=")
             elif first_word.startswith("#"):
                 continue
             elif first_word.startswith("-"):
@@ -855,11 +880,16 @@ def _parse_req_file(
                     first_word = rem[1:].strip()
                 deps[first_word] = ""
             else:
-                splits = line.split("=", 1)
-                if len(splits) == 1:
-                    deps[line.strip()] = ""
+                split_res = REQ_SPLIT_LINE.match(line)
+                if split_res is None:
+                    raise InvalidEnvironmentException("Could not parse '%s'" % line)
+                splits = split_res.groups()
+                if splits[1] is None:
+                    deps[splits[0].replace(" ", "")] = ""
                 else:
-                    deps[splits[0].strip()] = splits[1].lstrip(" =").rstrip()
+                    deps[splits[0].replace(" ", "")] = (
+                        splits[1].replace(" ", "").lstrip("=")
+                    )
 
 
 def _parse_yml_file(

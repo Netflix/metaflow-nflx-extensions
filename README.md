@@ -104,8 +104,7 @@ The useful configuration values are listed below:
 - `CONDA_PREFERRED_FORMAT`: `.tar.bz2` or `.conda`. Prefer `.conda` for speed gains; any
   package not available in the preferred format will be transmuted to it automatically.
   If left empty, whatever package is found will be used (ie: there is no preference)
-- `CONDA_DEFAULT_PIP_SOURCES`: list of additional mirrors to search for packages. Useful
-  if your company has an internal mirror.
+- `CONDA_DEFAULT_PIP_SOURCE`: mirror to use for PIP.
 
 ##### Azure specific setup
 For Azure, you need to do the following two steps once during setup:
@@ -210,6 +209,13 @@ environments are resolved. There are three cases:
   resolving the conda environment and then using `poetry` to resolve the additional
   `pip` packages within the confines of the defined `conda` environment.
 
+Note that to support a bit more flexibility, you can have a pure Pip environment
+as well as non-Python conda packages. This is similar to the mixed environment
+but, in some cases, pip is more flexible than conda-lock in requirement specification
+(for example, pip supports GIT repositories) so it makes it possible to gain the
+flexibility of installing non python packages in your environment and still use
+pip to resolve your python dependencies.
+
 #### Additional command-line tool
 An additional `environment` command-line tool is available invoked as follows:
 `python myflow.py --environment=conda environment --help`.
@@ -226,6 +232,33 @@ has the following sub-commands:
 - `show`: shows information about an environment (packages, etc)
 - `alias`: aliases an environment giving it a name so it can be used later
 - `get`: fetches an environment from the remote environment store locally
+
+#### Supported format for requirements.txt
+
+The requirements.txt file, which can be used to specify a pip only environment, supports
+the following syntax (a subset of the full syntax supported by pip):
+- Comment lines starting with '#'
+- `--extra-index-url`: to spcify an additional repository to look at. Note that to
+  specify the `--index-url`, set it with the `METAFLOW_CONDA_DEFAULT_PIP_SOURCE
+  environment variable.
+- `-f`, `--find-links` and `--trusted-host`: passed directly to pip with the
+  corresponding argument
+- `--pre`, `--no-index`: passed directly to pip
+- `--conda-pkg`: extension allowing you to specify a conda package that does not
+  need Python
+- a requirement specification. This can include GIT repositories or local directories
+  as well as more classic package specification. Constraints and environment
+  markers are not supported.
+
+Note that GIT repositories, local directories and non wheel packages are not
+compatible with cross-architecture resolution. Metaflow will build the wheel on the fly
+when resolving the environment and this is only possible if the same architecture is used.
+
+If possible, it is best to specify pre-built packages.
+
+#### Supported format for environment.yml
+
+The environment.yml format is the same as the one for conda-lock.
 
 #### Named environments
 Environments can optionally be given aliases.
