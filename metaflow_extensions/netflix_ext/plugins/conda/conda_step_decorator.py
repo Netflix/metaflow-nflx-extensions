@@ -177,6 +177,10 @@ class CondaStepDecorator(StepDecorator):
             TStr("conda", "%s==%s" % (name, ver) if ver else name)
             for name, ver in self._conda_deps().items()
         )
+        deps.extend(
+            TStr("npconda", "%s==%s" % (name, ver) if ver else name)
+            for name, ver in self._np_conda_deps().items()
+        )
         # If we have an empty version, we consider that the name is a direct
         # link to a package like a URL
         deps.extend(
@@ -257,6 +261,7 @@ class CondaStepDecorator(StepDecorator):
         # Information about the environment this environment is built from
         self._from_env = None  # type: Optional[ResolvedEnvironment]
         self._from_env_conda_deps = None  # type: Optional[Dict[str, str]]
+        self._from_env_np_conda_deps = None  # type: Optional[Dict[str, str]]
         self._from_env_conda_channels = None  # type: Optional[List[str]]
         self._from_env_pip_deps = None  # type: Optional[Dict[str, str]]
         self._from_env_pip_sources = None  # type: Optional[List[str]]
@@ -297,7 +302,9 @@ class CondaStepDecorator(StepDecorator):
             with open(
                 os.path.join(self._metaflow_home, "INFO"), mode="wt", encoding="utf-8"
             ) as f:
-                f.write(json.dumps(self._env.get_environment_info()))
+                f.write(
+                    json.dumps(self._env.get_environment_info(include_ext_info=True))
+                )
 
         # Do the same for EXT_PKG
         try:
@@ -471,6 +478,7 @@ class CondaStepDecorator(StepDecorator):
             # We either compute all or nothing so it means we computed none
             self._from_env_conda_deps = {}
             self._from_env_pip_deps = {}
+            self._from_env_np_conda_deps = {}
             self._from_env_conda_channels = []
             self._from_env_pip_sources = []
 
@@ -484,6 +492,8 @@ class CondaStepDecorator(StepDecorator):
                     self._from_env_pip_deps[vals[0]] = vals[1]
                 elif d.category == "conda":
                     self._from_env_conda_deps[vals[0]] = vals[1]
+                elif d.category == "npconda":
+                    self._from_env_np_conda_deps[vals[0]] = vals[1]
 
             # Now of channels/sources
             all_sources = base.sources
@@ -497,6 +507,10 @@ class CondaStepDecorator(StepDecorator):
     def _from_conda_deps(self) -> Optional[Dict[str, str]]:
         self._compute_from_env()
         return self._from_env_conda_deps
+
+    def _from_np_conda_deps(self) -> Optional[Dict[str, str]]:
+        self._compute_from_env()
+        return self._from_env_np_conda_deps
 
     def _from_pip_deps(self) -> Optional[Dict[str, str]]:
         self._compute_from_env()
@@ -516,6 +530,11 @@ class CondaStepDecorator(StepDecorator):
         if conda_deps:
             return conda_deps["python"]
         return None
+
+    def _np_conda_deps(self) -> Dict[str, str]:
+        if self.from_env:
+            return dict(cast(Dict[str, str], self._from_np_conda_deps()))
+        return {}
 
     def _conda_deps(self) -> Dict[str, str]:
         deps = get_pinned_conda_libs(self._python_version(), self._flow_datastore_type)

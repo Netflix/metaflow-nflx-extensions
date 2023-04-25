@@ -4,6 +4,7 @@ import errno
 import json
 import os
 import platform
+import re
 import requests
 import shutil
 import socket
@@ -256,8 +257,31 @@ class Conda(object):
                     )
             else:
                 # Pip only mode
+                # In this mode, we also allow (as a workaround for poor support for
+                # more advanced options in conda-lock (like git repo, local support,
+                # etc)) the inclusion of conda packages that are *not* python packages.
+                # To ensure this, we check the npconda packages, create an environment
+                # for it and check if that environment doesn't contain python deps.
+                # If that is the case, we then create the actual environment including
+                # both conda and npconda packages and re-resolve. We could maybe
+                # optimize to not resolve from scratch twice but given this is a rare
+                # situation and the cost is only during resolution, it doesn't seem
+                # worth it.
+                npconda_deps = [d for d in deps if d.category == "npconda"]
+                if npconda_deps:
+                    npconda_pkgs = self._resolve_env_with_conda(
+                        npconda_deps, sources, architecture
+                    )
+                    if any((p.filename.startswith("python-") for p in npconda_pkgs)):
+                        raise InvalidEnvironmentException(
+                            "Cannot specify a non-python Conda dependency that uses "
+                            "python: %s. Please use the mixed mode instead."
+                            % ", ".join([d.value for d in npconda_deps])
+                        )
                 packages = self._resolve_env_with_conda(deps, sources, architecture)
-                conda_only_deps = [d for d in deps if d.category == "conda"]
+                conda_only_deps = [
+                    d for d in deps if d.category in ("conda", "npconda")
+                ]
                 conda_only_sources = [s for s in sources if s.category == "conda"]
                 builder_resolved_env = ResolvedEnvironment(
                     conda_only_deps,
@@ -1503,7 +1527,7 @@ class Conda(object):
         self, deps: Sequence[TStr], channels: Sequence[TStr], architecture: str
     ) -> List[PackageSpecification]:
 
-        deps = [d for d in deps if d.category == "conda"]
+        deps = [d for d in deps if d.category in ("conda", "npconda")]
 
         if not self._have_micromamba_server:
             raise CondaException(
@@ -1513,7 +1537,8 @@ class Conda(object):
         self._start_micromamba_server()
         # Form the payload to send to the server
         req = {
-            "specs": [d.value for d in deps if d.category == "conda"] + ["pip"],
+            "specs": [d.value for d in deps if d.category in ("conda", "npconda")]
+            + ["pip"],
             "platform": architecture,
             "channels": [c.value for c in channels if c.category == "conda"],
         }
@@ -1560,7 +1585,7 @@ class Conda(object):
         architecture: str,
     ) -> List[PackageSpecification]:
 
-        deps = [d for d in deps if d.category == "conda"]
+        deps = [d for d in deps if d.category in ("conda", "npconda")]
 
         result = []
         with tempfile.TemporaryDirectory() as mamba_dir:
@@ -1578,7 +1603,11 @@ class Conda(object):
 
             if not have_channels:
                 have_channels = any(
-                    ["::" in d.value for d in deps if d.category == "conda"]
+                    [
+                        "::" in d.value
+                        for d in deps
+                        if d.category in ("conda", "npconda")
+                    ]
                 )
             if have_channels:
                 # Add no-channel-priority because otherwise if a version
@@ -1702,9 +1731,25 @@ class Conda(object):
                 args.extend(["--extra-index-url", c])
 
             supported_tags = pip_tags_from_arch(python_version, architecture)
-            if python_version != platform.python_version() or architecture != arch_id():
-                clean_version = ".".join(python_version.split(".")[:2])
-                args.extend(["--only-binary=:all:", "--python-version", clean_version])
+            pip_python_version = self._call_binary(["-V"], binary="pip").decode(
+                encoding="utf-8"
+            )
+            matched_version = re.search(
+                r"\(python ([23])\.([0-9]+)\)", pip_python_version
+            )
+            if not matched_version:
+                raise InvalidEnvironmentException(
+                    "Cannot identify Python for PIP; got %s" % pip_python_version
+                )
+            clean_python_version = ".".join(python_version.split(".")[:2])
+            if (
+                clean_python_version
+                != ".".join([matched_version.group(1), matched_version.group(2)])
+                or architecture != arch_id()
+            ):
+                args.extend(
+                    ["--only-binary=:all:", "--python-version", clean_python_version]
+                )
 
             if architecture != arch_id():
                 implementations = []  # type: List[str]
@@ -2129,7 +2174,7 @@ class Conda(object):
     ) -> List[PackageSpecification]:
         outfile_name = None
         my_arch = arch_id()
-        if any([d.category not in ("pip", "conda") for d in deps]):
+        if any([d.category not in ("pip", "conda", "npconda") for d in deps]):
             raise CondaException(
                 "Cannot resolve dependencies that include non-Conda/Pip dependencies: %s"
                 % "; ".join(map(str, deps))
@@ -2172,7 +2217,9 @@ class Conda(object):
                     )
                 )
 
-        pip_channels = ([CONDA_DEFAULT_PIP_SOURCE] if CONDA_DEFAULT_PIP_SOURCE else []) + [
+        pip_channels = (
+            [CONDA_DEFAULT_PIP_SOURCE] if CONDA_DEFAULT_PIP_SOURCE else []
+        ) + [
             c.value for c in channels if c.category == "pip"
         ]  # type: List[str]
         try:
@@ -2182,7 +2229,9 @@ class Conda(object):
             # library to avoid adding another dep
 
             pip_deps = [d.value for d in deps if d.category == "pip"]
-            conda_deps = [d.value for d in deps if d.category == "conda"] + ["pip"]
+            conda_deps = [
+                d.value for d in deps if d.category in ("conda", "npconda")
+            ] + ["pip"]
             # Add channels
             lines = ["channels:\n"]
             lines.extend(

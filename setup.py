@@ -1,6 +1,6 @@
 from setuptools import setup, find_namespace_packages
 
-version = "0.1.0rc5"
+version = "0.1.0"
 
 setup(
     name="metaflow-netflixext",
@@ -35,5 +35,5 @@ setup(
         "metaflow_extensions.netflix_ext.plugins.conda.resources": ["*.png", "*.svg"]
     },
     python_requires=">=3.7.2",
-    install_requires=["metaflow>=2.7.22"],
+    install_requires=["metaflow>=2.8.3"],
 )
