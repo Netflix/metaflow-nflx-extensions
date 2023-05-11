@@ -65,7 +65,6 @@ class CondaEnvironment(MetaflowEnvironment):
         echo("Bootstrapping Conda environment... (this could take a few minutes)")
 
         self._conda = cast(Conda, self._conda)
-
         resolver = EnvsResolver(self._conda)
 
         for step in self._flow:
@@ -95,8 +94,8 @@ class CondaEnvironment(MetaflowEnvironment):
         self._conda.add_environments(update_envs)
 
         # Update the default environment
-        for env_id, resolved_env, _ in resolver.resolved_environments():
-            if env_id.full_id == "_default":
+        for env_id, resolved_env, _ in resolver.all_environments():
+            if resolved_env and env_id.full_id == "_default":
                 self._conda.set_default_environment(resolved_env.env_id)
 
         # We are done -- write back out the environments.
@@ -116,8 +115,9 @@ class CondaEnvironment(MetaflowEnvironment):
         return self.base_env.validate_environment(echo, datastore_type)
 
     def decospecs(self) -> Tuple[str, ...]:
-        # Apply conda decorator and base environment's decorators to all steps
-        return ("conda",) + self.base_env.decospecs()
+        # Apply conda and pip decorator and base environment's decorators to all steps.
+        # We will later resolve which to keep.
+        return ("conda", "pip") + self.base_env.decospecs()
 
     def _get_env_id(self, step_name: str) -> Optional[EnvID]:
         conda_decorator = get_conda_decorator(self._flow, step_name)

@@ -190,6 +190,18 @@ class Conda(object):
             return self._bins.get(binary)
         return None
 
+    @staticmethod
+    def env_type_for_deps(deps: Sequence[TStr]) -> EnvType:
+        conda_packages = [d for d in deps if d.category == "conda"]
+        pip_packages = [d for d in deps if d.category == "pip"]
+        env_type = EnvType.CONDA_ONLY
+        if len(conda_packages) == 1:
+            # This is a pip only mode
+            env_type = EnvType.PIP_ONLY
+        elif len(pip_packages) > 0:
+            env_type = EnvType.MIXED
+        return env_type
+
     def resolve(
         self,
         using_steps: Sequence[str],
@@ -198,6 +210,7 @@ class Conda(object):
         extras: Sequence[TStr],
         architecture: str,
         env_type: Optional[EnvType] = None,
+        builder_env: Optional[ResolvedEnvironment] = None,
     ) -> ResolvedEnvironment:
         if self._mode != "local":
             # TODO: Maybe relax this later but for now assume that the remote environment
@@ -214,14 +227,7 @@ class Conda(object):
         #  - a single conda package (the python version) and all pip packages
         #    (conda-only for the python version and pip-only for the rest)
         if env_type is None:
-            conda_packages = [d for d in deps if d.category == "conda"]
-            pip_packages = [d for d in deps if d.category == "pip"]
-            env_type = EnvType.CONDA_ONLY
-            if len(conda_packages) == 1:
-                # This is a pip only mode
-                env_type = EnvType.PIP_ONLY
-            elif len(pip_packages) > 0:
-                env_type = EnvType.MIXED
+            env_type = self.env_type_for_deps(deps)
         debug.conda_exec("Environment is of type %s" % env_type.value)
         # We now check we have a resolver
         resolver_bin = self._resolvers[env_type]
@@ -278,19 +284,65 @@ class Conda(object):
                             "python: %s. Please use the mixed mode instead."
                             % ", ".join([d.value for d in npconda_deps])
                         )
-                packages = self._resolve_env_with_conda(deps, sources, architecture)
-                conda_only_deps = [
-                    d for d in deps if d.category in ("conda", "npconda")
-                ]
-                conda_only_sources = [s for s in sources if s.category == "conda"]
-                builder_resolved_env = ResolvedEnvironment(
-                    conda_only_deps,
-                    conda_only_sources,
-                    None,
-                    architecture,
-                    all_packages=packages,
-                    env_type=EnvType.CONDA_ONLY,
-                )
+
+                # We have two cases here with the builder envs because we actually
+                # need up to two builder environments:
+                #  - arch_id() == architecture:
+                #    - in this case, we can use the builder_env passed in if it exists
+                #      for both the environment to build PIP packages in and the
+                #      environment to resolve the PIP environment in
+                #  - arch_id() != architecture:
+                #    - in this case, we can use the builder_env passed in, if it
+                #      exists ONLY to resolve the PIP environment (the passed in
+                #      environment is always of arch arch_id()). We cannot, in this
+                #      case build PIP packages (cross arch build so we don't do that)
+                if arch_id() == architecture and builder_env:
+                    debug.conda_exec("Using builder_env passed in")
+                    packages = list(builder_env.packages)
+                else:
+                    debug.conda_exec("Building base conda env with %s" % str(deps))
+
+                    packages = self._resolve_env_with_conda(deps, sources, architecture)
+                    if arch_id() == architecture:
+                        debug.conda_exec("Using as builder env")
+                        conda_only_deps = [
+                            d for d in deps if d.category in ("conda", "npconda")
+                        ]
+                        conda_only_sources = [
+                            s for s in sources if s.category == "conda"
+                        ]
+
+                        builder_env = ResolvedEnvironment(
+                            conda_only_deps,
+                            conda_only_sources,
+                            None,
+                            architecture,
+                            all_packages=packages,
+                            env_type=EnvType.CONDA_ONLY,
+                        )
+                    elif not builder_env:
+                        python_only_dep = [
+                            d
+                            for d in deps
+                            if d.category == "conda" and d.value.startswith("python==")
+                        ]
+                        debug.conda_exec(
+                            "Building vanilla builder env with %s"
+                            % str(python_only_dep)
+                        )
+                        python_only_packages = self._resolve_env_with_conda(
+                            python_only_dep,
+                            sources,
+                            arch_id(),
+                        )
+                        builder_env = ResolvedEnvironment(
+                            python_only_dep,
+                            [s for s in sources if s.category == "conda"],
+                            None,
+                            arch_id(),
+                            all_packages=python_only_packages,
+                            env_type=EnvType.CONDA_ONLY,
+                        )
                 if resolver_bin == "pip":
                     # We need to get the python package to get the version
                     python_version = None  # type: Optional[str]
@@ -310,7 +362,7 @@ class Conda(object):
                             sources,
                             extras,
                             architecture,
-                            builder_resolved_env,
+                            builder_env,
                         )
                     )
                 else:
@@ -331,7 +383,7 @@ class Conda(object):
         except CondaException as e:
             raise CondaStepException(e, using_steps)
 
-    def add_to_resolved_env(
+    def info_for_add_to_resolved_env(
         self,
         cur_env: ResolvedEnvironment,
         using_steps: Sequence[str],
@@ -340,8 +392,9 @@ class Conda(object):
         extras: Sequence[TStr],
         architecture: str,
         inputs_are_addl: bool = True,
-        cur_is_accurate: bool = True,
-    ) -> ResolvedEnvironment:
+    ) -> Tuple[EnvID, Sequence[TStr], Sequence[TStr], Sequence[TStr], Sequence[TStr]]:
+        # Computes the new information for a derived environment (built on top of cur_env)
+        # Returns the new EnvID, sources, user_deps, deps and extras
         if self._mode != "local":
             # TODO: Maybe relax this later but for now assume that the remote environment
             # is a "lighter" conda.
@@ -381,26 +434,45 @@ class Conda(object):
             "_default",
             architecture,
         )
+
+        return new_env_id, sources, user_deps, deps, extras
+
+    def add_to_resolved_env(
+        self,
+        cur_env: ResolvedEnvironment,
+        using_steps: Sequence[str],
+        deps: Sequence[TStr],
+        sources: Sequence[TStr],
+        extras: Sequence[TStr],
+        architecture: str,
+        inputs_are_addl: bool = True,
+        cur_is_accurate: bool = True,
+        builder_env: Optional[ResolvedEnvironment] = None,
+    ) -> ResolvedEnvironment:
+        if self._mode != "local":
+            # TODO: Maybe relax this later but for now assume that the remote environment
+            # is a "lighter" conda.
+            raise CondaException("Cannot resolve environments in a remote environment")
+
+        if not self._found_binaries:
+            self._find_conda_binary()
+
+        (
+            new_env_id,
+            sources,
+            user_deps,
+            deps,
+            extras,
+        ) = self.info_for_add_to_resolved_env(
+            cur_env, using_steps, deps, sources, extras, architecture, inputs_are_addl
+        )
+
         new_resolved_env = self.environment(new_env_id)
         if new_resolved_env:
             return new_resolved_env
 
         # Figure out the env_type
         new_env_type = cur_env.env_type
-        if cur_env.env_type == EnvType.PIP_ONLY and any(
-            [d.value for d in deps if d.category == "conda"]
-        ):
-            self._echo(
-                "Upgrading an environment from %s to %s due to new Conda dependencies"
-                % (EnvType.PIP_ONLY, EnvType.MIXED)
-            )
-        elif cur_env.env_type == EnvType.CONDA_ONLY and any(
-            [d.value for d in deps if d.category == "pip"]
-        ):
-            self._echo(
-                "Upgrading an environment from %s to %s due to new Pip dependencies"
-                % (EnvType.CONDA_ONLY, EnvType.MIXED)
-            )
 
         new_resolved_env = self.resolve(
             using_steps,
@@ -409,6 +481,7 @@ class Conda(object):
             extras,
             architecture,
             env_type=new_env_type,
+            builder_env=builder_env,
         )
 
         # We now try to copy as much information as possible from the current environment
@@ -1710,9 +1783,27 @@ class Conda(object):
                 )
             )
         )
+
+        # Create the environment in which we will call pip
+        debug.conda_exec("Creating builder conda environment")
+        techo = self._echo
+        self._echo = self._no_echo
+        self.create_for_name(
+            self._env_builder_directory_from_envid(builder_env.env_id),
+            builder_env,
+        )
+        self._echo = techo
+
+        builder_python = cast(
+            str,
+            self.python(self._env_builder_directory_from_envid(builder_env.env_id)),
+        )
+
         result = []
         with tempfile.TemporaryDirectory() as pip_dir:
             args = [
+                "-m",
+                "pip",
                 "--isolated",
                 "install",
                 "--ignore-installed",
@@ -1731,27 +1822,9 @@ class Conda(object):
                 args.extend(["--extra-index-url", c])
 
             supported_tags = pip_tags_from_arch(python_version, architecture)
-            pip_python_version = self._call_binary(["-V"], binary="pip").decode(
-                encoding="utf-8"
-            )
-            matched_version = re.search(
-                r"\(python ([23])\.([0-9]+)\)", pip_python_version
-            )
-            if not matched_version:
-                raise InvalidEnvironmentException(
-                    "Cannot identify Python for PIP; got %s" % pip_python_version
-                )
-            clean_python_version = ".".join(python_version.split(".")[:2])
-            if (
-                clean_python_version
-                != ".".join([matched_version.group(1), matched_version.group(2)])
-                or architecture != arch_id()
-            ):
-                args.extend(
-                    ["--only-binary=:all:", "--python-version", clean_python_version]
-                )
 
             if architecture != arch_id():
+
                 implementations = []  # type: List[str]
                 abis = []  # type: List[str]
                 platforms = []  # type: List[str]
@@ -1761,13 +1834,15 @@ class Conda(object):
                     platforms.append(tag.platform)
                 implementations = [x.interpreter for x in supported_tags]
                 extra_args = (
-                    *(
-                        chain.from_iterable(
-                            product(["--implementation"], implementations)
-                        )
-                    ),
-                    *(chain.from_iterable(product(["--abi"], abis))),
-                    *(chain.from_iterable(product(["--platform"], platforms))),
+                    "--only-binary=:all:",
+                    # This seems to overly constrain things so skipping for now
+                    # *(
+                    #    chain.from_iterable(
+                    #        product(["--implementation"], set(implementations))
+                    #    )
+                    # ),
+                    *(chain.from_iterable(product(["--abi"], set(abis)))),
+                    *(chain.from_iterable(product(["--platform"], set(platforms)))),
                 )
 
                 args.extend(extra_args)
@@ -1786,7 +1861,7 @@ class Conda(object):
                         # Something originally like pkg==ver
                         args.append(d.value)
 
-            self._call_binary(args, binary="pip")
+            self._call_binary(args, binary=builder_python)
 
             # We should now have a json blob in out.json
             result = []  # type: List[PackageSpecification]
@@ -2075,21 +2150,6 @@ class Conda(object):
 
                     target_directory = os.path.join(self._package_dirs[0], "pip")
                     os.makedirs(target_directory, exist_ok=True)
-
-                    techo = self._echo
-                    self._echo = self._no_echo
-                    self.create_for_name(
-                        self._env_builder_directory_from_envid(builder_env.env_id),
-                        builder_env,
-                    )
-                    self._echo = techo
-
-                    builder_python = cast(
-                        str,
-                        self.python(
-                            self._env_builder_directory_from_envid(builder_env.env_id)
-                        ),
-                    )
 
                     def _build_with_pip(identifier: int, key: str, url: str):
                         dest_path = os.path.join(pip_dir, "build_%d" % identifier)
@@ -2921,6 +2981,7 @@ class Conda(object):
                     )
             elif p.TYPE == "conda":
                 local_dir = p.local_dir
+                found_local_dir = False
                 if local_dir:
                     # If this is a local directory, we make sure we use the URL for that
                     # directory (so the conda system uses it properly)
@@ -2934,8 +2995,17 @@ class Conda(object):
                         encoding="utf-8",
                     ) as f:
                         info = json.load(f)
-                        explicit_urls.append("%s#%s\n" % (info["url"], info["md5"]))
-                else:
+                        # Some packages don't have a repodata_record.json with url so
+                        # we will download again
+                        if "url" in info and "md5" in info:
+                            explicit_urls.append("%s#%s\n" % (info["url"], info["md5"]))
+                            found_local_dir = True
+                        else:
+                            debug.conda_exec(
+                                "Skipping local directory as no URL information"
+                            )
+
+                if not found_local_dir:
                     for f in CONDA_FORMATS:
                         cache_info = p.cached_version(f)
                         if cache_info:

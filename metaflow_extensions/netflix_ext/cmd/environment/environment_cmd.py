@@ -297,9 +297,11 @@ def create(
         start = time.time()
         # We need to install ipykernel into the resolved environment
         obj.echo("    Resolving an environment compatible with Jupyter ...", nl=False)
-        # We don't pin to avoid issues with python versions -- it will take the
-        # best one it can.
-        env = cast(Conda, obj.conda).add_to_resolved_env(
+
+        # We use envsresolver to properly deal with builder environments and what not
+        ipy_env_id, ipy_sources, ipy_deps, _, _ = cast(
+            Conda, obj.conda
+        ).info_for_add_to_resolved_env(
             env,
             using_steps=["ipykernel"],
             deps=[
@@ -309,12 +311,46 @@ def create(
                 )
             ],
             sources=[],
+            extras=[],
             architecture=arch_id(),
         )
-        # Cache this information for the next time around
-        cast(Conda, obj.conda).cache_environments([env])
-        cast(Conda, obj.conda).add_environments([env])
-        cast(Conda, obj.conda).set_default_environment(env.env_id)
+        resolver = EnvsResolver(obj.conda)
+        resolver.add_environment(
+            ipy_env_id, deps=ipy_deps, sources=ipy_sources, extras=[], base_env=env
+        )
+        resolver.resolve_environments(obj.echo)
+        update_envs = []  # type: List[ResolvedEnvironment]
+        if obj.datastore_type != "local":
+            # We may need to update caches
+            # Note that it is possible that something we needed to resolve, we don't need
+            # to cache (if we resolved to something already cached).
+            formats = set()  # type: Set[str]
+            for _, resolved_env, f, _ in resolver.need_caching_environments(
+                include_builder_envs=True
+            ):
+                update_envs.append(resolved_env)
+                formats.update(f)
+
+            cast(Conda, obj.conda).cache_environments(
+                update_envs, {"conda": list(formats)}
+            )
+        else:
+            update_envs = [
+                resolved_env
+                for _, resolved_env, _ in resolver.new_environments(
+                    include_builder_envs=True
+                )
+            ]
+        cast(Conda, obj.conda).add_environments(update_envs)
+
+        # Update the default environment
+        for env_id, resolved_env, _ in resolver.all_environments(
+            include_builder_envs=True
+        ):
+            obj.conda.set_default_environment(resolved_env.env_id)
+
+        cast(Conda, obj.conda).write_out_environments()
+
         delta_time = int(time.time() - start)
         obj.echo(" done in %d second%s." % (delta_time, plural_marker(delta_time)))
 
@@ -552,10 +588,10 @@ def resolve(
         not base_env or base_env.env_type == EnvType.PIP_ONLY
     ):
         # Assume a pip environment for base deps
-        pip_deps = get_pinned_conda_libs(base_env_python, obj.datastore_type)
+        pip_deps = dict(get_pinned_conda_libs(base_env_python, obj.datastore_type))
         conda_deps = {}
     else:
-        conda_deps = get_pinned_conda_libs(base_env_python, obj.datastore_type)
+        conda_deps = dict(get_pinned_conda_libs(base_env_python, obj.datastore_type))
         pip_deps = {}
 
     pip_deps.update(base_env_pip_deps)
@@ -618,6 +654,11 @@ def resolve(
             sources,
             extras,
             base_env,
+            clean_base=(not new_extras)
+            and (not new_sources)
+            and (not new_np_conda_deps)
+            and (not new_conda_deps)
+            and (not new_pip_deps),
             local_only=local_only,
             force=force,
             force_co_resolve=len(archs) > 1,
@@ -632,7 +673,7 @@ def resolve(
         if alias and not dry_run:
             # We don't care about arch for aliasing so pick one
             obj.echo(
-                "Not environments to resolve, aliasing only. Use --force to force "
+                "No environments to resolve, aliasing only. Use --force to force "
                 "re-resolution"
             )
             obj.conda.alias_environment(
@@ -681,21 +722,28 @@ def resolve(
         # Note that it is possible that something we needed to resolve, we don't need
         # to cache (if we resolved to something already cached).
         formats = set()  # type: Set[str]
-        for _, resolved_env, f, _ in resolver.need_caching_environments():
+        for _, resolved_env, f, _ in resolver.need_caching_environments(
+            include_builder_envs=True
+        ):
             update_envs.append(resolved_env)
             formats.update(f)
 
         cast(Conda, obj.conda).cache_environments(update_envs, {"conda": list(formats)})
     else:
         update_envs = [
-            resolved_env for _, resolved_env, _ in resolver.new_environments()
+            resolved_env
+            for _, resolved_env, _ in resolver.new_environments(
+                include_builder_envs=True
+            )
         ]
 
     cast(Conda, obj.conda).add_environments(update_envs)
 
     # Update the default environment
     if set_default:
-        for env_id, resolved_env, _ in resolver.all_environments():
+        for env_id, resolved_env, _ in resolver.all_environments(
+            include_builder_envs=True
+        ):
             obj.conda.set_default_environment(resolved_env.env_id)
 
     # We are done -- write back out the environments
@@ -715,9 +763,16 @@ def resolve(
     default=arch_id(),
     help="Show environment for this architecture",
 )
+@click.option(
+    "--pathspec",
+    default=False,
+    is_flag=True,
+    show_default=True,
+    help="The environments given are pathspecs",
+)
 @click.argument("envs", required=True, nargs=-1)
 @click.pass_obj
-def show(obj, local_only: bool, arch: str, envs: Tuple[str]):
+def show(obj, local_only: bool, arch: str, pathspec: bool, envs: Tuple[str]):
     # req-id -> full-id -> List of paths
     all_envs = {}  # Dict[str, Dict[str, List[str]]]
     created_envs = cast(Conda, obj.conda).created_environments()
@@ -727,6 +782,8 @@ def show(obj, local_only: bool, arch: str, envs: Tuple[str]):
         ]
 
     for env_name in envs:
+        if pathspec:
+            env_name = "step:%s" % env_name
         resolved_env = cast(Conda, obj.conda).environment_from_alias(
             env_name, arch, local_only
         )
@@ -768,11 +825,19 @@ def show(obj, local_only: bool, arch: str, envs: Tuple[str]):
     default=False,
     help="Only resolve source env using local information",
 )
+@click.option(
+    "--pathspec",
+    default=False,
+    is_flag=True,
+    show_default=True,
+    help="The source environment given is a pathspec",
+)
 @click.argument("source_env")
 @click.argument("alias")
 @click.pass_obj
-def alias(obj, local_only: bool, source_env: str, alias: str):
-
+def alias(obj, local_only: bool, pathspec: bool, source_env: str, alias: str):
+    if pathspec:
+        source_env = "step:%s" % source_env
     env_id_for_alias = cast(Conda, obj.conda).env_id_from_alias(source_env, local_only)
     if env_id_for_alias is None:
         raise CommandException(
@@ -797,9 +862,18 @@ def alias(obj, local_only: bool, source_env: str, alias: str):
     show_default=True,
     help="Request this architecture -- defaults to current architecture if not specified",
 )
+@click.option(
+    "--pathspec",
+    default=False,
+    is_flag=True,
+    show_default=True,
+    help="The environment name given is a pathspec",
+)
 @click.argument("source_env")
 @click.pass_obj
-def get(obj, default: bool, arch: Optional[str], source_env: str):
+def get(obj, default: bool, arch: Optional[str], pathspec: bool, source_env: str):
+    if pathspec:
+        source_env = "step:%s" % source_env
     env = cast(Conda, obj.conda).environment_from_alias(source_env, arch)
     if env is None:
         raise CommandException(

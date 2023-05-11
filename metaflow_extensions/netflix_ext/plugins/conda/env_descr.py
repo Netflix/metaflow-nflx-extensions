@@ -658,6 +658,10 @@ class ResolvedEnvironment:
 
     @property
     def is_info_accurate(self) -> bool:
+        # Returns True if the requirements for this environment are accurate. This is
+        # currently always the case. This code was initially added in case we could
+        # get an environment from a FULL_ID which doesn't guarantee uniqueness of the
+        # requirements part (different requirements can resolve to the same environment)
         return not self._accurate_source
 
     @property
@@ -817,7 +821,11 @@ class ResolvedEnvironment:
                 "*Conda Packages installed* %s"
                 % ", ".join(
                     [
-                        "%s==%s" % (p.package_name, p.package_version)
+                        "%s==%s"
+                        % (
+                            p.package_name,
+                            p.package_detailed_version,
+                        )
                         for p in conda_packages
                     ]
                 )
@@ -876,7 +884,10 @@ class ResolvedEnvironment:
             ",".join([str(d) for d in self.deps]),
             ",".join([str(s) for s in self.sources]) if self.sources else "NONE",
             ",".join(
-                ["%s==%s" % (p.package_name, p.package_version) for p in conda_packages]
+                [
+                    "%s==%s" % (p.package_name, p.package_detailed_version)
+                    for p in conda_packages
+                ]
             ),
             ",".join(
                 ["%s==%s" % (p.package_name, p.package_version) for p in pip_packages]
