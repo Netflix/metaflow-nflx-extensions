@@ -3,8 +3,6 @@
 import errno
 import json
 import os
-import platform
-import re
 import requests
 import shutil
 import socket
@@ -14,22 +12,23 @@ import sys
 import tarfile
 import tempfile
 import time
+import uuid
 
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
+from datetime import datetime
 from distutils.version import LooseVersion
 from itertools import chain, product
 from typing import (
     Any,
     Callable,
     Dict,
-    FrozenSet,
     Iterable,
     List,
     Mapping,
     NamedTuple,
     Optional,
-    OrderedDict,
     Sequence,
     Set,
     Tuple,
@@ -37,7 +36,7 @@ from typing import (
     cast,
 )
 from shutil import which
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 from metaflow.plugins.datastores.local_storage import LocalStorage
 from metaflow.datastore.datastore_storage import DataStoreStorage
@@ -58,31 +57,38 @@ from metaflow.metaflow_config import (
     CONDA_REMOTE_INSTALLER,
     CONDA_REMOTE_INSTALLER_DIRNAME,
     CONDA_DEFAULT_PIP_SOURCE,
+    CONDA_USE_REMOTE_LATEST,
 )
 from metaflow.metaflow_environment import InvalidEnvironmentException
+from metaflow.util import get_username
 
+from metaflow_extensions.netflix_ext.vendor.packaging.requirements import Requirement
 from metaflow_extensions.netflix_ext.vendor.packaging.tags import Tag
 from metaflow_extensions.netflix_ext.vendor.packaging.utils import parse_wheel_filename
 
+
 from .utils import (
     CONDA_FORMATS,
-    TRANSMUT_PATHCOMPONENT,
     AliasType,
     CondaException,
     CondaStepException,
     arch_id,
-    convert_filepath,
+    change_pip_package_version,
+    correct_splitext,
     get_conda_root,
     is_alias_mutable,
+    merge_dep_dicts,
     parse_explicit_url_conda,
     parse_explicit_url_pip,
     parse_explicit_path_pip,
     pip_tags_from_arch,
     plural_marker,
     resolve_env_alias,
+    split_into_dict,
 )
 
 from .env_descr import (
+    CondaCachePackage,
     CondaPackageSpecification,
     EnvID,
     EnvType,
@@ -99,9 +105,11 @@ from .conda_lock_micromamba_server import glue_script
 
 _CONDA_DEP_RESOLVERS = ("conda", "mamba", "micromamba")
 
+_FAKE_WHEEL = "_fake-1.0-py3-none-any.whl"
+_DEV_TRANS = str.maketrans("abcdef", "123456")
 ParseURLResult = NamedTuple(
     "ParseURLResult",
-    [("filename", str), ("format", str), ("hash", str), ("is_transmuted", bool)],
+    [("filename", str), ("format", str), ("hash", str)],
 )
 
 
@@ -192,6 +200,19 @@ class Conda(object):
 
     @staticmethod
     def env_type_for_deps(deps: Sequence[TStr]) -> EnvType:
+        """
+        Returns the environment type based on a set of dependencies
+
+        Parameters
+        ----------
+        deps : Sequence[TStr]
+            User-requested dependencies for this environment
+
+        Returns
+        -------
+        EnvType
+            The environment type, either CONDA_ONLY, PIP_ONLY or MIXED
+        """
         conda_packages = [d for d in deps if d.category == "conda"]
         pip_packages = [d for d in deps if d.category == "pip"]
         env_type = EnvType.CONDA_ONLY
@@ -211,7 +232,41 @@ class Conda(object):
         architecture: str,
         env_type: Optional[EnvType] = None,
         builder_env: Optional[ResolvedEnvironment] = None,
-    ) -> ResolvedEnvironment:
+        base_env: Optional[ResolvedEnvironment] = None,
+    ) -> Tuple[ResolvedEnvironment, Optional[ResolvedEnvironment]]:
+        """
+        Resolve an environment. This only resolves the environment and does not
+        actually download any package (except as required by the resolver) nor does
+        it create it.
+
+        Parameters
+        ----------
+        using_steps : Sequence[str]
+            Steps that this environment is being resolved from (for printing purposes only)
+        deps : Sequence[TStr]
+            User dependencies for this environment
+        sources : Sequence[TStr]
+            Sources for this environment
+        extras : Sequence[TStr]
+            Additional information passed to Conda/Pip
+        architecture : str
+            Architecture to resolve for
+        env_type : Optional[EnvType], optional
+            If specified, forces a specific type of environment resolution, by default None
+        builder_env : Optional[ResolvedEnvironment], optional
+            An environment used as a builder environment (used in PIP cases), by default None
+        base_env : Optional[ResolvedEnvironment], optional
+            Needs to sometimes be used to determine if we can fully resolve this.
+
+        Returns
+        -------
+        Tuple[ResolvedEnvironment, Optional[ResolvedEnvironment]]
+            Each element of the tuple contains:
+                - the resolved environment
+                - the builder environment: either the one passed in or one that was
+                  lazily created.
+        """
+        returned_builder_env = builder_env
         if self._mode != "local":
             # TODO: Maybe relax this later but for now assume that the remote environment
             # is a "lighter" conda.
@@ -249,11 +304,13 @@ class Conda(object):
             )
         try:
             if env_type == EnvType.CONDA_ONLY:
-                packages = self._resolve_env_with_conda(deps, sources, architecture)
+                packages, returned_builder_env = self._resolve_env_with_conda(
+                    deps, sources, architecture, builder_env, base_env
+                )
             elif env_type == EnvType.MIXED:
                 if resolver_bin == "conda-lock":
-                    packages = self._resolve_env_with_conda_lock(
-                        deps, sources, architecture
+                    packages, returned_builder_env = self._resolve_env_with_conda_lock(
+                        deps, sources, architecture, builder_env, base_env
                     )
                 else:
                     # Should never happen and be caught earlier but being clean
@@ -275,8 +332,8 @@ class Conda(object):
                 # worth it.
                 npconda_deps = [d for d in deps if d.category == "npconda"]
                 if npconda_deps:
-                    npconda_pkgs = self._resolve_env_with_conda(
-                        npconda_deps, sources, architecture
+                    npconda_pkgs, _ = self._resolve_env_with_conda(
+                        npconda_deps, sources, architecture, None, None
                     )
                     if any((p.filename.startswith("python-") for p in npconda_pkgs)):
                         raise InvalidEnvironmentException(
@@ -284,87 +341,12 @@ class Conda(object):
                             "python: %s. Please use the mixed mode instead."
                             % ", ".join([d.value for d in npconda_deps])
                         )
-
-                # We have two cases here with the builder envs because we actually
-                # need up to two builder environments:
-                #  - arch_id() == architecture:
-                #    - in this case, we can use the builder_env passed in if it exists
-                #      for both the environment to build PIP packages in and the
-                #      environment to resolve the PIP environment in
-                #  - arch_id() != architecture:
-                #    - in this case, we can use the builder_env passed in, if it
-                #      exists ONLY to resolve the PIP environment (the passed in
-                #      environment is always of arch arch_id()). We cannot, in this
-                #      case build PIP packages (cross arch build so we don't do that)
-                if arch_id() == architecture and builder_env:
-                    debug.conda_exec("Using builder_env passed in")
-                    packages = list(builder_env.packages)
-                else:
-                    debug.conda_exec("Building base conda env with %s" % str(deps))
-
-                    packages = self._resolve_env_with_conda(deps, sources, architecture)
-                    if arch_id() == architecture:
-                        debug.conda_exec("Using as builder env")
-                        conda_only_deps = [
-                            d for d in deps if d.category in ("conda", "npconda")
-                        ]
-                        conda_only_sources = [
-                            s for s in sources if s.category == "conda"
-                        ]
-
-                        builder_env = ResolvedEnvironment(
-                            conda_only_deps,
-                            conda_only_sources,
-                            None,
-                            architecture,
-                            all_packages=packages,
-                            env_type=EnvType.CONDA_ONLY,
-                        )
-                    elif not builder_env:
-                        python_only_dep = [
-                            d
-                            for d in deps
-                            if d.category == "conda" and d.value.startswith("python==")
-                        ]
-                        debug.conda_exec(
-                            "Building vanilla builder env with %s"
-                            % str(python_only_dep)
-                        )
-                        python_only_packages = self._resolve_env_with_conda(
-                            python_only_dep,
-                            sources,
-                            arch_id(),
-                        )
-                        builder_env = ResolvedEnvironment(
-                            python_only_dep,
-                            [s for s in sources if s.category == "conda"],
-                            None,
-                            arch_id(),
-                            all_packages=python_only_packages,
-                            env_type=EnvType.CONDA_ONLY,
-                        )
                 if resolver_bin == "pip":
-                    # We need to get the python package to get the version
-                    python_version = None  # type: Optional[str]
-                    for p in packages:
-                        if p.filename.startswith("python-"):
-                            python_version = p.package_version
-                            break
-                    if python_version is None:
-                        raise CondaException(
-                            "Could not determine version of Python from conda packages"
-                        )
-
-                    packages.extend(
-                        self._resolve_env_with_pip(
-                            python_version,
-                            deps,
-                            sources,
-                            extras,
-                            architecture,
-                            builder_env,
-                        )
+                    packages, returned_builder_env = self._resolve_env_with_pip(
+                        deps, sources, extras, architecture, builder_env, base_env
                     )
+                    assert returned_builder_env
+                    packages += list(returned_builder_env.packages)
                 else:
                     # Should also never happen and be caught earlier but being clean
                     # add other pip resolvers here if needed
@@ -372,144 +354,39 @@ class Conda(object):
                         "Resolver '%s' is not supported" % resolver_bin
                     )
 
-            return ResolvedEnvironment(
-                deps,
-                sources,
-                extras,
-                architecture,
-                all_packages=packages,
-                env_type=env_type,
+            return (
+                ResolvedEnvironment(
+                    deps,
+                    sources,
+                    extras,
+                    architecture,
+                    all_packages=packages,
+                    env_type=env_type,
+                ),
+                returned_builder_env,
             )
         except CondaException as e:
             raise CondaStepException(e, using_steps)
-
-    def info_for_add_to_resolved_env(
-        self,
-        cur_env: ResolvedEnvironment,
-        using_steps: Sequence[str],
-        deps: Sequence[TStr],
-        sources: Sequence[TStr],
-        extras: Sequence[TStr],
-        architecture: str,
-        inputs_are_addl: bool = True,
-    ) -> Tuple[EnvID, Sequence[TStr], Sequence[TStr], Sequence[TStr], Sequence[TStr]]:
-        # Computes the new information for a derived environment (built on top of cur_env)
-        # Returns the new EnvID, sources, user_deps, deps and extras
-        if self._mode != "local":
-            # TODO: Maybe relax this later but for now assume that the remote environment
-            # is a "lighter" conda.
-            raise CondaException("Cannot resolve environments in a remote environment")
-
-        if not self._found_binaries:
-            self._find_conda_binary()
-
-        if architecture != cur_env.env_id.arch:
-            raise CondaException(
-                "Mismatched architecture when extending an environment"
-            )
-        # We form the new list of dependencies based on the ones we have in cur_env
-        # and the new ones.
-        if inputs_are_addl:
-            sources = list(chain(cur_env.sources, sources))
-            user_deps = list(chain(cur_env.deps, deps))
-            extras = list(chain(cur_env.extras, extras))
-        else:
-            sources = sources
-            user_deps = deps
-            extras = extras
-        deps = list(
-            chain(
-                [
-                    TStr(p.TYPE, "%s==%s" % (p.package_name, p.package_version))
-                    for p in cur_env.packages
-                ],
-                user_deps,
-            )
-        )
-
-        # We check if we already resolved this environment and bypass resolving for
-        # if it we already have solved for it.
-        new_env_id = EnvID(
-            ResolvedEnvironment.get_req_id(user_deps, sources, extras),
-            "_default",
-            architecture,
-        )
-
-        return new_env_id, sources, user_deps, deps, extras
-
-    def add_to_resolved_env(
-        self,
-        cur_env: ResolvedEnvironment,
-        using_steps: Sequence[str],
-        deps: Sequence[TStr],
-        sources: Sequence[TStr],
-        extras: Sequence[TStr],
-        architecture: str,
-        inputs_are_addl: bool = True,
-        cur_is_accurate: bool = True,
-        builder_env: Optional[ResolvedEnvironment] = None,
-    ) -> ResolvedEnvironment:
-        if self._mode != "local":
-            # TODO: Maybe relax this later but for now assume that the remote environment
-            # is a "lighter" conda.
-            raise CondaException("Cannot resolve environments in a remote environment")
-
-        if not self._found_binaries:
-            self._find_conda_binary()
-
-        (
-            new_env_id,
-            sources,
-            user_deps,
-            deps,
-            extras,
-        ) = self.info_for_add_to_resolved_env(
-            cur_env, using_steps, deps, sources, extras, architecture, inputs_are_addl
-        )
-
-        new_resolved_env = self.environment(new_env_id)
-        if new_resolved_env:
-            return new_resolved_env
-
-        # Figure out the env_type
-        new_env_type = cur_env.env_type
-
-        new_resolved_env = self.resolve(
-            using_steps,
-            deps,
-            sources,
-            extras,
-            architecture,
-            env_type=new_env_type,
-            builder_env=builder_env,
-        )
-
-        # We now try to copy as much information as possible from the current environment
-        # which includes information about cached packages
-        cur_packages = {p.filename: p.to_dict() for p in cur_env.packages}
-        merged_packages = []  # type: List[PackageSpecification]
-        for p in new_resolved_env.packages:
-            existing_info = cur_packages.get(p.filename)
-            if existing_info:
-                merged_packages.append(PackageSpecification.from_dict(existing_info))
-            else:
-                merged_packages.append(p)
-        return ResolvedEnvironment(
-            user_deps,
-            sources,
-            extras,
-            architecture,
-            all_packages=merged_packages,
-            env_type=new_resolved_env.env_type,
-            accurate_source=cur_is_accurate,
-        )
 
     def create_for_step(
         self,
         step_name: str,
         env: ResolvedEnvironment,
         do_symlink: bool = False,
-    ):
+    ) -> None:
+        """
+        Creates a local instance of the resolved environment
+
+        Parameters
+        ----------
+        step_name : str
+            The step name this environment is being created for
+        env : ResolvedEnvironment
+            The resolved environment to create an instance of
+        do_symlink : bool, optional
+            If True, creates a `__conda_python` symlink in the current directory
+            pointing to the created Conda Python executable, by default False
+        """
 
         if not self._found_binaries:
             self._find_conda_binary()
@@ -522,7 +399,20 @@ class Conda(object):
 
     def create_for_name(
         self, name: str, env: ResolvedEnvironment, do_symlink: bool = False
-    ):
+    ) -> None:
+        """
+        Creates a local instance of the resolved environment
+
+        Parameters
+        ----------
+        name : str
+            The name of the environment to create
+        env : ResolvedEnvironment
+            The resolved environment to create an instance of
+        do_symlink : bool, optional
+            If True, creates a `__conda_python` symlink in the current directory
+            pointing to the created Conda Python executable, by default False
+        """
 
         if not self._found_binaries:
             self._find_conda_binary()
@@ -546,8 +436,19 @@ class Conda(object):
             if python_path:
                 os.symlink(python_path, os.path.join(os.getcwd(), "__conda_python"))
 
-    def remove_for_step(self, step_name: str, env_id: EnvID):
-        # Remove the conda environment
+    def remove_for_step(self, step_name: str, env_id: EnvID) -> None:
+        """
+        Removes a locally created environment.
+
+        This can only remove environments created by Metaflow
+
+        Parameters
+        ----------
+        step_name : str
+            The step for which this environment is being removed
+        env_id : EnvID
+            The environment we are removing
+        """
         if not self._found_binaries:
             self._find_conda_binary()
 
@@ -558,13 +459,39 @@ class Conda(object):
         except CondaException as e:
             raise CondaStepException(e, [step_name])
 
-    def remove_for_name(self, name: str):
+    def remove_for_name(self, name: str) -> None:
+        """
+        Removes a locally created environment.
+
+        Parameters
+        ----------
+        name : str
+            The name of the Conda environment being removed
+        """
         if not self._found_binaries:
             self._find_conda_binary()
         with CondaLock(self._echo, self._env_lock_file(name)):
             self._remove(name)
 
     def python(self, env_desc: Union[EnvID, str]) -> Optional[str]:
+        """
+        Returns the path to the python interpreter for the given environment.
+
+        Note that this does not create environments and will only return a non None
+        value if the environment is already locally created. Note also that this only
+        looks at environments created by Metaflow.
+
+        Parameters
+        ----------
+        env_desc : Union[EnvID, str]
+            Environment to get the path of. This is either an environment ID or a
+            name of the Conda environment
+
+        Returns
+        -------
+        Optional[str]
+            The path to the python binary if the environment exists locally
+        """
         # Get Python interpreter for the conda environment
         if not self._found_binaries:
             self._find_conda_binary()
@@ -588,6 +515,23 @@ class Conda(object):
     def created_environment(
         self, env_desc: Union[EnvID, str]
     ) -> Optional[Tuple[EnvID, str]]:
+        """
+        Returns a locally created environment matching the passed in environment
+        description.
+
+        Note that this does not create the environment but instead returns it if it
+        exists. Note also that this only returns environments created by Metaflow.
+
+        Parameters
+        ----------
+        env_desc : Union[EnvID, str]
+            Either an EnvID or the name of the environment to look for.
+
+        Returns
+        -------
+        Optional[Tuple[EnvID, str]]
+            The environment ID for the environment as well as the path to the environment
+        """
         if not self._found_binaries:
             self._find_conda_binary()
 
@@ -603,6 +547,24 @@ class Conda(object):
     def created_environments(
         self, req_id: Optional[str] = None
     ) -> Dict[EnvID, List[str]]:
+        """
+        This is similar to `created_environment` but returns *ALL* Metaflow created
+        environments that satisfy the user environment requirements. This will include
+        the various resolved environments (if they exist) as well as environments
+        that may have been created by the `metaflow environment` command.
+
+        Parameters
+        ----------
+        req_id : Optional[str], optional
+            Requirement ID that is being searched for. If None, returns all
+            environments created by Metaflow, by default None
+
+        Returns
+        -------
+        Dict[EnvID, List[str]]
+            The key is the environment ID for the environment and the value is a list
+            of paths to all the environments for that environment ID.
+        """
         # List all existing metaflow environments; this can include environments that
         # were created with the `environment` command and therefore have a different
         # name
@@ -618,6 +580,26 @@ class Conda(object):
     def environment(
         self, env_id: EnvID, local_only: bool = False
     ) -> Optional[ResolvedEnvironment]:
+        """
+        Returns the resolved environment for a given environment ID.
+
+        Note that this does not return the instance of the environment (use
+        a variant of `created_environment` for that) but instead returns if we know
+        how to resolve the environment.
+
+        Parameters
+        ----------
+        env_id : EnvID
+            Environment ID we are looking for
+        local_only : bool, optional
+            If True, does not look in the remote cache for resolved environments,
+            by default False
+
+        Returns
+        -------
+        Optional[ResolvedEnvironment]
+            The ResolvedEnvironment corresponding to the input EnvID
+        """
         # First look if we have from_env_id locally
         env = self._cached_environment.env_for(*env_id)
 
@@ -626,18 +608,71 @@ class Conda(object):
             return env
 
         # We never have a "_default" remotely so save time and don't go try to
-        # look for one
-        if not local_only and self._storage and env_id.full_id != "_default":
-            env = self._remote_env_fetch([env_id])
-            if env:
-                env = env[0]
-            else:
-                env = None
+        # look for one UNLESS the user configured to use the latest as the default
+        if not local_only and self._storage:
+            if env_id.full_id != "_default":
+                env = self._remote_env_fetch([env_id])
+                env = env[0] if env else None
+            elif CONDA_USE_REMOTE_LATEST != ":none:":
+                # Here we fetch all the environments first and sort them so most
+                # recent (biggest date) is first
+                all_environments = self.environments(env_id.req_id, env_id.arch)
+                current_user = get_username()
+                if CONDA_USE_REMOTE_LATEST == ":username:":
+                    current_user = cast(str, get_username())
+                    filter_func = lambda x: x[1].resolved_by == current_user
+                elif CONDA_USE_REMOTE_LATEST == ":any:":
+                    filter_func = lambda x: True
+                else:
+                    allowed_usernames = list(
+                        map(
+                            lambda x: x.strip(),
+                            cast(str, CONDA_USE_REMOTE_LATEST).split(","),
+                        )
+                    )
+                    filter_func = lambda x: x in allowed_usernames
+
+                env = list(
+                    filter(
+                        filter_func,
+                        sorted(
+                            all_environments,
+                            key=lambda x: x[1].resolved_on,
+                            reverse=True,
+                        ),
+                    )
+                )
+                env = env[0][1] if env else None
+                if env:
+                    debug.conda_exec(
+                        "%s found as latest remotely: %s"
+                        % (str(env_id), str(env.env_id))
+                    )
         return env
 
     def environments(
         self, req_id: str, arch: Optional[str] = None, local_only: bool = False
     ) -> List[Tuple[EnvID, ResolvedEnvironment]]:
+        """
+        Similar to `environment` but looks for all resolutions for a given user
+        requirement ID (as opposed to a full environment ID)
+
+        Parameters
+        ----------
+        req_id : str
+            The requirement ID to look for
+        arch : Optional[str], optional
+            The architecture to look for. If None, defaults to the current architecture,
+            by default None
+        local_only : bool, optional
+            If True, does not look in the remote cache for resolved environments,
+            by default False
+
+        Returns
+        -------
+        List[Tuple[EnvID, ResolvedEnvironment]]
+            A list of ResolvedEnvironments found
+        """
         arch = arch or arch_id()
         if not local_only and self._storage is not None:
             # If we are looking for remote stuff, we fetch all the full IDs the remote
@@ -659,6 +694,24 @@ class Conda(object):
     def env_id_from_alias(
         self, env_alias: str, arch: Optional[str] = None, local_only: bool = False
     ) -> Optional[EnvID]:
+        """
+        Resolves an environment alias and returns the environment ID for it, if the
+        alias exists for that architecture
+
+        Parameters
+        ----------
+        env_alias : str
+            Alias for the environment
+        arch : Optional[str], optional
+            Architecture to look for. If None, defaults to the current one, by default None
+        local_only : bool, optional
+            If True, do not look at the remote environment cache, by default False
+
+        Returns
+        -------
+        Optional[EnvID]
+            If found, returns the environment ID corresponding to the alias
+        """
         arch = arch or arch_id()
 
         alias_type, resolved_alias = resolve_env_alias(env_alias)
@@ -666,28 +719,38 @@ class Conda(object):
             req_id, full_id = env_alias.split(":", 1)
             return EnvID(req_id=req_id, full_id=full_id, arch=arch)
 
-        env_id = self._cached_environment.env_id_for_alias(
-            alias_type, resolved_alias, arch
-        )
-
-        if env_id is None and alias_type == AliasType.PATHSPEC:
-            # TODO: Add _namespace_check = False
+        if alias_type == AliasType.PATHSPEC:
             # Late import to prevent cycles
             from metaflow.client.core import Step
 
+            env_id = None
             try:
-                s = Step(resolved_alias)
+                s = Step(resolved_alias, _namespace_check=False)
                 req_id, full_id, _ = json.loads(
                     s.task.metadata_dict.get("conda_env_id", '["", "", ""]')
                 )
                 if len(req_id) != 0:
                     env_id = EnvID(req_id=req_id, full_id=full_id, arch=arch)
-            except MetaflowNotFound:
-                pass
-            if env_id:
-                self._cached_environment.add_alias(
-                    alias_type, resolved_alias, env_id.req_id, env_id.full_id
+            except MetaflowNotFound as e:
+                raise MetaflowNotFound(
+                    "Cannot locate step while looking for Conda environment: %s"
+                    % e.message
                 )
+            if not env_id:
+                raise CondaException("Step %s is not a Conda step" % resolved_alias)
+
+            self._cached_environment.add_alias(
+                alias_type, resolved_alias, env_id.req_id, env_id.full_id
+            )
+            debug.conda_exec(
+                "%s (type %s) found locally (env_id: %s)"
+                % (env_alias, alias_type.value, str(env_id))
+            )
+            return env_id
+
+        env_id = self._cached_environment.env_id_for_alias(
+            alias_type, resolved_alias, arch
+        )
 
         debug.conda_exec(
             "%s (type %s)%sfound locally (resolved %s)"
@@ -706,31 +769,116 @@ class Conda(object):
     def environment_from_alias(
         self, env_alias: str, arch: Optional[str] = None, local_only: bool = False
     ) -> Optional[ResolvedEnvironment]:
+        """
+        Convenience function allowing you to go from an alias to a ResolvedEnvironment
+        directly
+
+        Parameters
+        ----------
+        env_alias : str
+            Alias for the environment
+        arch : Optional[str], optional
+            Architecture to look for. If None, defaults to the current one, by default None
+        local_only : bool, optional
+            If True, do not look at the remote environment cache, by default False
+
+        Returns
+        -------
+        Optional[ResolvedEnvironment]
+            If found, returns the ResolvedEnvironment for the given alias.
+        """
 
         env_id = self.env_id_from_alias(env_alias, arch, local_only)
         if env_id:
             return self.environment(env_id, local_only)
 
     def aliases_for_env_id(self, env_id: EnvID) -> Tuple[List[str], List[str]]:
-        # Returns immutable and mutable aliases
+        """
+        Returns the list of aliases for a given environment id
+
+        Parameters
+        ----------
+        env_id : EnvID
+            The environment ID
+
+        Returns
+        -------
+        Tuple[List[str], List[str]]
+            A tuple representing the immutable aliases and the mutable aliases
+        """
         return self._cached_environment.aliases_for_env(env_id)
 
     def set_default_environment(self, env_id: EnvID) -> None:
+        """
+        Sets the default environment (the one used if "_default" is passed as the
+        full ID) for the requirement ID embedded in the environemnt ID
+
+        Parameters
+        ----------
+        env_id : EnvID
+            The environment ID
+        """
         self._cached_environment.set_default(env_id)
 
     def get_default_environment(
         self, req_id: str, arch: Optional[str]
     ) -> Optional[EnvID]:
+        """
+        If present, returns the default environment ID for the given requirement ID
+
+        Parameters
+        ----------
+        req_id : str
+            The requirement ID
+        arch : Optional[str]
+            The architecture to look for
+
+        Returns
+        -------
+        Optional[EnvID]
+            If it exists, returns the environment ID for the default environment
+        """
         return self._cached_environment.get_default(req_id, arch)
 
     def clear_default_environment(self, req_id: str, arch: Optional[str]):
+        """
+        Removes the default mapping for the given requirement ID and architecture
+
+        Parameters
+        ----------
+        req_id : str
+            The requirement ID
+        arch : Optional[str]
+            The architecture
+        """
         self._cached_environment.clear_default(req_id, arch)
 
     def add_environments(self, resolved_envs: List[ResolvedEnvironment]) -> None:
+        """
+        Adds the resolved environments to our local cache of known environments
+
+        Parameters
+        ----------
+        resolved_envs : List[ResolvedEnvironment]
+            The list of environments to add to the local cache
+        """
         for resolved_env in resolved_envs:
             self._cached_environment.add_resolved_env(resolved_env)
 
     def alias_environment(self, env_id: EnvID, aliases: List[str]) -> None:
+        """
+        Add aliases to a given environment.
+
+        This immediately updates the remote cache if present.
+
+        Parameters
+        ----------
+        env_id : EnvID
+            The environment ID
+        aliases : List[str]
+            The list of aliases -- note that you can only update mutable aliases or
+            add new ones.
+        """
         if self._datastore_type != "local":
             # We first fetch any aliases we have remotely because that way
             # we will catch any non-mutable changes
@@ -789,6 +937,28 @@ class Conda(object):
         resolved_envs: List[ResolvedEnvironment],
         cache_formats: Optional[Dict[str, List[str]]] = None,
     ) -> None:
+        """
+        Downloads and caches all packages needed for the environments passed in.
+
+        This will update the environments with the new cache information.
+
+        Note that if packages are already cached, the information will be updated but
+        the packages will not be re-downloaded.
+
+        This will also upload the resolved environment's description to the remote
+        cache.
+
+        Parameters
+        ----------
+        resolved_envs : List[ResolvedEnvironment]
+            List of ResolvedEnvironments to cache
+        cache_formats : Optional[Dict[str, List[str]]], optional
+            The formats we need to cache for. This is primarily used for
+            Conda packages. The dictionary keys are `pip` or `conda` and the
+            values are the formats that are needed or ["_any"] if any cached
+            format is ok. If the None default is used, the value will be
+            {"conda": CONDA_PREFERRED_FORMAT or ["_any"], "pip": ["_any"]}.
+        """
         # The logic behind this function is as follows:
         #  - check in the S3/Azure/GS storage to see if the file exists
         #  - if it does, we are all good and we update the cache_urls
@@ -808,14 +978,19 @@ class Conda(object):
         if not self._found_binaries:
             self._find_conda_binary()
 
-        cache_paths_to_check = []  # type: List[Tuple[str, str, str]]
         my_arch_id = arch_id()
         cache_formats = cache_formats or {
             "pip": ["_any"],
             "conda": [CONDA_PREFERRED_FORMAT] if CONDA_PREFERRED_FORMAT else ["_any"],
         }
-        # Contains the architecture, the list of packages that need the URL
+
+        # key: URL
+        # value: architecture, list of packages that need this URL
         url_to_pkgs = {}  # type: Dict[str, Tuple[str, List[PackageSpecification]]]
+
+        # key: base cache URL
+        # value: key in url_to_pkgs
+        cache_path_to_key = {}  # type: Dict[str, str]
 
         # We fetch the latest information from the cache about the environment.
         # This is to have a quick path for:
@@ -839,19 +1014,8 @@ class Conda(object):
             env_id = resolved_env.env_id
             for req_pkg in resolved_env.packages:
                 if req_pkg.url in url_to_pkgs:
-                    # We add ourself to the end of the list and update the
-                    # first package with any additional information we have about
-                    # cache files as it will be used to lazily fetch things (so should
-                    # have all up-to-date info).
                     old_arch, all_pkgs = url_to_pkgs[req_pkg.url]
                     all_pkgs.append(req_pkg)
-                    to_update_pkg = all_pkgs[0]
-                    for pkg_fmt, pkg_hash in req_pkg.pkg_hashes:
-                        to_update_pkg.add_pkg_hash(pkg_fmt, pkg_hash)
-                    for pkg_fmt, cache_pkg in req_pkg.cached_versions:
-                        to_update_pkg.add_cached_version(
-                            pkg_fmt, to_update_pkg.cache_pkg_type()(cache_pkg.url)
-                        )
                     # It is possible that arch is different (for noarch packages). In
                     # that case, we prefer to download it for our own arch to place the
                     # file in the right place for later. It doesn't matter for anything
@@ -862,115 +1026,84 @@ class Conda(object):
                     url_to_pkgs[req_pkg.url] = (env_id.arch, [req_pkg])
 
         # At this point, we can check if we are missing any cache information
+        # Note that the packages may have the same url but different filenames (for example
+        # if there are different wheels built from the same source). This is why we
+        # check across all packages. Concretely, we may need to check for
+        # foo/bar/<pkg1.url>/<pkg1.filename>.whl and foo/bar/<pkg2.url>/pkg2.filename>whl
+        # where both pkg1 and pkg2 have the same URL (the git repo from where they were
+        # built for example) but one was built for version 3.8 and another version 3.9.
         for base_url, (_, all_pkgs) in url_to_pkgs.items():
-            pkg = all_pkgs[0]
             if not all(
                 [
                     pkg.cached_version(f) != None
+                    for pkg in all_pkgs
                     for f in cache_formats.get(pkg.TYPE, ["_any"])
                 ]
             ):
-                # We are missing some cache information. We will check for the base
-                # format and any links to other formats
-                base_cache_url = pkg.cache_pkg_type().make_cache_url(
-                    base_url, cast(str, pkg.pkg_hash(pkg.url_format))
+                # We are missing some information so we will look at all formats
+                # we have available in the cache
+                base_cache_url = (
+                    all_pkgs[0]
+                    .cache_pkg_type()
+                    .make_partial_cache_url(base_url, all_pkgs[0].is_downloadable_url())
                 )
-                cache_paths_to_check.append((base_cache_url, base_url, pkg.url_format))
+                cache_path_to_key[base_cache_url] = base_url
+
+        found_files = self._storage.list_content(cache_path_to_key.keys())
+        cache_path_to_pkgs = {}  # type: Dict[str, List[PackageSpecification]]
+        for cache_path, is_file in found_files:
+            cache_path = cast(str, cache_path).rstrip("/")
+            is_file = cast(bool, is_file)
+            if is_file:
+                raise CondaException("Invalid cache content at '%s'" % cache_path)
+            base_cache_path, cache_filename_with_ext = os.path.split(cache_path)
+            all_pkgs = url_to_pkgs[cache_path_to_key[base_cache_path]][1]
+            for pkg in all_pkgs:
+                if pkg.can_add_filename(cache_filename_with_ext):
+                    # This means this package is interested in this cached package and
+                    # can have it added. It's not always the case for example for PIP
+                    # packages that can have multiple built wheels
+                    cache_path_to_pkgs.setdefault(cache_path, []).append(pkg)
+
+        # We now list one level down from everything in cache_url_to_pkgs which
+        # will give us the hash
+        found_files = self._storage.list_content(cache_path_to_pkgs.keys())
+        for cache_path, is_file in found_files:
+            cache_path = cast(str, cache_path).rstrip("/")
+            is_file = cast(bool, is_file)
+            if is_file:
+                raise CondaException("Invalid cache content at '%s'" % cache_path)
+            base_cache_path = os.path.split(cache_path)[0]
+            cache_filename_with_ext = os.path.split(base_cache_path)[1]
+            cache_ext = correct_splitext(cache_filename_with_ext)[1]
+            for pkg in cache_path_to_pkgs[base_cache_path]:
                 debug.conda_exec(
-                    "%s:%s -> check file @ %s"
-                    % (pkg.filename, pkg.url_format, base_cache_url)
+                    "%s:%s -> Found cache file %s"
+                    % (
+                        pkg.filename,
+                        cache_ext,
+                        os.path.join(cache_path, cache_filename_with_ext),
+                    )
                 )
-                for f in cache_formats.get(pkg.TYPE, ["_any"]):
-                    if (
-                        f == "_any"
-                        or f == pkg.url_format
-                        or pkg.cached_version(f) is not None
-                    ):
-                        continue
-                    lnk_path = self._lnk_path_for_pkg(pkg, f)
-                    cache_paths_to_check.append((lnk_path, base_url, f))
-                    debug.conda_exec(
-                        "%s:%s -> check link @ %s" % (pkg.filename, f, lnk_path)
-                    )
+                cache_pkg = pkg.cache_pkg_type()(
+                    os.path.join(cache_path, cache_filename_with_ext)
+                )
+                pkg.add_cached_version(cache_ext, cache_pkg)
 
-        files_exist = self._storage.is_file(
-            [x[0] for x in cache_paths_to_check]
-        )  # type: List[bool]
-
-        link_files_to_get = {}  # type: Dict[str, Tuple[str, str]]
+        # Build the list of packages we need to fetch something from. We basically fetch
+        # anything for which we don't have a cached or local version of the file for url_format.
         pkgs_to_fetch_per_arch = {}  # type: Dict[str, List[PackageSpecification]]
-        # NOTE: saw_url allows us to fetch only *one* package. Note that some packages
-        # are shared across arch (the noarch packages). This will ensure we download it
-        # only once and basically for this arch if we are using this arch (so it will
-        # be in the right place for later -- it will also be properly cached and
-        # other archs will be updated)
-        saw_url = set()  # type: Set[str]
-        for exist, (req_url, base_url, pkg_fmt) in zip(
-            files_exist, cache_paths_to_check
-        ):
-            arch, all_pkgs = url_to_pkgs[base_url]
-            pkg = all_pkgs[0]
-            if exist:
-                if pkg_fmt != pkg.url_format:
-                    # This means that we have a .lnk file, we need to actually fetch
-                    # it and determine where it points to so we can update the cache URLs
-                    # and hashes
-                    debug.conda_exec(
-                        "%s:%s -> Found link file" % (pkg.filename, pkg_fmt)
-                    )
-                    link_files_to_get[req_url] = (base_url, pkg_fmt)
-                else:
-                    debug.conda_exec(
-                        "%s -> Found cache file %s" % (pkg.filename, req_url)
-                    )
-                    cache_pkg = pkg.cache_pkg_type()(req_url)
-                    pkg.add_cached_version(pkg_fmt, cache_pkg)
-            else:
-                if base_url not in saw_url:
-                    # If we don't have it in cache, we will need to actually fetch it
-                    pkgs_to_fetch_per_arch.setdefault(arch, []).append(pkg)
-                    saw_url.add(base_url)
 
-        # Get the link files to properly update the cache packages and hashes
-        if link_files_to_get:
-            cache_paths_to_check = []
-            with self._storage.load_bytes(link_files_to_get.keys()) as loaded:
-                for key, tmpfile, _ in loaded:
-                    base_url, pkg_fmt = link_files_to_get[key]
-                    _, all_pkgs = url_to_pkgs[base_url]
-                    pkg = all_pkgs[0]
-                    with open(tmpfile, mode="r", encoding="utf-8") as f:
-                        cached_path = f.read().strip()
-                        debug.conda_exec(
-                            "%s:%s -> check file at %s"
-                            % (pkg.filename, pkg_fmt, cached_path)
-                        )
-                        cache_paths_to_check.append((cached_path, base_url, pkg_fmt))
-                        pkg.add_cached_version(
-                            pkg_fmt, pkg.cache_pkg_type()(cached_path)
-                        )
-            # We also double check that whatever is being pointed to is actually there.
-            # It is possible that when caching, some link files get uploaded but not the
-            # actual file.
-            files_exist = self._storage.is_file(
-                [x[0] for x in cache_paths_to_check]
-            )  # type: List[bool]
-            for exist, (req_url, base_url, pkg_fmt) in zip(
-                files_exist, cache_paths_to_check
+        for arch, all_pkgs in url_to_pkgs.values():
+            # We can only fetch the URL format from something other than the cache
+            # so we only see if we need to fetch that one
+            pkg = all_pkgs[0]
+            if (
+                pkg.is_downloadable_url()
+                and not pkg.is_cached([pkg.url_format])
+                and not pkg.local_file(pkg.url_format)
             ):
-                arch, all_pkgs = url_to_pkgs[base_url]
-                pkg = all_pkgs[0]
-                if exist:
-                    debug.conda_exec(
-                        "%s -> Found cache file %s" % (pkg.filename, req_url)
-                    )
-                    cache_pkg = pkg.cache_pkg_type()(req_url)
-                    pkg.add_cached_version(pkg_fmt, cache_pkg)
-                else:
-                    if base_url not in saw_url:
-                        # If we don't have it in cache, we will need to actually fetch it
-                        pkgs_to_fetch_per_arch.setdefault(arch, []).append(pkg)
-                        saw_url.add(base_url)
+                pkgs_to_fetch_per_arch.setdefault(arch, []).append(pkg)
 
         # Fetch what we need; we fetch all formats for all packages (this is a superset
         # but simplifies the code)
@@ -981,10 +1114,7 @@ class Conda(object):
         def _cache_pkg(pkg: PackageSpecification, pkg_fmt: str, local_path: str) -> str:
             file_hash = cast(str, pkg.pkg_hash(pkg_fmt))
             cache_path = pkg.cache_pkg_type().make_cache_url(
-                pkg.url,
-                file_hash,
-                pkg_fmt,
-                pkg.is_transmuted(pkg_fmt),
+                pkg.url, pkg.filename, pkg_fmt, file_hash, pkg.is_downloadable_url()
             )
             upload_files.append((cache_path, local_path))
             debug.conda_exec(
@@ -1006,63 +1136,41 @@ class Conda(object):
                 with CondaLockMultiDir(
                     self._echo, search_dirs, self._package_dir_lockfile_name
                 ):
+                    require_conda_format = cache_formats.get("conda", [])
+                    if len(require_conda_format) > 0 and "_any" in require_conda_format:
+                        require_conda_format = []
                     self._lazy_fetch_packages(
                         pkgs,
                         dest_dir,
-                        require_conda_format=cache_formats.get("conda", []),
+                        require_conda_format=require_conda_format,
                         require_url_format=True,
                         requested_arch=arch,
                         search_dirs=search_dirs,
                     )
-
-                # Upload what we need to upload and update the representative package with
-                # the new cache information. For all packages, we basically check if we have
-                # a local file but not a cached version and upload that.
-                for pkg in pkgs:
-                    # We first need to check for url_format because the links are then
-                    # created from there
-                    if not pkg.cached_version(pkg.url_format):
-                        _cache_pkg(
-                            pkg,
-                            pkg.url_format,
-                            cast(str, pkg.local_file(pkg.url_format)),
-                        )
+            # Upload everything for all packages. We iterate over all packages in case
+            # there are different filenames. We only upload things once though
+            saw_local_file = set()  # type: Set[str]
+            for _, all_pkgs in url_to_pkgs.values():
+                for pkg in all_pkgs:
                     for local_fmt, local_path in pkg.local_files:
-                        if not pkg.cached_version(local_fmt):
-                            # Since we just cached the url_format version (if needed),
-                            # we know that here this is not it so we always create a link
-                            cache_path = _cache_pkg(pkg, local_fmt, local_path)
-                            lnk_path = self._lnk_path_for_pkg(pkg, local_fmt)
-                            # Files will get deleted when the outer directory gets
-                            # deleted and we need to keep it around to upload it.
-                            with tempfile.NamedTemporaryFile(
-                                delete=False, mode="w", encoding="utf-8"
-                            ) as lnk_file:
-                                debug.conda_exec(
-                                    "%s:%s -> will upload link @@%s@@ to %s"
-                                    % (
-                                        pkg.filename,
-                                        local_fmt,
-                                        cache_path,
-                                        lnk_path,
-                                    )
-                                )
-                                lnk_file.write(cache_path)
-                                upload_files.append((lnk_path, lnk_file.name))
+                        if (
+                            not pkg.cached_version(local_fmt)
+                            and local_path not in saw_local_file
+                        ):
+                            _cache_pkg(pkg, local_fmt, local_path)
+                            saw_local_file.add(local_path)
 
-            # We now update all packages with the information from the first package which
-            # we have been updating all this time. They are all the same but are referenced
-            # from different environments.
+            # We fetched and updated the cache information of only the first package
+            # in the list so we update all others.
             for _, all_pkgs in url_to_pkgs.values():
                 cannonical_pkg = all_pkgs[0]
                 for pkg in all_pkgs[1:]:
-                    # We only really care about hashes and cached versions
-                    for pkg_fmt, pkg_hash in cannonical_pkg.pkg_hashes:
-                        pkg.add_pkg_hash(pkg_fmt, pkg_hash)
                     for pkg_fmt, pkg_cache in cannonical_pkg.cached_versions:
-                        pkg.add_cached_version(
-                            pkg_fmt, pkg.cache_pkg_type()(pkg_cache.url)
-                        )
+                        filename_with_ext = os.path.split(pkg_cache.url)[1]
+                        if pkg.can_add_filename(filename_with_ext):
+                            pkg.add_cached_version(
+                                pkg_fmt, pkg.cache_pkg_type()(pkg_cache.url)
+                            )
 
             if upload_files:
                 start = time.time()
@@ -1134,6 +1242,9 @@ class Conda(object):
                 )
 
     def write_out_environments(self) -> None:
+        """
+        Writes out the local cache environment information.
+        """
         write_to_conda_manifest(self._local_root, self._cached_environment)
 
     @staticmethod
@@ -1206,7 +1317,18 @@ class Conda(object):
             if mode == "cache":
                 cache_downloads.append((pkg_spec, pkg_format, dst))
             elif mode == "web":
-                web_downloads.append((pkg_spec, dst))
+                # In some cases -- when we build packages locally, the URL is actually
+                # not a valid URL but a fake one we use as a key. In that case, we
+                # error out because we won't be able to fetch the environment. Note that
+                # this won't happen if we have a cache since we prefer cache over web
+                # download
+                if pkg_spec.is_downloadable_url():
+                    web_downloads.append((pkg_spec, dst))
+                else:
+                    raise CondaException(
+                        "No non-web source for non web-downloadable package '%s'"
+                        % pkg_spec.package_name
+                    )
 
         def _download_web(
             session: requests.Session, entry: Tuple[PackageSpecification, str]
@@ -1274,9 +1396,13 @@ class Conda(object):
                 # OSs so force CPH use for cross-arch packages for now but use
                 # micromamba otherwise if available
                 # https://github.com/mamba-org/mamba/issues/2328
+
+                # Micromamba transmute also has issues going from .conda to .tar.bz2
+                # with filenames so we use CPH
                 if (
                     "micromamba" in cast(Dict[str, str], self._bins)
                     and requested_arch == arch_id()
+                    and src_format != ".conda"
                 ):
                     _micromamba_transmute(src_file, dst_file, dst_format)
                 elif "cph" in cast(Dict[str, str], self._bins):
@@ -1287,7 +1413,7 @@ class Conda(object):
                     ):
                         raise CondaException(
                             "Transmuting a package with micromamba is not supported "
-                            "across architectures due to "
+                            "across architectures or from .conda due to "
                             "https://github.com/mamba-org/mamba/issues/2328. "
                             "Please install conda-package-handling."
                         )
@@ -1296,7 +1422,7 @@ class Conda(object):
                         " or micromamba"
                     )
 
-                pkg_spec.add_local_file(dst_format, dst_file, transmuted=True)
+                pkg_spec.add_local_file(dst_format, dst_file)
             except CondaException as e:
                 return (pkg_spec, None, e)
             return (pkg_spec, dst_format, None)
@@ -1365,6 +1491,8 @@ class Conda(object):
                 dl_local_path = os.path.join(
                     dest_dir, pkg_spec.TYPE, "%s{format}" % pkg_spec.filename
                 )
+                # Make sure the destination directory exists
+                os.makedirs(os.path.join(dest_dir, pkg_spec.TYPE), exist_ok=True)
             else:
                 dl_local_path = os.path.join(dest_dir, "%s{format}" % pkg_spec.filename)
             # Check for local files first
@@ -1520,12 +1648,10 @@ class Conda(object):
                                 % (pkg_spec.filename, key)
                             )
                         else:
-                            url_to_add = self._make_urlstxt_from_cacheurl(key)  # type: ignore
-                            if (
-                                pkg_spec.TYPE == "conda"
-                                and url_to_add not in known_urls
-                            ):
-                                url_adds.append(url_to_add)
+                            if pkg_spec.TYPE == "conda":
+                                url_to_add = self._make_urlstxt_from_cacheurl(key)  # type: ignore
+                                if url_to_add not in known_urls:
+                                    url_adds.append(url_to_add)
                             shutil.move(tmpfile, local_path)  # type: ignore
                             # We consider stuff in the cache to be clean in terms of hash
                             # so we don't want to recompute it.
@@ -1562,9 +1688,7 @@ class Conda(object):
                                 % (pkg_spec.filename, error)
                             )
                         else:
-                            new_url = self._make_urlstxt_from_url(
-                                pkg_spec.url, dst_format, is_transmuted=True
-                            )
+                            new_url = self._make_urlstxt_from_url(pkg_spec, dst_format)
 
                             if new_url not in known_urls:
                                 url_adds.append(new_url)
@@ -1645,8 +1769,8 @@ class Conda(object):
                     CondaPackageSpecification(
                         filename=pkg["filename"],
                         url=pkg["url"],
-                        url_format=os.path.splitext(pkg["filename"])[1],
-                        hashes={os.path.splitext(pkg["filename"])[1]: pkg["md5"]},
+                        url_format=correct_splitext(pkg["filename"])[1],
+                        hashes={correct_splitext(pkg["filename"])[1]: pkg["md5"]},
                     )
                     for pkg in json_response["packages"]
                 ]
@@ -1656,8 +1780,19 @@ class Conda(object):
         deps: Sequence[TStr],
         sources: Sequence[TStr],
         architecture: str,
-    ) -> List[PackageSpecification]:
+        builder_env: Optional[ResolvedEnvironment],
+        base_env: Optional[ResolvedEnvironment],
+    ) -> Tuple[List[PackageSpecification], Optional[ResolvedEnvironment]]:
 
+        if base_env:
+            local_packages = [
+                p for p in base_env.packages if not p.is_downloadable_url()
+            ]
+            if local_packages:
+                raise CondaException(
+                    "Local packages are not allowed in Conda: %s"
+                    % ", ".join([p.package_name for p in local_packages])
+                )
         deps = [d for d in deps if d.category in ("conda", "npconda")]
 
         result = []
@@ -1760,20 +1895,26 @@ class Conda(object):
                         hashes={parse_result.url_format: cast(str, parse_result.hash)},
                     )
                 )
-        return result
+        return result, builder_env
 
     def _resolve_env_with_pip(
         self,
-        python_version: str,
         deps: Sequence[TStr],
         sources: Sequence[TStr],
         extras: Sequence[TStr],
         architecture: str,
-        builder_env: ResolvedEnvironment,
-    ) -> List[PackageSpecification]:
+        builder_env: Optional[ResolvedEnvironment],
+        base_env: Optional[ResolvedEnvironment],
+    ) -> Tuple[List[PackageSpecification], Optional[ResolvedEnvironment]]:
 
-        deps = [d for d in deps if d.category == "pip"]
-
+        if base_env:
+            local_packages = [
+                p
+                for p in base_env.packages
+                if p.TYPE == "pip" and (not p.is_downloadable_url() or p.is_derived())
+            ]
+        else:
+            local_packages = None
         # Some args may be two actual arguments like "-f <something>" thus the map
         extra_args = list(
             chain.from_iterable(
@@ -1783,6 +1924,21 @@ class Conda(object):
                 )
             )
         )
+
+        if not builder_env:
+            builder_env = self._build_builder_env(deps, sources, architecture)
+
+        deps = [d for d in deps if d.category == "pip"]
+        # We get the python version for this builder env
+        python_version = None  # type: Optional[str]
+        for p in builder_env.packages:
+            if p.filename.startswith("python-"):
+                python_version = p.package_version
+                break
+        if python_version is None:
+            raise CondaException(
+                "Could not determine version of Python from conda packages"
+            )
 
         # Create the environment in which we will call pip
         debug.conda_exec("Creating builder conda environment")
@@ -1847,14 +2003,32 @@ class Conda(object):
 
                 args.extend(extra_args)
 
+            # If we have local packages, we download them to a directory and point
+            # pip to it using the `--find-links` argument.
+            local_packages_dict = {}  # type: Dict[str, PackageSpecification]
+            if local_packages:
+                os.makedirs(os.path.join(pip_dir, "local_packages"))
+                self._lazy_fetch_packages(
+                    local_packages, os.path.join(pip_dir, "local_packages")
+                )
+                args.extend(
+                    ["--find-links", os.path.join(pip_dir, "local_packages", "pip")]
+                )
+
+                for p in local_packages:
+                    for _, f in p.local_files:
+                        local_packages_dict[os.path.realpath(f)] = p
+                debug.conda_exec(
+                    "Locally present files: %s" % ", ".join(local_packages_dict)
+                )
             # Unfortunately, pip doesn't like things like ==<= so we need to strip
             # the ==
             for d in deps:
-                splits = d.value.split("==")
+                splits = d.value.split("==", 1)
                 if len(splits) == 1:
                     args.append(d.value)
                 else:
-                    if splits[1][0] in ("=", "<", ">"):
+                    if splits[1][0] in ("=", "<", ">", "!", "~"):
                         # Something originally like pkg==<=ver
                         args.append("".join(splits))
                     else:
@@ -1881,31 +2055,61 @@ class Conda(object):
                 # arch) and then add it.
                 # The spec is given here:
                 # https://packaging.python.org/en/latest/specifications/direct-url-data-structure/
+                if debug.conda_exec:
+                    package_desc = {
+                        k: v
+                        for k, v in package_desc.items()
+                        if k in ("download_info", "vcs_info", "url", "subdirectory")
+                    }
+                    debug.conda_exec("Need to install %s" % str(package_desc))
                 dl_info = package_desc["download_info"]
                 url = dl_info["url"]
                 if "dir_info" in dl_info or url.startswith("file://"):
-                    if dl_info["dir_info"].get("editable", False):
+                    url = unquote(url)
+                    local_path = url[7:]
+                    if "dir_info" in dl_info and dl_info["dir_info"].get(
+                        "editable", False
+                    ):
                         raise CondaException(
                             "Cannot include an editable PIP package: '%s'" % url
                         )
-                    if os.path.isdir(url[7:]):
+                    if os.path.isdir(local_path):
                         packages_to_build.append(dl_info)
                     else:
-                        parse_result = parse_explicit_path_pip(url)
-                        if parse_result.url_format != ".whl":
-                            # This is a source package so we need to build it
-                            packages_to_build.append(dl_info)
-                        else:
-                            package_spec = PipPackageSpecification(
-                                parse_result.filename,
-                                parse_result.url,
-                                parse_result.url_format,
-                                None,
+                        # A local wheel or tarball
+                        if url in local_packages_dict:
+                            debug.conda_exec("This is a known local package")
+                            # We are going to move this file to a less "temporary"
+                            # location so that it can be installed if needed
+                            pkg_spec = local_packages_dict[local_path]
+                            filename = os.path.split(local_path)[1]
+                            file_format = correct_splitext(filename)[1]
+                            shutil.move(local_path, self._package_dirs[0])
+                            pkg_spec.add_local_file(
+                                file_format,
+                                os.path.join(self._package_dirs[0], filename),
                             )
-                            # Use url to not have the `file://` and not use the canonical
-                            # file://local-file/ path
-                            package_spec.add_local_file(parse_result.url_format, url)
-                            result.append(package_spec)
+                            result.append(pkg_spec)
+                        else:
+                            parse_result = parse_explicit_path_pip(url)
+                            if parse_result.url_format != ".whl":
+                                # This is a source package so we need to build it
+                                packages_to_build.append(dl_info)
+                            else:
+                                package_spec = PipPackageSpecification(
+                                    parse_result.filename,
+                                    parse_result.url,
+                                    is_real_url=False,
+                                    url_format=parse_result.url_format,
+                                )
+                                # We extract the actual local file so we can use that for now
+                                # Note that the url in PipPackageSpecication is a fake
+                                # one that looks like file://local-file/... which is meant
+                                # to act as a key for the package.
+                                package_spec.add_local_file(
+                                    parse_result.url_format, url[7:]
+                                )
+                                result.append(package_spec)
                 elif "vcs_info" in dl_info:
                     packages_to_build.append(dl_info)
                 else:
@@ -1935,8 +2139,8 @@ class Conda(object):
                             PipPackageSpecification(
                                 parse_result.filename,
                                 parse_result.url,
-                                parse_result.url_format,
-                                {parse_result.url_format: parse_result.hash}
+                                url_format=parse_result.url_format,
+                                hashes={parse_result.url_format: parse_result.hash}
                                 if parse_result.hash
                                 else None,
                             )
@@ -1948,9 +2152,7 @@ class Conda(object):
                 #  - pkg_filename: name of the package
                 #  - pkg_spec: PackageSpecification for the package
                 # Keyed by the cannonical URL we assign for it
-                to_build_pkg_info = (
-                    {}
-                )  # type: Dict[str, Dict[str, Union[str, PackageSpecification, List[Tuple[FrozenSet[Tag], str]]]]]
+                to_build_pkg_info = {}  # type: Dict[str, Dict[str, Any]]
                 for package_desc in packages_to_build:
                     if "vcs_info" in package_desc:
                         base_build_url = "%s+%s@%s" % (
@@ -1974,18 +2176,26 @@ class Conda(object):
                                 "#subdirectory=%s" % package_desc["subdirectory"]
                             )
                             base_pkg_url += "/%s" % package_desc["subdirectory"]
-                        to_build_pkg_info[base_pkg_url] = {
+                        cache_base_url = PipCachePackage.make_partial_cache_url(
+                            base_pkg_url, is_real_url=False
+                        )
+                        to_build_pkg_info[cache_base_url] = {
                             "build_url": base_build_url,
-                            "cache_url": PipCachePackage.make_partial_cache_url(
-                                base_pkg_url
+                            # We get the name once we build the package
+                            "spec": PipPackageSpecification(
+                                _FAKE_WHEEL,
+                                base_pkg_url,
+                                is_real_url=False,
+                                url_format=".whl",
                             ),
                         }
                     elif "dir_info" in package_desc:
+                        # URL starts with file://
                         local_path = package_desc["url"][7:]
                         if os.path.isdir(local_path):
                             # For now support only setup.py packages.
                             if not os.path.isfile(os.path.join(local_path, "setup.py")):
-                                raise InvalidEnvironmentException(
+                                raise CondaException(
                                     "Local directory '%s' is not supported as it is "
                                     "missing a 'setup.py'" % local_path
                                 )
@@ -2007,231 +2217,95 @@ class Conda(object):
                                 "%s-%s.whl" % (package_name, package_version),
                             )
                         parse_result = parse_explicit_path_pip(local_path)
-                        to_build_pkg_info[parse_result.url] = {
+                        cache_base_url = PipCachePackage.make_partial_cache_url(
+                            parse_result.url, is_real_url=False
+                        )
+
+                        to_build_pkg_info[cache_base_url] = {
                             "build_url": package_desc["url"],
-                            "cache_url": PipCachePackage.make_partial_cache_url(
-                                parse_result.url
+                            # We get the name once we build the package
+                            "spec": PipPackageSpecification(
+                                _FAKE_WHEEL,
+                                parse_result.url,
+                                is_real_url=False,
+                                url_format=".whl",
                             ),
                         }
                     else:
-                        # Just a regular .tar.gz package
-                        if package_desc["url"].endswith(".tar.gz"):
-                            cache_url = package_desc["url"][:-7] + ".whl"
-                        else:
-                            raise InvalidEnvironmentException(
-                                "Expected a '.tar.gz' package: '%s'"
-                                % package_desc["url"]
+                        # Just a regular .tar.gz or .zip package
+                        url_parse_result = urlparse(cast(str, package_desc["url"]))
+
+                        is_real_url = False
+                        if url_parse_result.scheme == "file":
+                            parse_result = parse_explicit_path_pip(package_desc["url"])
+                            cache_base_url = PipCachePackage.make_partial_cache_url(
+                                parse_result.url, is_real_url=False
                             )
-                        to_build_pkg_info[cache_url] = {
+                        else:
+                            # We don't have the hash so we ignore.
+                            parse_result = parse_explicit_url_pip(
+                                "%s#" % package_desc["url"]
+                            )
+                            cache_base_url = PipCachePackage.make_partial_cache_url(
+                                parse_result.url, is_real_url=True
+                            )
+                            is_real_url = True
+
+                        spec = PipPackageSpecification(
+                            parse_result.filename,
+                            parse_result.url,
+                            is_real_url=is_real_url,
+                            url_format=parse_result.url_format,
+                        )
+                        to_build_pkg_info[cache_base_url] = {
                             "build_url": package_desc["url"],
-                            "cache_url": PipCachePackage.make_partial_cache_url(
-                                cache_url
-                            ),
+                            "spec": spec,
                         }
-
-                # We check in the cache -- we don't actually have the filename or
-                # hash so we check things starting with the partial URL
-                debug.conda_exec(
-                    "Checking for pre-built packages: %s" % str(to_build_pkg_info)
-                )
-                found_files = self._storage.list_content(
-                    (x["cache_url"] for x in to_build_pkg_info.values())
-                )
-                keys_to_check = []  # type: List[str]
-                for cache_path, is_file in found_files:
-                    cache_path = cast(str, cache_path)
-                    is_file = cast(bool, is_file)
-                    if is_file:
-                        raise CondaException(
-                            "Invalid cache content at '%s'" % cache_path
-                        )
-
-                    debug.conda_exec(
-                        "Found potential pre-built package at '%s'" % cache_path
-                    )
-                    for k, v in to_build_pkg_info.items():
-                        if cache_path.startswith(cast(str, v["cache_url"])):
-                            keys_to_check.append(k)
-                            # We now have a potential filename for the package. We
-                            # note it so that we can later match it based on the
-                            # supported tags for this platform
-                            filename = os.path.split(cache_path.rstrip("/"))[1]
-                            cast(
-                                List[Tuple[FrozenSet[Tag], str]],
-                                v.setdefault("pkg_filenames", []),
-                            ).append((parse_wheel_filename(filename)[3], cache_path))
-                            if "pkg_filename" in v:
-                                raise CondaException(
-                                    "File at '%s' is a duplicate of '%s'"
-                                    % (cache_path, v["cache_url"])
-                                )
-                # We now check all the keys_to_check (basically where we found potential
-                # matches) for files that have the right tag for the platform we are
-                # building for
-                for k in keys_to_check:
-                    potentials = cast(
-                        List[Tuple[FrozenSet[Tag], str]],
-                        to_build_pkg_info[k]["pkg_filenames"],
-                    )
-                    for t in supported_tags:
-                        # Tags are ordered from most-preferred to least preferred
-                        for p in potentials:
-                            # Potentials are in no particular order but we will
-                            # effectively get a package with the most preferred tag
-                            # if one exists
-                            if t in p[0]:
-                                to_build_pkg_info[k]["cache_url"] = p[1]
-                                to_build_pkg_info[k]["pkg_filename"] = os.path.split(
-                                    p[1].rstrip("/")
-                                )[1]
-                                debug.conda_exec(
-                                    "For '%s', found matching package at %s" % (k, p[1])
-                                )
-                                break
-                        else:
-                            # If we don't find a match, continue to next tag (and
-                            # skip break of outer loop on next line)
-                            continue
-                        break
-
-                # We now check for hashes for those packages we did find (it's the
-                # next level down in the cache)
-                found_files = self._storage.list_content(
-                    (
-                        x["cache_url"]
-                        for x in to_build_pkg_info.values()
-                        if "pkg_filename" in x
-                    )
-                )
-                for cache_path, is_file in found_files:
-                    cache_path = cast(str, cache_path)
-                    is_file = cast(bool, is_file)
-                    if is_file:
-                        raise CondaException(
-                            "Invalid cache content at '%s'" % cache_path
-                        )
-
-                    debug.conda_exec("Found package with hash at '%s'" % cache_path)
-                    for k, v in to_build_pkg_info.items():
-                        if cache_path.startswith(cast(str, v["cache_url"])):
-                            # We now have the hash for the package
-                            pkg_hash = os.path.split(cache_path.rstrip("/"))[1]
-                            pkg_url = os.path.join(k, cast(str, v["pkg_filename"]))
-                            v["cache_url"] = PipCachePackage.make_cache_url(
-                                pkg_url, pkg_hash
+                        if not is_real_url:
+                            # We have a local file for this tar-ball
+                            spec.add_local_file(
+                                parse_result.url_format, url_parse_result.path
                             )
-                            v["pkg_spec"] = PipPackageSpecification(
-                                cast(str, v["pkg_filename"])[:-4],
-                                pkg_url,
-                                ".whl",
-                                {".whl": pkg_hash},
-                                {".whl": PipCachePackage(v["cache_url"])},
-                            )
-                            break
-                    else:
-                        raise CondaException(
-                            "Found unexpected content at '%s'" % cache_path
-                        )
-
-                if any("pkg_spec" not in v for v in to_build_pkg_info.values()):
-                    self._echo(" (building PIP packages from repositories)", nl=False)
-                    # We need to build packages -- we only allow this if the architecture
-                    # is the same to avoid potential cross-building. We could relax this to
-                    # noarch packages but playing it safe for now
-                    if arch_id() != architecture:
-                        raise CondaException(
-                            "Specifying PIP packages from repositories requires "
-                            "building the wheels and this is only allowed if the target "
-                            "architecture is the same as this one"
-                        )
-                    debug.conda_exec(
-                        "Creating builder environment to build PIP packages"
-                    )
-
-                    target_directory = os.path.join(self._package_dirs[0], "pip")
-                    os.makedirs(target_directory, exist_ok=True)
-
-                    def _build_with_pip(identifier: int, key: str, url: str):
-                        dest_path = os.path.join(pip_dir, "build_%d" % identifier)
-                        debug.conda_exec(
-                            "Building package '%s'  for '%s' in '%s'"
-                            % (url, key, dest_path)
-                        )
-                        self._call_binary(
-                            [
-                                "-m",
-                                "pip",
-                                "--isolated",
-                                "wheel",
-                                "--no-deps",
-                                "--progress-bar",
-                                "off",
-                                "-w",
-                                dest_path,
-                                url,
-                            ],
-                            binary=builder_python,
-                        )
-                        return key, dest_path
-
-                    with ThreadPoolExecutor() as executor:
-                        build_result = [
-                            executor.submit(
-                                _build_with_pip, idx, key, cast(str, v["build_url"])
-                            )
-                            for idx, (key, v) in enumerate(to_build_pkg_info.items())
-                            if not "pkg_filename" in v
-                        ]
-                        for f in as_completed(build_result):
-                            key, build_dir = f.result()
-                            wheel_files = [
-                                f
-                                for f in os.listdir(build_dir)
-                                if os.path.isfile(os.path.join(build_dir, f))
-                                and f.endswith(".whl")
+                            to_build_pkg_info[cache_base_url]["found"] = [
+                                parse_result.url_format
                             ]
-                            if len(wheel_files) != 1:
-                                raise CondaException(
-                                    "Could not build '%s' -- found built packages: %s"
-                                    % (key, wheel_files)
-                                )
 
-                            wheel_file = os.path.join(build_dir, wheel_files[0])
-                            # Move the built wheel to a less temporary location
-                            wheel_file = shutil.copy(wheel_file, target_directory)
-                            debug.conda_exec(
-                                "Package for '%s' built in '%s'" % (key, wheel_file)
-                            )
-
-                            parse_result = parse_explicit_path_pip(
-                                "file://%s" % wheel_file
-                            )
-                            package_spec = PipPackageSpecification(
-                                parse_result.filename,
-                                os.path.join(key, "%s.whl" % parse_result.filename),
-                                parse_result.url_format,
-                                None,
-                            )
-                            package_spec.add_local_file(
-                                parse_result.url_format, wheel_file
-                            )
-
-                            to_build_pkg_info[key][
-                                "pkg_filename"
-                            ] = parse_result.filename
-                            to_build_pkg_info[key]["pkg_spec"] = package_spec
-
-                for v in to_build_pkg_info.values():
-                    result.append(cast(PackageSpecification, v["pkg_spec"]))
-
-        return result
+                if self._storage:
+                    built_pip_packages, builder_env = self._build_pip_packages(
+                        python_version,
+                        to_build_pkg_info,
+                        builder_env,
+                        pip_dir,
+                        architecture,
+                        supported_tags,
+                    )
+                    result.extend(built_pip_packages)
+                else:
+                    non_relocatable_packages = [
+                        k for k, v in to_build_pkg_info.items() if not v["url"]
+                    ]
+                    if non_relocatable_packages:
+                        raise CondaException(
+                            "Cannot create a relocatable environment as it depends on "
+                            "local files or non tarballs: %s"
+                            % ", ".join(non_relocatable_packages)
+                        )
+                    result.extend(
+                        [
+                            cast(PackageSpecification, v["spec"])
+                            for v in to_build_pkg_info.values()
+                        ]
+                    )
+        return result, builder_env
 
     def _resolve_env_with_conda_lock(
         self,
         deps: Sequence[TStr],
         channels: Sequence[TStr],
         architecture: str,
-    ) -> List[PackageSpecification]:
+        builder_env: Optional[ResolvedEnvironment],
+        base_env: Optional[ResolvedEnvironment],
+    ) -> Tuple[List[PackageSpecification], Optional[ResolvedEnvironment]]:
         outfile_name = None
         my_arch = arch_id()
         if any([d.category not in ("pip", "conda", "npconda") for d in deps]):
@@ -2239,6 +2313,20 @@ class Conda(object):
                 "Cannot resolve dependencies that include non-Conda/Pip dependencies: %s"
                 % "; ".join(map(str, deps))
             )
+        if base_env:
+            local_packages = [
+                p for p in base_env.packages if not p.is_downloadable_url()
+            ]
+            if local_packages:
+                # We actually only care about things that are not online. Derived packages
+                # are OK because we can reconstruct them if needed (or they may even
+                # be cached)
+
+                raise CondaException(
+                    "Local PIP packages are not supported in MIXED mode: %s"
+                    % ", ".join([p.package_name for p in local_packages])
+                )
+
         self._start_micromamba_server()
 
         def _poetry_exec(cmd: str, *args: str):
@@ -2282,24 +2370,37 @@ class Conda(object):
         ) + [
             c.value for c in channels if c.category == "pip"
         ]  # type: List[str]
+        salt = str(uuid.uuid4())[:8]
         try:
             # We resolve the environment using conda-lock
 
-            # Write out the requirement yml file. It's easy enough so don't use a YAML
-            # library to avoid adding another dep
+            # Write out the TOML file. It's easy enough that we don't use another tool
+            # to write it out. We use TOML so that we can disable pypi if needed
 
             pip_deps = [d.value for d in deps if d.category == "pip"]
-            conda_deps = [
-                d.value for d in deps if d.category in ("conda", "npconda")
-            ] + ["pip"]
+            conda_deps = [d.value for d in deps if d.category in ("conda", "npconda")]
+            # We only add pip if not present
+            if not any([d.startswith("pip==") for d in conda_deps]):
+                conda_deps.append("pip")
+            toml_lines = [
+                "[build-system]\n",
+                'requires = ["poetry>=0.12"]\n',
+                'build-backend = "poetry.masonry.api"\n',
+                "\n" "[tool.conda-lock]\n",
+            ]
             # Add channels
-            lines = ["channels:\n"]
-            lines.extend(
-                ["  - %s\n" % c.value for c in channels if c.category == "conda"]
-            )
+            all_channels = [c.value for c in channels if c.category == "conda"]
             for c in self._info["channels"]:
-                lines.append("  - %s\n" % c.replace(my_arch, architecture))
+                all_channels.append(c.replace(my_arch, architecture))
 
+            toml_lines.append(
+                "channels = [%s]\n" % ", ".join(["'%s'" % c for c in all_channels])
+            )
+
+            if CONDA_DEFAULT_PIP_SOURCE:
+                toml_lines.append("allow-pypi-requests = false\n")
+
+            toml_lines.append("\n")
             if any(["::" in conda_deps]) or any(
                 [c.value for c in channels if c.category == "conda"]
             ):
@@ -2327,32 +2428,76 @@ class Conda(object):
                     "Path(poetry_config.config_source.name).parent.mkdir(parents=True, exist_ok=True); "
                     "channels = json.loads(sys.argv[1]); "
                     "[poetry_config.config_source.add_property("
-                    "'repositories.metaflow_inserted_%s.url' % "
+                    "'repositories.metaflow_inserted%s_%%s.url' %% "
                     "c.translate(translation_table), c) "
-                    "for c in channels]"
+                    "for c in channels]" % salt
                 )
                 _poetry_exec(python_cmd, json.dumps(pip_channels))
 
             # Add deps
+            toml_lines.append("[tool.conda-lock.dependencies]\n")
+            for d in conda_deps:
+                splits = d.split("==", 1)
+                if len(splits) == 2:
+                    toml_lines.append('"%s" = "%s"\n' % (splits[0], splits[1]))
+                else:
+                    toml_lines.append('"%s" = "*"\n' % d)
+            toml_lines.append("\n")
+            toml_lines.append("[tool.poetry.dependencies]\n")
+            # In some cases (when we build packages), we may actually have the same
+            # dependency multiple times. We keep just the URL one in this case
+            pip_dep_lines = {}  # type: Dict[str, Dict[str, str]]
+            for d in pip_deps:
+                splits = d.split("==", 1)
+                # Here we re-parse the requirement. It will be one of the four options:
+                #  - <package_name>
+                #  - <package_name>[extras]
+                #  - <package_name>@<url>
+                #  - <package_name>[extras]@<url>
+                parsed_req = Requirement(splits[0])
+                if parsed_req.extras:
+                    extra_part = "extras = [%s]," % ", ".join(
+                        ['"%s"' % e for e in parsed_req.extras]
+                    )
+                else:
+                    extra_part = ""
 
-            lines.append("dependencies:\n")
-            lines.extend(["  - %s\n" % d for d in conda_deps])
-            if pip_deps:
-                lines.append("  - pip:\n")
-                lines.extend(["    - %s\n" % d for d in pip_deps])
+                version_str = splits[1] if len(splits) == 2 else "*"
+                if parsed_req.url:
+                    if len(splits) == 2:
+                        raise CondaException(
+                            "Unexpected version on URL requirement %s" % splits[0]
+                        )
+                    pip_dep_lines.setdefault(parsed_req.name, {}).update(
+                        {"url": parsed_req.url, "url_extras": extra_part}
+                    )
+                else:
+                    pip_dep_lines.setdefault(parsed_req.name, {}).update(
+                        {"version": version_str, "extras": extra_part}
+                    )
+            for pip_name, info in pip_dep_lines.items():
+                if "url" in info:
+                    toml_lines.append(
+                        '"%s" = {url = "%s", %s source="pypi"}\n'
+                        % (pip_name, info["url"], info["url_extras"])
+                    )
+                else:
+                    toml_lines.append(
+                        '"%s" = {version = "%s", %s source="pypi"}\n'
+                        % (pip_name, info["version"], info["extras"])
+                    )
 
             assert self._bins
 
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="ascii", delete=not debug.conda
-            ) as input_yml:
-                input_yml.writelines(lines)
-                input_yml.flush()
-                outfile_name = "conda-lock-gen-%s" % os.path.basename(input_yml.name)
+            with tempfile.TemporaryDirectory() as conda_lock_dir:
+                outfile_name = "/tmp/conda-lock-gen-%s" % os.path.basename(
+                    conda_lock_dir
+                )
+
                 args = [
                     "lock",
                     "-f",
-                    input_yml.name,
+                    "pyproject.toml",
                     "-p",
                     architecture,
                     "--filename-template",
@@ -2396,19 +2541,29 @@ class Conda(object):
                                     % (pkg_name, pkg_version, pkg_id)
                                 )
 
-                    with tempfile.NamedTemporaryFile(
-                        mode="w", encoding="ascii", delete=not debug.conda
+                    with open(
+                        os.path.join(conda_lock_dir, "virtual_yml.spec"),
+                        mode="w",
+                        encoding="ascii",
                     ) as virtual_yml:
                         virtual_yml.writelines(lines)
-                        virtual_yml.flush()
-                        args.extend(["--virtual-package-spec", virtual_yml.name])
+                    args.extend(["--virtual-package-spec", "virtual_yml.spec"])
 
-                        self._call_binary(args, binary="conda-lock", addl_env=addl_env)
-                else:
+                with WithDir(conda_lock_dir):
+                    # conda-lock will only consider a `pyproject.toml` as a TOML file which
+                    # is somewhat annoying.
+                    with open(
+                        "pyproject.toml", mode="w", encoding="ascii"
+                    ) as input_toml:
+                        input_toml.writelines(toml_lines)
+                        debug.conda_exec(
+                            "TOML configuration:\n%s" % "".join(toml_lines)
+                        )
                     self._call_binary(args, binary="conda-lock", addl_env=addl_env)
             # At this point, we need to read the explicit dependencies in the file created
             emit = False
             result = []  # type: List[PackageSpecification]
+            packages_to_build = {}  # type: Dict[str, Any]
             with open(outfile_name, "r", encoding="utf-8") as out:
                 for l in out:
                     if emit:
@@ -2420,26 +2575,40 @@ class Conda(object):
                                     "Unexpected package specification line: %s" % l
                                 )
                             parse_result = parse_explicit_url_pip(components[4])
-                            result.append(
-                                PipPackageSpecification(
-                                    parse_result.filename,
-                                    parse_result.url,
-                                    parse_result.url_format,
-                                    {
-                                        parse_result.url_format: cast(
-                                            str, parse_result.hash
-                                        )
-                                    },
+                            if parse_result.url_format != ".whl":
+                                cache_base_url = PipCachePackage.make_partial_cache_url(
+                                    parse_result.url, is_real_url=True
                                 )
-                            )
+                                packages_to_build[cache_base_url] = {
+                                    "build_url": parse_result.url,
+                                    "spec": PipPackageSpecification(
+                                        parse_result.filename,
+                                        parse_result.url,
+                                        is_real_url=True,
+                                        url_format=parse_result.url_format,
+                                    ),
+                                }
+                            else:
+                                result.append(
+                                    PipPackageSpecification(
+                                        parse_result.filename,
+                                        parse_result.url,
+                                        url_format=parse_result.url_format,
+                                        hashes={
+                                            parse_result.url_format: parse_result.hash
+                                        }
+                                        if parse_result.hash
+                                        else None,
+                                    )
+                                )
                         else:
                             parse_result = parse_explicit_url_conda(l.strip())
                             result.append(
                                 CondaPackageSpecification(
                                     parse_result.filename,
                                     parse_result.url,
-                                    parse_result.url_format,
-                                    {
+                                    url_format=parse_result.url_format,
+                                    hashes={
                                         parse_result.url_format: cast(
                                             str, parse_result.hash
                                         )
@@ -2448,7 +2617,37 @@ class Conda(object):
                             )
                     if not emit and l.strip() == "@EXPLICIT":
                         emit = True
-            return result
+            if packages_to_build:
+                with tempfile.TemporaryDirectory() as build_dir:
+                    python_version = None  # type: Optional[str]
+                    for p in result:
+                        if p.filename.startswith("python-"):
+                            python_version = p.package_version
+                            break
+                    if python_version is None:
+                        raise CondaException(
+                            "Could not determine version of Python from conda packages"
+                        )
+                    supported_tags = pip_tags_from_arch(python_version, architecture)
+                    if self._storage:
+                        built_pip_packages, builder_env = self._build_pip_packages(
+                            python_version,
+                            packages_to_build,
+                            builder_env,
+                            build_dir,
+                            architecture,
+                            supported_tags,
+                        )
+                        result.extend(built_pip_packages)
+                    else:
+                        # Here it was just URLs so we are good
+                        result.extend(
+                            [
+                                cast(PackageSpecification, v["spec"])
+                                for v in packages_to_build.values()
+                            ]
+                        )
+            return result, builder_env
         finally:
             if outfile_name and os.path.isfile(outfile_name):
                 os.unlink(outfile_name)
@@ -2459,11 +2658,324 @@ class Conda(object):
                     "from conda_lock._vendor.poetry.factory import Factory; "
                     "poetry_config = Factory.create_config(); "
                     "Path(poetry_config.config_source.name).parent.mkdir(parents=True, exist_ok=True); "
-                    "[poetry_config.config_source.remove_property('repositories.%s' % p) for p in "
+                    "[poetry_config.config_source.remove_property('repositories.%%s' %% p) for p in "
                     "poetry_config.all().get('repositories', {}) "
-                    "if p.startswith('metaflow_inserted_')]; "
+                    "if p.startswith('metaflow_inserted%s_')]; " % salt
                 )
                 _poetry_exec(python_cmd)
+
+    def _build_builder_env(
+        self, deps: Sequence[TStr], sources: Sequence[TStr], architecture: str
+    ) -> ResolvedEnvironment:
+
+        python_dep = [
+            d for d in deps if d.category == "conda" and d.value.startswith("python==")
+        ]
+        conda_only_sources = [s for s in sources if s.category == "conda"]
+
+        if arch_id() == architecture:
+            conda_only_deps = [d for d in deps if d.category == "npconda"] + python_dep
+            debug.conda_exec(
+                "Building builder environment with %s" % str(conda_only_deps)
+            )
+            packages, _ = self._resolve_env_with_conda(
+                conda_only_deps, conda_only_sources, architecture, None, None
+            )
+
+            return ResolvedEnvironment(
+                conda_only_deps,
+                conda_only_sources,
+                None,
+                architecture,
+                all_packages=packages,
+                env_type=EnvType.CONDA_ONLY,
+            )
+        debug.conda_exec("Using vanilla builder env with %s" % str(python_dep[0]))
+        python_only_packages, _ = self._resolve_env_with_conda(
+            python_dep, conda_only_sources, arch_id(), None, None
+        )
+        return ResolvedEnvironment(
+            python_dep,
+            conda_only_sources,
+            None,
+            arch_id(),
+            all_packages=python_only_packages,
+            env_type=EnvType.CONDA_ONLY,
+        )
+
+    def _build_pip_packages(
+        self,
+        python_version: str,
+        to_build_pkg_info: Dict[str, Any],
+        builder_env: Optional[ResolvedEnvironment],
+        build_dir: str,
+        architecture: str,
+        supported_tags: List[Tag],
+    ) -> Tuple[List[PackageSpecification], Optional[ResolvedEnvironment]]:
+
+        # We check in the cache -- we don't actually have the filename or
+        # hash so we check things starting with the partial URL.
+        # The URL in cache will be:
+        #  - <base url>/<filename>/<hash>/<filename>
+
+        debug.conda_exec(
+            "Checking for pre-built packages: %s"
+            % ", ".join(
+                ["%s @ %s" % (v["spec"], k) for k, v in to_build_pkg_info.items()]
+            )
+        )
+        found_files = self._storage.list_content(to_build_pkg_info.keys())
+
+        keys_to_check = set()  # type: Set[str]
+
+        # Key: key in to_build_pkg_info
+        # Value: list of possible cache paths
+        possible_wheels = {}  # type: Dict[str, List[str]]
+        for cache_path, is_file in found_files:
+            cache_path = cast(str, cache_path).rstrip("/")
+            is_file = cast(bool, is_file)
+            if is_file:
+                raise CondaException("Invalid cache content at '%s'" % cache_path)
+            keys_to_check.add(cache_path)
+            base_cache_path, cache_filename_with_ext = os.path.split(cache_path)
+            cache_format = os.path.splitext(cache_filename_with_ext)[1]
+            if cache_format != ".whl":
+                # This is a source format -- we add it to the keys_to_check so we can
+                keys_to_check.add(cache_path)
+            else:
+                # There may be multiple wheel files so we want to pick the best one
+                # so we record for now and then we will pick the best one.
+                possible_wheels.setdefault(base_cache_path, []).append(cache_path)
+            debug.conda_exec("Found potential pre-built package at '%s'" % cache_path)
+
+        # We now check and pick the best wheel if one is compatible and then we will
+        # check it further
+        for key, wheel_potentials in possible_wheels.items():
+            for t in supported_tags:
+                # Tags are ordered from most-preferred to least preferred
+                for p in wheel_potentials:
+                    # Potentials are in no particular order but we will
+                    # effectively get a package with the most preferred tag
+                    # if one exists
+                    wheel_name = os.path.split(p)[1]
+                    _, _, _, tags = parse_wheel_filename(wheel_name)
+                    if t in tags:
+                        keys_to_check.add(p)
+                        debug.conda_exec("%s: matching package @ %s" % (key, p))
+                        break
+                else:
+                    # If we don't find a match, continue to next tag (and
+                    # skip break of outer loop on next line)
+                    continue
+                break
+
+        # We now check for hashes for those packages we did find (it's the
+        # next level down in the cache)
+        found_files = self._storage.list_content(keys_to_check)
+        for cache_path, is_file in found_files:
+            cache_path = cast(str, cache_path).rstrip("/")
+            is_file = cast(bool, is_file)
+            if is_file:
+                raise CondaException("Invalid cache content at '%s'" % cache_path)
+            head, _ = os.path.split(cache_path)
+            base_cache_path, cache_filename_with_ext = os.path.split(head)
+            cache_filename, cache_format = correct_splitext(cache_filename_with_ext)
+
+            pkg_info = to_build_pkg_info[base_cache_path]
+            pkg_spec = cast(PipPackageSpecification, pkg_info["spec"])
+            pkg_info.setdefault("found", []).append(cache_format)
+            if cache_format == ".whl":
+                # In some cases, we don't know the filename so we change it here (or
+                # we need to update it since a tarball has a generic name without
+                # ABI, etc but a wheel name has more information)
+                if pkg_spec.filename != cache_filename:
+                    pkg_spec = pkg_spec.clone_with_filename(cache_filename)
+                    pkg_info["spec"] = pkg_spec
+            debug.conda_exec(
+                "%s:%s adding cache file %s"
+                % (
+                    pkg_spec.filename,
+                    cache_format,
+                    os.path.join(cache_path, cache_filename_with_ext),
+                )
+            )
+            pkg_spec.add_cached_version(
+                cache_format,
+                PipCachePackage(os.path.join(cache_path, cache_filename_with_ext)),
+            )
+
+        if arch_id() != architecture:
+            # We can't build here so we make sure we have at least something for each
+            # pip package; either we have something in cache (a source of wheel or both)
+            # or we have an actual URL pointing to a source tarball.
+            not_in_cache_or_local = [
+                k for k, v in to_build_pkg_info.items() if not v.get("found")
+            ]
+
+            not_downloadable = [
+                k
+                for k, v in to_build_pkg_info.items()
+                if not cast(PackageSpecification, v["spec"]).is_downloadable_url()
+            ]
+            no_info = set(not_in_cache_or_local).intersection(not_downloadable)
+            if no_info:
+                raise CondaException(
+                    "Cannot build PIP package across architectures. "
+                    "Requirements would have us build: %s. "
+                    "This may be because you are specifying non wheel dependencies or "
+                    "no wheel dependencies exist." % ", ".join(no_info)
+                )
+            return [
+                cast(PackageSpecification, v["spec"])
+                for v in to_build_pkg_info.values()
+            ], builder_env
+
+        # Determine what we need to build -- all non wheels
+        keys_to_build = [
+            k for k, v in to_build_pkg_info.items() if ".whl" not in v.get("found", [])
+        ]
+
+        if not keys_to_build:
+            return [
+                cast(PackageSpecification, v["spec"])
+                for v in to_build_pkg_info.values()
+            ], builder_env
+
+        debug.conda_exec(
+            "Going to build packages %s"
+            % ", ".join([to_build_pkg_info[k]["spec"].filename for k in keys_to_build])
+        )
+        # Here we are the same architecture so we can go ahead and build the wheel and
+        # add it.
+        self._echo(" (building PIP packages from repositories)", nl=False)
+        debug.conda_exec("Creating builder environment to build PIP packages")
+
+        # Create the environment in which we will call pip
+        if not builder_env:
+            builder_env = self._build_builder_env(
+                [TStr(category="conda", value="python==%s" % python_version)],
+                [],
+                architecture,
+            )
+        techo = self._echo
+        self._echo = self._no_echo
+        self.create_for_name(
+            self._env_builder_directory_from_envid(builder_env.env_id),
+            builder_env,
+        )
+        self._echo = techo
+
+        builder_python = cast(
+            str,
+            self.python(self._env_builder_directory_from_envid(builder_env.env_id)),
+        )
+
+        # Download any source either from cache or the web. We can use our typical
+        # lazy fetch to do this. We just make sure that we only pass it packages that
+        # it has something to fetch
+        target_directory = self._package_dirs[0]
+        os.makedirs(os.path.join(target_directory, "pip"), exist_ok=True)
+        pkgs_to_fetch = cast(
+            List[PipPackageSpecification],
+            [to_build_pkg_info[k]["spec"] for k in keys_to_build],
+        )
+        pkgs_to_fetch = list(
+            filter(
+                lambda x: x.is_downloadable_url() or x.cached_version(x.url_format),
+                pkgs_to_fetch,
+            )
+        )
+        debug.conda_exec(
+            "Going to fetch sources for %s"
+            % ", ".join([p.filename for p in pkgs_to_fetch])
+        )
+        if pkgs_to_fetch:
+            self._lazy_fetch_packages(pkgs_to_fetch, target_directory)
+
+        def _build_with_pip(
+            identifier: int, key: str, spec: PipPackageSpecification, build_url: str
+        ):
+            dest_path = os.path.join(build_dir, "build_%d" % identifier)
+            src = spec.local_file(spec.url_format) or build_url
+            debug.conda_exec("%s: building from '%s' in '%s'" % (key, src, dest_path))
+
+            self._call_binary(
+                [
+                    "-m",
+                    "pip",
+                    "--isolated",
+                    "wheel",
+                    "--no-deps",
+                    "--progress-bar",
+                    "off",
+                    "-w",
+                    dest_path,
+                    src,
+                ],
+                binary=builder_python,
+            )
+            return key, dest_path
+
+        with ThreadPoolExecutor() as executor:
+            build_result = [
+                executor.submit(
+                    _build_with_pip,
+                    idx,
+                    key,
+                    cast(PipPackageSpecification, to_build_pkg_info[key]["spec"]),
+                    cast(str, to_build_pkg_info[key]["build_url"]),
+                )
+                for idx, key in enumerate(keys_to_build)
+            ]
+            for f in as_completed(build_result):
+                key, build_dir = f.result()
+                wheel_files = [
+                    f
+                    for f in os.listdir(build_dir)
+                    if os.path.isfile(os.path.join(build_dir, f)) and f.endswith(".whl")
+                ]
+                if len(wheel_files) != 1:
+                    raise CondaException(
+                        "Could not build '%s' -- found built packages: %s"
+                        % (key, wheel_files)
+                    )
+
+                pkg_spec = cast(PipPackageSpecification, to_build_pkg_info[key]["spec"])
+                wheel_file = os.path.join(build_dir, wheel_files[0])
+                # Move the built wheel to a less temporary location
+                wheel_file = shutil.copy(
+                    wheel_file, os.path.join(target_directory, "pip")
+                )
+
+                parse_result = parse_explicit_path_pip("file://%s" % wheel_file)
+                # If the source is not an actual URL, we are going to change the name
+                # of the package to avoid any potential conflict. We consider that
+                # packages derived from internet URLs (so likely a source package)
+                # do not need name changes
+                if not pkg_spec.is_downloadable_url():
+                    pkg_version = parse_wheel_filename(parse_result.filename + ".whl")[
+                        1
+                    ]
+
+                    pkg_version_str = str(pkg_version)
+                    if not pkg_version.dev:
+                        wheel_hash = PipPackageSpecification.hash_pkg(wheel_file)
+                        pkg_version_str += ".dev" + wheel_hash[:8].translate(_DEV_TRANS)
+                    pkg_version_str += "+mfbuild"
+                    wheel_file = change_pip_package_version(wheel_file, pkg_version_str)
+                    parse_result = parse_explicit_path_pip("file://%s" % wheel_file)
+
+                debug.conda_exec("Package for '%s' built in '%s'" % (key, wheel_file))
+
+                # We update because we need to change the filename mostly so that it
+                # now reflects the abi, etc and all that goes in a wheel filename.
+                pkg_spec = pkg_spec.clone_with_filename(parse_result.filename)
+                to_build_pkg_info[key]["spec"] = pkg_spec
+                pkg_spec.add_local_file(".whl", wheel_file)
+
+        return [
+            cast(PackageSpecification, v["spec"]) for v in to_build_pkg_info.values()
+        ], builder_env
 
     def _find_conda_binary(self):
         # Lock as we may be trying to resolve multiple environments at once and therefore
@@ -2472,7 +2984,7 @@ class Conda(object):
             if self._found_binaries:
                 return
             if self._resolvers[EnvType.CONDA_ONLY] not in _CONDA_DEP_RESOLVERS:
-                raise InvalidEnvironmentException(
+                raise CondaException(
                     "Invalid Conda dependency resolver %s, valid candidates are %s."
                     % (self._resolvers[EnvType.CONDA_ONLY], _CONDA_DEP_RESOLVERS)
                 )
@@ -2482,10 +2994,9 @@ class Conda(object):
                 # Remote mode -- we install a conda environment or make sure we have
                 # one already there
                 self._ensure_remote_conda()
-
-            err = self._validate_conda_installation()
-            if err:
-                raise err
+                err = self._validate_conda_installation()
+                if err:
+                    raise err
             self._found_binaries = True
 
     def _ensure_local_conda(self):
@@ -2551,8 +3062,8 @@ class Conda(object):
             with storage.load_bytes([path_to_fetch]) as load_results:
                 for _, tmpfile, _ in load_results:
                     if tmpfile is None:
-                        raise InvalidEnvironmentException(
-                            msg="Cannot find Conda installation tarball '%s'"
+                        raise CondaException(
+                            "Cannot find Conda installation tarball '%s'"
                             % os.path.join(
                                 get_conda_root(self._datastore_type), path_to_fetch
                             )
@@ -2563,14 +3074,28 @@ class Conda(object):
                 tar.extractall(path)
                 tar.close()
             except Exception as e:
-                raise InvalidEnvironmentException(
-                    msg="Could not extract environment: %s" % str(e)
-                )
+                raise CondaException("Could not extract environment: %s" % str(e))
         delta_time = int(time.time() - start)
         self._echo(
             " done in %d second%s." % (delta_time, plural_marker(delta_time)),
             timestamp=False,
         )
+
+        # We write a file to say that the local conda installation is good to go. We can
+        # use this to check if the installation was complete in case multiple processes
+        # try to check at the same time.
+        with open(
+            os.path.join(path, ".metaflow-local-env"), mode="w", encoding="utf-8"
+        ) as f:
+            json.dump(
+                {
+                    "src": os.path.join(
+                        get_conda_root(self._datastore_type), path_to_fetch
+                    ),
+                    "install_time": datetime.fromtimestamp(time.time()).isoformat(),
+                },
+                f,
+            )
 
     def _ensure_remote_conda(self):
         if CONDA_REMOTE_INSTALLER is not None:
@@ -2635,6 +3160,18 @@ class Conda(object):
         self._conda_executable_type = "micromamba"
 
     def _validate_conda_installation(self) -> Optional[Exception]:
+
+        # If this is installed in CONDA_LOCAL_PATH look for special marker
+        if self._mode == "local" and CONDA_LOCAL_PATH is not None:
+            if not os.path.isfile(
+                os.path.join(CONDA_LOCAL_PATH, ".metaflow-local-env")
+            ):
+                return InvalidEnvironmentException(
+                    "Missing special marker .metaflow-local-env in locally installed environment"
+                )
+            # We consider that locally installed environments are OK
+            return None
+
         # Check if the dependency solver exists.
         if self._bins is None:
             return InvalidEnvironmentException("No binaries configured for Conda")
@@ -2678,13 +3215,26 @@ class Conda(object):
                 )
                 del self._bins["cph"]
 
+        if "conda-lock" in self._bins:
+            conda_lock_version = (
+                self._call_binary(["--version"], binary="conda-lock")
+                .decode("utf-8")
+                .split()[-1]
+            )
+            if LooseVersion(conda_lock_version) < LooseVersion("2.0.0"):
+                self._echo(
+                    "conda-lock is installed but not recent enough (2.0.0 or later "
+                    "is required) --ignoring"
+                )
+                del self._bins["conda-lock"]
         if "pip" in self._bins:
             pip_version = self._call_binary(["--version"], binary="pip").split(b" ", 2)[
                 1
             ]
-            if LooseVersion(pip_version.decode("utf-8")) < LooseVersion("23.0"):
+            # 22.3 has PEP 658 support which is a bit performance boost
+            if LooseVersion(pip_version.decode("utf-8")) < LooseVersion("22.3"):
                 self._echo(
-                    "pip is installed but not recent enough (23.0 or later is required) "
+                    "pip is installed but not recent enough (22.3 or later is required) "
                     "-- ignoring"
                 )
                 del self._bins["pip"]
@@ -2760,7 +3310,9 @@ class Conda(object):
                     self._remove(os.path.basename(dir_name))
             return None
 
-        if self._conda_executable_type == "micromamba":
+        if self._conda_executable_type == "micromamba" or CONDA_LOCAL_PATH is not None:
+            # For micromamba OR if we are using a specific conda installation
+            # (so with CONDA_LOCAL_PATH), only search there
             env_dir = os.path.join(self._info["root_prefix"], "envs")
             with CondaLock(self._echo, self._env_lock_file(os.path.join(env_dir, "_"))):
                 # Grab a lock *once* on the parent directory so we pick anyname for
@@ -2969,15 +3521,19 @@ class Conda(object):
         pip_paths = []  # type: List[str]
         for p in env.packages:
             if p.TYPE == "pip":
-                local_path = p.local_file(p.url_format)
-                if local_path:
-                    debug.conda_exec(
-                        "For %s, using PIP package at '%s'" % (p.filename, local_path)
-                    )
-                    pip_paths.append("%s\n" % local_path)
+                for f in p.allowed_formats():
+                    local_path = p.local_file(f)
+                    if local_path:
+                        debug.conda_exec(
+                            "For %s, using PIP package at '%s'"
+                            % (p.filename, local_path)
+                        )
+                        pip_paths.append("%s\n" % local_path)
+                        break
                 else:
                     raise CondaException(
-                        "Local file for package %s expected" % p.filename
+                        "Local file for package %s expected; looked at %s"
+                        % (p.filename, ", ".join([f[1] for f in p.local_files]))
                     )
             elif p.TYPE == "conda":
                 local_dir = p.local_dir
@@ -3160,39 +3716,44 @@ class Conda(object):
 
     def _make_urlstxt_from_url(
         self,
-        base_url: str,
+        pkg_spec: PackageSpecification,
         file_format: Optional[str] = None,
-        is_transmuted: bool = False,
     ):
-        if not is_transmuted:
-            return base_url
-        url = urlparse(base_url)
-        file_path, filename = convert_filepath(url.path, file_format)
+        if not file_format or file_format == pkg_spec.url_format:
+            return pkg_spec.url
+        # If not, we return the path to the cached version of this
         return os.path.join(
             get_conda_root(self._datastore_type),
-            cast(str, CONDA_PACKAGES_DIRNAME),
-            "conda",
-            TRANSMUT_PATHCOMPONENT,
-            url.netloc,
-            file_path.lstrip("/"),
-            filename,
+            CondaCachePackage.make_cache_url(
+                pkg_spec.url,
+                pkg_spec.filename,
+                file_format,
+                cast(str, pkg_spec.pkg_hash(file_format)),
+            ),
         )
 
     def _make_urlstxt_from_cacheurl(self, cache_url: str) -> str:
-        if TRANSMUT_PATHCOMPONENT in cache_url:
+        # Format for a cache URL is CONDA_PACKAGES_DIRNAME/conda/url/file/hash/file
+        # If this is the actual file available, the url will end with file too. If not
+        # it is a transmuted package and we just return the cache URL
+        splits = cache_url.split("/")
+        if splits[-1] != splits[-3]:
+            raise ValueError("Invalid cache address: %s" % cache_url)
+        if splits[-1] != splits[-4]:
+            # This is not the real thing
             return os.path.join(
                 get_conda_root(self._datastore_type),
                 cast(str, CONDA_PACKAGES_DIRNAME),
                 "conda",
-                os.path.split(os.path.split(cache_url)[0])[
-                    0
-                ],  # Strip off last two (hash and filename)
+                cache_url,
             )
         else:
-            # Format is CONDA_PACKAGES_DIRNAME/conda/url/hash/file so we strip
-            # first 2 and last 2
-            components = cache_url.split("/")
-            return "https://" + "/".join(components[2:-2])
+            # This is the real thing -- we strip out the last 3 components and up until
+            # "conda" since that is the last component before the url
+            start_idx = 0
+            while splits[start_idx] != "conda":
+                start_idx += 1
+            return "https://" + "/".join(splits[start_idx + 1 : -3])
 
     @staticmethod
     def _env_directory_from_envid(env_id: EnvID) -> str:
@@ -3201,19 +3762,6 @@ class Conda(object):
     @staticmethod
     def _env_builder_directory_from_envid(env_id: EnvID) -> str:
         return "metaflow_builder_%s_%s" % (env_id.req_id, env_id.full_id)
-
-    @staticmethod
-    def _lnk_path_for_pkg(pkg: PackageSpecification, pkg_fmt: str) -> str:
-        cached_base_version = pkg.cached_version(pkg.url_format)
-        if cached_base_version:
-            base_url = os.path.split(cached_base_version.url)[0]
-        else:
-            base_url = os.path.split(
-                pkg.cache_pkg_type().make_cache_url(
-                    pkg.url, cast(str, pkg.pkg_hash(pkg.url_format))
-                )
-            )[0]
-        return "/".join([base_url, "%s.lnk" % pkg_fmt])
 
     @staticmethod
     def _install_message_for_resolver(resolver: str) -> str:
@@ -3560,3 +4108,16 @@ class CondaLockMultiDir(object):
 
     def __del__(self) -> None:
         self._release()
+
+
+class WithDir:
+    def __init__(self, new_dir: str):
+        self._current_dir = os.getcwd()
+        self._new_dir = new_dir
+
+    def __enter__(self):
+        os.chdir(self._new_dir)
+        return self._new_dir
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        os.chdir(self._current_dir)

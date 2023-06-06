@@ -45,7 +45,9 @@ def bootstrap_environment(
     # Setup anything needed by the escape hatch
     if ENV_ESCAPE_PY is not None:
         cwd = os.getcwd()
-        generate_trampolines(cwd)
+        trampoline_dir = os.path.join(cwd, "_escape_trampolines")
+        os.makedirs(trampoline_dir)
+        generate_trampolines(trampoline_dir)
         # print("Environment escape will use %s as the interpreter" % ENV_ESCAPE_PY)
     else:
         pass

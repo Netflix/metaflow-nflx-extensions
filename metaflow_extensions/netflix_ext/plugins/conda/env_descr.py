@@ -27,16 +27,17 @@ from typing import (
     Union,
     cast,
 )
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from metaflow.metaflow_config import CONDA_PACKAGES_DIRNAME
 from metaflow.util import get_username
 
 from .utils import (
-    TRANSMUT_PATHCOMPONENT,
+    _ALL_PIP_FORMATS,
+    FAKEURL_PATHCOMPONENT,
     AliasType,
     arch_id,
-    convert_filepath,
+    correct_splitext,
     get_conda_manifest_path,
     is_alias_mutable,
 )
@@ -85,7 +86,34 @@ class TStr:
 
 
 class CachePackage:
-
+    # Cache URL explanation:
+    #  - we form the cache_url based on the source URL so that we can easily check
+    #    if the file is in cache.
+    #  - in some cases, we want to store multiple formats for the same package (for
+    #    example .conda and .tar.bz2 for conda packages or a source .tar.gz and a .whl
+    #    for pip packages)
+    #  - some URLs are "fake" URLs that don't actually correspond to something we can
+    #    actually download or use like local paths for locally built PIP packages or
+    #    pointers to GIT repositories (ie: there is no one file pointed to by that URL).
+    #    We still use the URL as a unique identifier but mark it as fake
+    #  - we therefore form the cache url using the following components ("/" separated):
+    #    - pkg_type: so pip or conda
+    #    - a special marker for fake URLs (if needed)
+    #    - the netloc of the base source URL
+    #    - the path in the base source URL
+    #    - the filename
+    #    - the hash of that file
+    #    - the filename
+    #
+    # Concretely, say our source url is https://foo/bar/baz.conda and we want to store
+    # a .tar.bz2 version of the file and the .conda version of the file, in cache we
+    # would have:
+    #  - conda/foo/bar/baz.conda/baz.conda/<hash>/baz.conda
+    #  - conda/foo/bar/baz.conda/baz.tar.bz2/<hash>/baz.tar.bz2
+    #
+    # If we have a GIT repository like git+https://github.com/foo/myrepo/@123#subdirectory=bar,
+    # we would have:
+    #  - pip/github.com/foo/myrepo/123/bar/mypackage.whl/<hash>/mypackage.whl
     TYPE = "invalid"
 
     _class_per_type = None  # type: Optional[Dict[str, Type[CachePackage]]]
@@ -98,69 +126,61 @@ class CachePackage:
             }
 
     @classmethod
-    def make_partial_cache_url(cls, base_url: str):
-        if cls.TYPE != "pip":
-            raise ValueError("make_partial_cache_url only for pip packages")
+    def make_partial_cache_url(cls, base_url: str, is_real_url: bool = True):
+        # This method returns the base cache URL to use (so does not include the filename
+        # onwards)
         cls._ensure_class_per_type()
         url = urlparse(base_url)
-        return os.path.join(
-            cast(str, CONDA_PACKAGES_DIRNAME),
-            cls.TYPE,
-            url.netloc,
-            url.path.lstrip("/"),
-        )
+
+        if is_real_url or url.netloc.split("/")[0] == FAKEURL_PATHCOMPONENT:
+            return os.path.join(
+                cast(str, CONDA_PACKAGES_DIRNAME),
+                cls.TYPE,
+                url.netloc,
+                url.path.lstrip("/"),
+            )
+        else:
+            return os.path.join(
+                cast(str, CONDA_PACKAGES_DIRNAME),
+                cls.TYPE,
+                FAKEURL_PATHCOMPONENT,
+                url.netloc,
+                url.path.lstrip("/"),
+            )
 
     @classmethod
     def make_cache_url(
         cls,
         base_url: str,
+        filename: str,
+        file_format: str,
         file_hash: str,
-        file_format: Optional[str] = None,
-        is_transmuted: bool = False,
+        is_real_url: bool = True,
     ) -> str:
         cls._ensure_class_per_type()
-        url = urlparse(base_url)
-        file_path, filename = convert_filepath(url.path, file_format)
 
-        if is_transmuted:
-            return os.path.join(
-                cast(str, CONDA_PACKAGES_DIRNAME),
-                cls.TYPE,
-                TRANSMUT_PATHCOMPONENT,
-                url.netloc,
-                file_path.lstrip("/"),
-                filename,
-                file_hash,
-                filename,
+        filename_with_ext = "%s%s" % (filename, file_format)
+        if not file_format or file_format not in cls.allowed_formats():
+            raise ValueError(
+                "File format '%s' for make_cache_url should be a supported file format %s"
+                % (file_format, str(cls.allowed_formats()))
             )
-        else:
-            return os.path.join(
-                cast(str, CONDA_PACKAGES_DIRNAME),
-                cls.TYPE,
-                url.netloc,
-                file_path.lstrip("/"),
-                filename,
-                file_hash,
-                filename,
-            )
+        base_cache_url = cls.make_partial_cache_url(base_url, is_real_url)
+        return os.path.join(
+            base_cache_url, filename_with_ext, file_hash, filename_with_ext
+        )
 
     def __init__(self, url: str):
 
         self._url = url
         basename, filename = os.path.split(url)
-
-        self._pkg_fmt = None
-        for f in self.allowed_formats():
-            if filename.endswith(f):
-                self._pkg_fmt = f
-                break
-        else:
+        _, self._pkg_fmt = correct_splitext(filename)
+        if self._pkg_fmt not in self.allowed_formats():
             raise ValueError(
                 "URL '%s' does not end with a supported file format %s"
                 % (url, str(self.allowed_formats()))
             )
         basename, self._hash = os.path.split(basename)
-        self._is_transmuted = TRANSMUT_PATHCOMPONENT in basename
 
     @classmethod
     def allowed_formats(cls) -> Sequence[str]:
@@ -177,10 +197,6 @@ class CachePackage:
     @property
     def format(self) -> str:
         return self._pkg_fmt  # type: ignore
-
-    @property
-    def is_transmuted(self) -> bool:
-        return self._is_transmuted
 
     def to_dict(self) -> Dict[str, Any]:
         return {"_type": self.TYPE, "url": self._url}
@@ -210,7 +226,7 @@ class PipCachePackage(CachePackage):
 
     @classmethod
     def allowed_formats(cls) -> Sequence[str]:
-        return [".whl", ".tar.gz"]
+        return _ALL_PIP_FORMATS
 
 
 class PackageSpecification:
@@ -222,10 +238,14 @@ class PackageSpecification:
         self,
         filename: str,
         url: str,
+        is_real_url: bool = True,
         url_format: Optional[str] = None,
         hashes: Optional[Dict[str, str]] = None,
         cache_info: Optional[Dict[str, CachePackage]] = None,
     ):
+        # Some URLs are fake when the package is built on the fly. We use the URL
+        # as a unique identifier for the package so we still have a URL but it is not
+        # downloadable.
         # if "/" in filename and not filename.startswith(self.TYPE):
         #     raise ValueError(
         #         "Attempting to create a package of type %s with filename %s"
@@ -237,11 +257,8 @@ class PackageSpecification:
 
         self._url = url
         if url_format is None:
-            for ending in self.allowed_formats():
-                if self._url.endswith(ending):
-                    url_format = ending
-                    break
-            else:
+            url_format = correct_splitext(self._url)[1]
+            if url_format not in self.allowed_formats():
                 raise ValueError(
                     "URL '%s' does not end in a known ending (%s)"
                     % (self._url, str(self.allowed_formats()))
@@ -249,6 +266,22 @@ class PackageSpecification:
         self._url_format = url_format
         self._hashes = hashes or {}
         self._cache_info = cache_info or {}
+
+        if not is_real_url:
+            # If it is not a real URL, add the FAKEURL_PATHCOMPONENT but only if not
+            # already there.
+            url_parse_result = urlparse(self._url)
+            if not url_parse_result.netloc.startswith(FAKEURL_PATHCOMPONENT):
+                self._url = urlunparse(
+                    (
+                        url_parse_result.scheme,
+                        os.path.join(FAKEURL_PATHCOMPONENT, url_parse_result.netloc),
+                        url_parse_result.path,
+                        url_parse_result.params,
+                        url_parse_result.query,
+                        url_parse_result.fragment,
+                    )
+                )
 
         (
             self._package_name,
@@ -261,8 +294,21 @@ class PackageSpecification:
         self._local_dir = None  # type: Optional[str]
         self._local_path = {}  # type: Dict[str, str]
         self._is_fetched = []  # type: List[str]
-        self._is_transmuted = []  # type: List[str]
         self._dirty = False
+
+    def clone_with_filename(self, new_filename: str) -> "PackageSpecification":
+        r = self.__class__(
+            new_filename,
+            self._url,
+            self.is_downloadable_url(),
+            url_format=self._url_format,
+            hashes=self._hashes,
+            cache_info=self._cache_info,
+        )
+        r._local_dir = self._local_dir
+        r._local_path = self._local_path
+        r._is_fetched = self._is_fetched
+        return r
 
     @property
     def filename(self) -> str:
@@ -336,8 +382,27 @@ class PackageSpecification:
         # either cache or web
         return pkg_format in self._is_fetched
 
-    def is_transmuted(self, pkg_format: str) -> bool:
-        return pkg_format in self._is_transmuted
+    def is_downloadable_url(self, pkg_format: Optional[str] = None) -> bool:
+        if not pkg_format:
+            pkg_format = self._url_format
+        return pkg_format == self._url_format and not urlparse(
+            self._url
+        ).netloc.startswith(FAKEURL_PATHCOMPONENT)
+
+    def is_derived(self) -> bool:
+        # If the filename component of the URL does not match the filename of this package,
+        # this means we derived the package from the URL in a non obvious manner
+        # (transmutations don't count here -- this would return false because both
+        # formats are equivalent -- this is not necessarily the case from a source
+        # tar ball and a built wheel)
+        url_filename_with_ext = os.path.split(urlparse(self._url).path)[1]
+        url_filename = correct_splitext(url_filename_with_ext)[0]
+        return url_filename != self._filename
+
+    def can_add_filename(self, filename_with_ext: str) -> bool:
+        # Tests if a filename is a compatible filename for this package. This is used
+        # when there are multiple possibilities with PIP packages for example
+        raise NotImplementedError
 
     def add_local_dir(self, local_path: str):
         # Add a local directory that is present for this package
@@ -359,10 +424,8 @@ class PackageSpecification:
         local_path: str,
         pkg_hash: Optional[str] = None,
         downloaded: bool = False,
-        transmuted: bool = False,
     ):
-        # Add a local file for this package indicating whether it was downloaded or
-        # transmuted
+        # Add a local file for this package indicating whether it was downloaded
         existing_path = self.local_file(pkg_format)
         if existing_path:
             if local_path != existing_path:
@@ -375,7 +438,7 @@ class PackageSpecification:
             self._dirty = True
             self._local_path[pkg_format] = local_path
         known_hash = self._hashes.get(pkg_format)
-        added_hash = pkg_hash or self._hash_pkg(local_path)
+        added_hash = pkg_hash or self.hash_pkg(local_path)
         if known_hash:
             if known_hash != added_hash:
                 raise ValueError(
@@ -389,9 +452,6 @@ class PackageSpecification:
         if downloaded and pkg_format not in self._is_fetched:
             self._dirty = True
             self._is_fetched.append(pkg_format)
-        if transmuted and pkg_format not in self._is_transmuted:
-            self._dirty = True
-            self._is_transmuted.append(pkg_format)
 
     def cached_version(self, pkg_format: str) -> Optional[CachePackage]:
         return self._cache_info.get(
@@ -497,12 +557,15 @@ class PackageSpecification:
         raise NotImplementedError()
 
     @classmethod
-    def _hash_pkg(cls, path: str) -> str:
+    def hash_pkg(cls, path: str) -> str:
         base_hash = cls.base_hash()
         with open(path, "rb") as f:
             for byte_block in iter(lambda: f.read(8192), b""):
                 base_hash.update(byte_block)
         return base_hash.hexdigest()
+
+    def __str__(self):
+        return "<%s package: %s>" % (self.TYPE, self.filename)
 
 
 class CondaPackageSpecification(PackageSpecification):
@@ -526,6 +589,12 @@ class CondaPackageSpecification(PackageSpecification):
     def base_hash_name(cls) -> str:
         return "md5"
 
+    def can_add_filename(self, filename_with_ext: str) -> bool:
+        # Tests if a filename is a compatible filename for this package. This is used
+        # when there are multiple possibilities with PIP packages for example
+        ext = correct_splitext(filename_with_ext)[1]
+        return ext in self.allowed_formats()
+
     def _split_filename(self) -> Tuple[str, str, str]:
         pkg, v, addl = self._filename.rsplit("-", 2)
         return pkg, v, "-".join([v, addl])
@@ -540,7 +609,7 @@ class PipPackageSpecification(PackageSpecification):
 
     @classmethod
     def allowed_formats(cls) -> Sequence[str]:
-        return [".whl", ".tar.gz"]
+        return _ALL_PIP_FORMATS
 
     @classmethod
     def base_hash(cls):
@@ -550,19 +619,34 @@ class PipPackageSpecification(PackageSpecification):
     def base_hash_name(cls) -> str:
         return "sha256"
 
+    def can_add_filename(self, filename_with_ext: str) -> bool:
+        # Tests if a filename is a compatible filename for this package. This is used
+        # when there are multiple possibilities with PIP packages for example
+        base_filename, ext = correct_splitext(filename_with_ext)
+
+        if ext == ".whl":
+            # This will make sure the wheel matches the tags and what not
+            return base_filename == self.filename
+        else:
+            # Source packages are always ok to add. It may have a different name
+            return ext in _ALL_PIP_FORMATS
+
     def _split_filename(self) -> Tuple[str, str, str]:
-        if self._url_format == ".whl":
+        try:
+            # Try a source distribution first. We don't know which to try because the
+            # url format may now repersent what is actually in this package (the URL
+            # may be to the source but this represents a wheel).
+            name, version = parse_sdist_filename("".join([self._filename, ".tar.gz"]))
+            return (str(name), str(version), "")
+        except ValueError:
             name, version, buildtag, _ = parse_wheel_filename(
-                ".".join([self._filename, "whl"])
+                "".join([self._filename, ".whl"])
             )
             return (
                 str(name),
                 str(version),
                 "" if len(buildtag) == 0 else "%s-%s" % (buildtag[0], buildtag[1]),
             )
-        # In the case of a source distribution
-        name, version = parse_sdist_filename(".".join([self._filename, ".tar.gz"]))
-        return (str(name), str(version), "")
 
 
 class ResolvedEnvironment:
@@ -662,7 +746,7 @@ class ResolvedEnvironment:
         # currently always the case. This code was initially added in case we could
         # get an environment from a FULL_ID which doesn't guarantee uniqueness of the
         # requirements part (different requirements can resolve to the same environment)
-        return not self._accurate_source
+        return self._accurate_source
 
     @property
     def deps(self) -> List[TStr]:
@@ -1244,6 +1328,7 @@ def write_to_conda_manifest(ds_root: str, info: CachedEnvironmentInfo):
                 f.seek(0)
                 current_content = CachedEnvironmentInfo.from_dict(json.load(f))
             f.seek(0)
+            f.truncate(0)
             current_content.update(info)
             json.dump(current_content.to_dict(), f)
         except IOError as e:

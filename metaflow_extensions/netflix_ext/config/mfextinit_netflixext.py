@@ -93,4 +93,24 @@ CONDA_DEFAULT_PIP_SOURCE = from_conf("CONDA_DEFAULT_PIP_SOURCE", None)
 
 CONDA_REMOTE_COMMANDS = ("batch", "kubernetes")
 
+def _validate_remote_latest(name, value):
+    if not value:
+        raise MetaflowException("%s must not be empty." % name)
+    if value[0] == ":" and value not in (":none:", ":username:", ":any:"):
+        raise MetaflowException(
+            "%s can only have special values ':none:', ':username:' or ':any:'" % name
+        )
+
+
+# Set to:
+#  - :none: if default environments should never be looked up remotely
+#  - :username: if default environments should be fetched remotely picking the latest
+#    environment by the user
+#  - :any: if default environments should be fetched remotely picking the latest
+#    environment
+#  - comma separated list of names: same as :username: but with a group of users.
+CONDA_USE_REMOTE_LATEST = from_conf(
+    "CONDA_USE_REMOTE_LATEST", ":none:", validate_fn=_validate_remote_latest
+)
+
 DEBUG_OPTIONS = ["conda"]

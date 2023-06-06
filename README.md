@@ -32,8 +32,11 @@ This extension currently contains:
 - refactored [Conda decorator](#conda-v2)
 
 ## Conda V2
-This functionality is currently being actively tested within Netflix but has not yet
-been deployed in production.
+
+*Version 0.2.0 of this extension is not fully backward compatible with previous versions due to
+where packages are cached. If you are using a previous version of the extension, it is recommended
+that you change the `CONDA_MAGIC_FILE_V2`, `CONDA_PACKAGES_DIRNAME` and `CONDA_ENVS_DIRNAME` to
+new values to be able to have both versions active at the same time.*
 
 It is likely to evolve primarily in its implementation as we do further testing. Feedback
 on what is working and what is not is most welcome.
@@ -57,7 +60,7 @@ This decorator improves several aspects of the included Conda decorator:
 
 ### Installation
 To use, simply install this package alongside the `metaflow` package. This package
-requires Metaflow v2.7.22 or later.
+requires Metaflow v2.8.3 or later.
 
 #### Configuration
 You have several configuration options that can be set in
@@ -105,6 +108,13 @@ The useful configuration values are listed below:
   package not available in the preferred format will be transmuted to it automatically.
   If left empty, whatever package is found will be used (ie: there is no preference)
 - `CONDA_DEFAULT_PIP_SOURCE`: mirror to use for PIP.
+- `CONDA_USE_REMOTE_LATEST`: by default, it is set to `:none:` which means that if a new
+  environment is not locally known (for example first time resolving it on the machine), it
+  will be re-resolved. You can also set it to `:username:`, `:any:` or a comma separated
+  list of usernames to tell Metaflow to go check if there is a cached environment that matches
+  the requested specification that has been resolved previously by either the current user,
+  any user or the set of users.
+
 
 ##### Azure specific setup
 For Azure, you need to do the following two steps once during setup:
@@ -126,13 +136,8 @@ If you want support for environments containing only pip packages, you will also
 
 ##### Mixed (pip + conda)  package support
 If you want support for environments containing both pip and conda packages, you will also need:
-- `conda-lock>=1.3.0`
+- `conda-lock>=2.0.0`
 - `lockfile`
-
-It is also best to apply the
-PR `https://github.com/conda-incubator/conda-lock/pull/290` to `conda-lock`. This is
-the unfortunate result of a bug in how `conda-lock` handles packages that are both
-present in the `conda` environment and `pypi` one.
 
 ##### Support for `.tar.bz2` and `.conda` packages
 If you set `CONDA_PREFERRED_FORMAT` to either `.tar.bz2` or `.conda`, for some packages,
@@ -142,7 +147,8 @@ the system will transmute (convert) the `.tar.bz2` package into one that ends in
 `.conda`. To do so, you need to have one of the following package installed:
 - `conda-package-handling>=1.9.0`
 - `micromamba>=1.4.0` (not supported for cross-platform transmutation due to
-   https://github.com/mamba-org/mamba/issues/2328)
+   https://github.com/mamba-org/mamba/issues/2328 or if you are transmuting to
+   .tar.bz2 files).
 
 
 Also due to a bug in `conda` and the way we use it, if your resolved environment
@@ -157,11 +163,10 @@ constantly improved and there are a few outstanding issues that we are aware of:
   (see: https://github.com/conda/conda/issues/11775). The workaround is to have
   `micromamba` available which does not have this issue and which Metaflow will use
   if it is present
-- `conda-lock` has issues with certain name clashes between conda and pip packages.
-  See https://github.com/conda/conda-lock/pull/290 for more information.
 - Transmuting packages with `micromamba` is not supported for cross-platform
-  transmutes due to https://github.com/mamba-org/mamba/issues/2328. Install
-  `conda-package-handling` as well to support this.
+  transmutes due to https://github.com/mamba-org/mamba/issues/2328. It also does
+  not work properly when transmuting from `.conda` packages to `.tar.bz2` packages.
+  Install `conda-package-handling` as well to support this.
 
 ### Uninstallation
 Uninstalling this package will revert the behavior of the conda decorator to the one
@@ -174,6 +179,67 @@ Your current code with `conda` decorators will continue working as is. However, 
 time, there is no method to "convert" previously resolved environment to this new
 implementation so the first time you run Metaflow with this package, your previously
 resolved environments will be ignored and re-resolved.
+
+#### Environments that can be resolved
+Environments listed below are examples that can be resolved using Metaflow. The environments
+given here are either in the `requirements.txt` format or `environment.yml` format and can,
+for example, be passed to `metaflow environment resolve` using the `-r` or `-f` option
+respectively. They highlight some of the functionalities present. Note that the same
+environments can also be specified directly using the `@conda` or `@pip` decorators.
+
+##### Pure "pip" environment with non-python Conda packages
+```
+--conda-pkg ffmpeg
+ffmpeg-python
+```
+The `requirements.txt` file above will create an environment with the Pip package
+`ffmpeg-python` as well as the `ffmpeg` Conda executable. This is useful to have
+a pure pip environment (and therefore use the underlying `pip` ecosystem without
+`conda-lock` but still have other non Python packages installed.
+
+##### Pure "pip" environment with non wheel files
+```
+--conda-pkg git-lfs
+# Needs LFS to build
+transnetv2 @ git+https://github.com/soCzech/TransNetV2.git#main
+# GIT repo
+clip @ git+https://github.com/openai/CLIP.git@d50d76daa670286dd6cacf3bcd80b5e4823fc8e1
+# Source only distribution
+outlier-detector==0.0.3
+# Local package
+foo @ file:///tmp/build_foo_pkg
+```
+The above `requirements.txt` shows that it is possible to specify repositories directly.
+Note that this does not work cross platform. Behind the scenes, Metaflow will build wheel
+packages and cache them.
+
+##### Pip + Conda packages
+```
+dependencies:
+  - pandas = >=1.0.0
+  - pip:
+    - tensorflow = 2.7.4
+    - apache-airflow[aiobotocore]
+```
+The above `environment.yml` shows that it is possible to mix and match pip and conda
+packages. You can specify packages using "extras" but you cannot, in this form,
+specify pip packages that come from git repositories or from your local file-system.
+Pip packages that are available as wheels or source tar balls are acceptable.
+
+#### General environment restrictions
+In general, the following restrictions are applicable:
+  - while you can specify Conda channels in the package name (like `comet_ml::comet_ml`), you cannot,
+    at this time, use this environment as a base for other environments. This restriction will
+    be fixed.
+  - you cannot specify packages that need to be built from a repository or a directory
+    in mixed conda+pip mode. This is a restriction of the underlying tool (conda-lock) and will not
+    be fixed until supported by conda-lock.
+  - you cannot specify editable packages. This restriction will not be lifted at this time.
+  - you cannot specify packages that need to be built from a repository or a directory in
+    pip only mode across platforms (ie: resolving for `osx-arm64` from a `linux-64` machine). This
+    restriction will not be removed as this would potentially require cross-platform build which
+    can be tricky and error-prone.
+  - in specifying packages, environment markers are not supported.
 
 #### Additional decorator options
 The `conda` and `conda_base` decorators take the following additional options:

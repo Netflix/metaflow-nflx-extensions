@@ -14,27 +14,27 @@ class CondaFlowDecorator(FlowDecorator):
     name : Optional[str]
         If specified, can refer to a named environment. The environment referred to
         here will be the one used as a base environment for all steps.
-        If specified, nothing else can be specified in this decorator
+        If specified, nothing else can be specified in this decorator.
     pathspec : Optional[str]
         If specified, can refer to the pathspec of an existing step. The environment
         of this referred step will be used as a base environment for all steps.
         If specified, nothing else can be specified in this decorator.
-    libraries : Dict[str, str]
+    libraries : Optional[Dict[str, str]]
         Libraries to use for this step. The key is the name of the package
         and the value is the version to use (default: `{}`). Note that versions can
         be specified either as a specific version or as a comma separated string
         of constraints like "<2.0,>=1.5".
-    channels : List[str]
+    channels : Optional[List[str]]
         Additional channels to search
-    pip_packages : Dict[str, str]
-        Same as libraries but for pip packages
-    pip_sources : List[str]
-        Same as channels but for pip sources
-    python : string
-        Version of Python to use, e.g. '3.7.4'
-        (default: None, i.e. the current Python version).
-    disabled : bool
-        If set to True, disables Conda (default: False).
+    pip_packages : Optional[Dict[str, str]]
+        Same as libraries but for pip packages.
+    pip_sources : Optional[List[str]]
+        Same as channels but for pip sources.
+    python : Optional[str]
+        Version of Python to use, e.g. '3.7.4'. If not specified, the current Python
+        version will be used.
+    disabled : bool, default False
+        If set to True, disables Conda
     """
 
     name = "conda_base"
@@ -77,11 +77,9 @@ class CondaFlowDecorator(FlowDecorator):
 
 class PipFlowDecorator(FlowDecorator):
     """
-    Specifies the Pip environment for all steps in the flow.
+    Specifies the Pip environment for all steps of the flow.
 
-    Information in this decorator will augment any
-    attributes set in the `@pip_base` flow-level decorator. Hence
-    you can use `@pip_base` to set common libraries required by all
+    Use `@pip_base` to set common libraries required by all
     steps and use `@pip` to specify step-specific additions.
 
     Parameters
@@ -89,21 +87,23 @@ class PipFlowDecorator(FlowDecorator):
     name : Optional[str]
         If specified, can refer to a named environment. The environment referred to
         here will be the one used as a base environment for all steps.
-        If specified, nothing else can be specified in this decorator
+        If specified, nothing else can be specified in this decorator.
     pathspec : Optional[str]
         If specified, can refer to the pathspec of an existing step. The environment
         of this referred step will be used as a base environment for all steps.
         If specified, nothing else can be specified in this decorator.
-    packages : Dict[str, str]
+    packages : Optional[Dict[str, str]]
         Packages to use for this step. The key is the name of the package
-        and the value is the version to use (default: `{}`).
-    sources : List[str]
+        and the value is the version to use (default: `{}`). Note that versions can
+        be specified either as a specific version or as a comma separated string
+        of constraints like "<2.0,>=1.5".
+    sources : Optional[List[str]]
         Additional channels to search for
-    python : str
-        Version of Python to use, e.g. '3.7.4'
-        (default: None, i.e. the current Python version).
-    disabled : bool
-        If set to True, disables Pip (default: False).
+    python : Optional[str]
+        Version of Python to use, e.g. '3.7.4'. If not specified, the current version
+        will be used.
+    disabled : bool, default False
+        If set to True, disables Pip
     """
 
     name = "pip_base"

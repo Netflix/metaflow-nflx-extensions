@@ -71,7 +71,8 @@ class CondaEnvironment(MetaflowEnvironment):
             # Figure out the environments that we need to resolve for all steps
             # We will resolve all unique environments in parallel
             step_conda_dec = get_conda_decorator(self._flow, step.name)
-            resolver.add_environment_for_step(step.name, step_conda_dec)
+            if step_conda_dec.is_enabled():
+                resolver.add_environment_for_step(step.name, step_conda_dec)
 
         resolver.resolve_environments(echo)
 
@@ -153,6 +154,7 @@ class CondaEnvironment(MetaflowEnvironment):
                 ),
                 "export _METAFLOW_CONDA_ENV='%s'"
                 % json.dumps(env_id).replace('"', '\\"'),
+                "export PYTHONPATH=$(pwd)/_escape_trampolines:$(printenv PYTHONPATH)",
                 "echo 'Environment bootstrapped.'",
                 "export CONDA_END=$(date +%s)",
             ]

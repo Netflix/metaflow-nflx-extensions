@@ -42,11 +42,18 @@ from metaflow_extensions.netflix_ext.plugins.conda.utils import (
     arch_id,
     resolve_env_alias,
     plural_marker,
+    merge_dep_dicts,
 )
 
-from .utils import (
-    download_mf_version,
+from metaflow_extensions.netflix_ext.vendor.packaging.requirements import (
+    InvalidRequirement,
+    Requirement,
 )
+from metaflow_extensions.netflix_ext.vendor.packaging.utils import (
+    canonicalize_version,
+)
+
+from .utils import download_mf_version
 
 
 REQ_SPLIT_LINE = re.compile(r"([^~<=>]*)([~<=>]+.*)?")
@@ -273,7 +280,7 @@ def create(
             raise click.BadOptionUsage(
                 "--pathspec used but environment name is not a pathspec"
             )
-        task = Step(resolved_alias).task
+        task = Step(resolved_alias, _namespace_check=False).task
         code_pkg = task.code
         mf_version = task.metadata_dict["metaflow_version"]
     else:
@@ -299,24 +306,21 @@ def create(
         obj.echo("    Resolving an environment compatible with Jupyter ...", nl=False)
 
         # We use envsresolver to properly deal with builder environments and what not
-        ipy_env_id, ipy_sources, ipy_deps, _, _ = cast(
-            Conda, obj.conda
-        ).info_for_add_to_resolved_env(
-            env,
-            using_steps=["ipykernel"],
-            deps=[
+        resolver = EnvsResolver(obj.conda)
+        # We force the env_type to be the same as the base env since we don't modify that
+        # by adding these deps.
+        resolver.add_environment(
+            arch_id(),
+            user_deps=[
                 TStr(
                     category="pip" if env.env_type == EnvType.PIP_ONLY else "conda",
                     value="ipykernel",
                 )
             ],
-            sources=[],
+            user_sources=[],
             extras=[],
-            architecture=arch_id(),
-        )
-        resolver = EnvsResolver(obj.conda)
-        resolver.add_environment(
-            ipy_env_id, deps=ipy_deps, sources=ipy_sources, extras=[], base_env=env
+            base_env=env,
+            env_type=env.env_type,
         )
         resolver.resolve_environments(obj.echo)
         update_envs = []  # type: List[ResolvedEnvironment]
@@ -444,10 +448,13 @@ def create(
             delta_time = int(time.time() - start)
             obj.echo(" done in %d second%s." % (delta_time, plural_marker(delta_time)))
 
-    obj.echo(
-        "Created environment '%s' locally, activate with `%s activate %s`"
-        % (name, obj.conda.binary("conda"), name)
-    )
+    if obj.quiet:
+        obj.echo_always(obj.conda.python(name))
+    else:
+        obj.echo(
+            "Created environment '%s' locally, activate with `%s activate %s`"
+            % (name, obj.conda.binary("conda"), name)
+        )
     cast(Conda, obj.conda).write_out_environments()
 
 
@@ -522,12 +529,6 @@ def resolve(
 
     archs = list(arch) if arch else [arch_id()]
     base_env_id = None
-    base_env_conda_deps = {}  # type: Dict[str, str]
-    base_env_np_conda_deps = {}  # type: Dict[str, str]
-    base_env_pip_deps = {}  # type: Dict[str, str]
-    base_env_extras = []  # type: List[TStr]
-    base_env_sources = []  # type: List[TStr]
-    base_env_python = python
     base_env = None  # type: Optional[ResolvedEnvironment]
     if using_str:
         base_env_id = cast(Conda, obj.conda).env_id_from_alias(using_str, local_only)
@@ -548,29 +549,17 @@ def resolve(
                 "Environment for '%s' is not available on architecture '%s'"
                 % (using_str, archs[0])
             )
-        # TODO: This code is duplicated in the conda_step_decorator.py
-        # Take care of dependencies first
-        all_deps = base_env.deps
-        for d in all_deps:
-            vals = d.value.split("==")
-            if len(vals) == 1:
-                vals.append("")
-            if d.category == "pip":
-                base_env_pip_deps[vals[0]] = vals[1]
-            elif d.category == "conda":
-                if vals[0] == "python":
-                    base_env_python = vals[1]
-                else:
-                    # We will re-add python later
-                    base_env_conda_deps[vals[0]] = vals[1]
-            elif d.category == "npconda":
-                base_env_np_conda_deps[vals[0]] = vals[1]
 
-        # Now of channels/sources
-        base_env_sources = base_env.sources
-
-        # Finally the extras
-        base_env_extras = base_env.extras
+        for p in base_env.packages:
+            if p.package_name == "python":
+                base_env_python = p.package_version
+                break
+        if base_env_python is None:
+            raise InvalidEnvironmentException(
+                "Cannot determine python version of base environment"
+            )
+    else:
+        base_env_python = python
 
     # Parse yaml first to put conda sources first to be consistent with step decorator
     if yml_file:
@@ -594,44 +583,35 @@ def resolve(
         conda_deps = dict(get_pinned_conda_libs(base_env_python, obj.datastore_type))
         pip_deps = {}
 
-    pip_deps.update(base_env_pip_deps)
-    pip_deps.update(new_pip_deps)
-
-    conda_deps.update(base_env_conda_deps)
-    conda_deps.update(new_conda_deps)
-    np_conda_deps = dict(base_env_np_conda_deps)
-    np_conda_deps.update(new_np_conda_deps)
-
-    # Compute the sources
-    seen = set()  # ttype: List[TStr]
-    sources = []  # type: List[TStr]
-    for c in chain(base_env_sources, new_sources):
-        if c in seen:
-            continue
-        seen.add(c)
-        sources.append(c)
+    pip_deps = merge_dep_dicts(pip_deps, new_pip_deps)
+    conda_deps = merge_dep_dicts(conda_deps, new_conda_deps)
 
     deps = list(
         chain(
-            [TStr("conda", "python==%s" % base_env_python)],
             (
                 TStr("conda", "%s==%s" % (name, ver) if ver else name)
                 for name, ver in conda_deps.items()
             ),
             (
-                TStr("pip", "%s==%s" % (name, ver) if ver else name)
+                TStr(
+                    "pip",
+                    "%s==%s" % (name, canonicalize_version(ver)) if ver else name,
+                )
                 for name, ver in pip_deps.items()
             ),
             (
                 TStr("npconda", "%s==%s" % (name, ver) if ver else name)
-                for name, ver in np_conda_deps.items()
+                for name, ver in new_np_conda_deps.items()
             ),
         )
     )
-
-    extras = base_env_extras + new_extras
-
-    requested_req_id = ResolvedEnvironment.get_req_id(deps, sources, extras)
+    env_type = None
+    if not base_env:
+        deps.append(TStr("conda", "python==%s" % base_env_python))
+    else:
+        # We try to see if we can keep the env_type as close as possible to base_env
+        if base_env.env_type == EnvType.PIP_ONLY and len(new_conda_deps) == 0:
+            env_type = EnvType.PIP_ONLY
 
     for cur_arch in archs:
         if base_env_id:
@@ -649,16 +629,13 @@ def resolve(
                     % (using_str, cur_arch)
                 )
         resolver.add_environment(
-            EnvID(requested_req_id, "_default", cur_arch),
+            cur_arch,
             deps,
-            sources,
-            extras,
-            base_env,
-            clean_base=(not new_extras)
-            and (not new_sources)
-            and (not new_np_conda_deps)
-            and (not new_conda_deps)
-            and (not new_pip_deps),
+            new_sources,
+            new_extras,
+            base_env=base_env,
+            env_type=env_type,
+            base_from_full_id=base_env.is_info_accurate if base_env else False,
             local_only=local_only,
             force=force,
             force_co_resolve=len(archs) > 1,
@@ -669,6 +646,7 @@ def resolve(
         has_something = True
         break
     if not has_something:
+        resolved_env_id = next(resolver.all_environments())[1].env_id
         # Nothing to do
         if alias and not dry_run:
             # We don't care about arch for aliasing so pick one
@@ -676,32 +654,22 @@ def resolve(
                 "No environments to resolve, aliasing only. Use --force to force "
                 "re-resolution"
             )
-            obj.conda.alias_environment(
-                EnvID(
-                    requested_req_id,
-                    next(resolver.all_environments())[1].env_id.full_id,
-                    arch=arch_id(),
-                ),
-                list(alias),
-            )
+            obj.conda.alias_environment(resolved_env_id, list(alias))
             cast(Conda, obj.conda).write_out_environments()
         else:
-            obj.echo("No environments to resolve, use --force to force re-resolution")
+            raise CommandException(
+                "No environments to resolve, use --force to force re-resolution"
+            )
         return
 
     resolver.resolve_environments(obj.echo)
-    existing_envs = cast(Conda, obj.conda).created_environments(requested_req_id)
+
+    resolved_env_id = next(resolver.all_environments())[1].env_id
+    existing_envs = cast(Conda, obj.conda).created_environments(resolved_env_id.req_id)
 
     # Arch doesn't matter for aliasing
     if not dry_run and alias:
-        obj.conda.alias_environment(
-            EnvID(
-                requested_req_id,
-                next(resolver.resolved_environments())[1].env_id.full_id,
-                arch=arch_id(),
-            ),
-            list(alias),
-        )
+        obj.conda.alias_environment(resolved_env_id, list(alias))
     for env_id, env, _ in resolver.resolved_environments():
         if obj.quiet:
             obj.echo_always(env_id.arch)
@@ -943,27 +911,24 @@ def _parse_req_file(
                 raise InvalidEnvironmentException(
                     "'%s' is not a supported line in a requirements.txt" % line
                 )
-            elif (
-                first_word.startswith("git+")
-                or first_word.startswith("hg+")
-                or first_word.startswith("bzr+")
-                or first_word.startswith("svn+")
-                or (rem and rem[0] == "@")
-            ):
-                if rem and rem[0] == "@":
-                    first_word = rem[1:].strip()
-                deps[first_word] = ""
             else:
-                split_res = REQ_SPLIT_LINE.match(line)
-                if split_res is None:
-                    raise InvalidEnvironmentException("Could not parse '%s'" % line)
-                splits = split_res.groups()
-                if splits[1] is None:
-                    deps[splits[0].replace(" ", "")] = ""
-                else:
-                    deps[splits[0].replace(" ", "")] = (
-                        splits[1].replace(" ", "").lstrip("=")
+                try:
+                    parsed_req = Requirement(line)
+                except InvalidRequirement as ex:
+                    raise InvalidEnvironmentException(
+                        "Could not parse '%s': %s" % (line, ex)
                     )
+                if parsed_req.marker is not None:
+                    raise InvalidEnvironmentException(
+                        "Environment markers are not supported for '%s'" % line
+                    )
+                dep_name = parsed_req.name
+                if parsed_req.extras:
+                    dep_name += "[%s]" % ",".join(parsed_req.extras)
+                if parsed_req.url:
+                    dep_name += "@%s" % parsed_req.url
+                specifier = str(parsed_req.specifier).lstrip(" =")
+                deps[dep_name] = str(specifier)
 
 
 def _parse_yml_file(

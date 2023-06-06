@@ -88,12 +88,13 @@ def resolve(
     for step in obj.flow:
         if not steps_to_resolve or step.name in steps_to_resolve:
             step_conda_dec = get_conda_decorator(obj.flow, step.name)
-            resolver.add_environment_for_step(
-                step.name,
-                step_conda_dec,
-                force=force,
-                archs=list(arch) if arch else None,
-            )
+            if step_conda_dec.is_enabled():
+                resolver.add_environment_for_step(
+                    step.name,
+                    step_conda_dec,
+                    force=force,
+                    archs=list(arch) if arch else None,
+                )
     per_req_id = {}  # type: Dict[str, Set[str]]
 
     if alias:

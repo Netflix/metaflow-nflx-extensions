@@ -14,11 +14,11 @@ from typing import (
     Any,
     Callable,
     Dict,
-    Iterable,
     List,
     Optional,
     Sequence,
     Set,
+    Tuple,
     cast,
 )
 
@@ -26,7 +26,7 @@ from metaflow.plugins.datastores.local_storage import LocalStorage
 from metaflow.datastore.flow_datastore import FlowDataStore
 from metaflow.datastore.task_datastore import TaskDataStore
 from metaflow.debug import debug
-from metaflow.decorators import Decorator, StepDecorator
+from metaflow.decorators import StepDecorator
 from metaflow.extension_support import EXT_PKG
 from metaflow.flowspec import FlowSpec
 from metaflow.graph import FlowGraph
@@ -47,10 +47,12 @@ from .env_descr import (
     ResolvedEnvironment,
 )
 from metaflow.plugins.env_escape import generate_trampolines
-from metaflow.unbounded_foreach import UBF_CONTROL
+from metaflow.unbounded_foreach import UBF_CONTROL, UBF_TASK
 from metaflow.util import get_metaflow_root
 
-from .utils import AliasType, arch_id, resolve_env_alias
+from metaflow_extensions.netflix_ext.vendor.packaging.utils import canonicalize_version
+
+from .utils import arch_id, merge_dep_dicts
 from .conda import Conda
 
 
@@ -61,7 +63,11 @@ class CondaStepDecorator(StepDecorator):
     Information in this decorator will augment any
     attributes set in the `@conda_base` flow-level decorator. Hence
     you can use `@conda_base` to set common libraries required by all
-    steps and use `@conda` to specify step-specific additions.
+    steps and use `@conda` to specify step-specific additions or replacements.
+    Information specified in this decorator will augment the information in the base
+    decorator and, in case of a conflict (for example the same library specified in
+    both the base decorator and the step decorator), the step decorator's information
+    will prevail.
 
     Parameters
     ----------
@@ -73,22 +79,22 @@ class CondaStepDecorator(StepDecorator):
         If specified, can refer to the pathspec of an existing step. The environment
         of this referred step will be used here. If specified, nothing else can be
         specified in this decorator.
-    libraries : Dict[str, str]
+    libraries : Optional[Dict[str, str]]
         Libraries to use for this step. The key is the name of the package
         and the value is the version to use (default: `{}`). Note that versions can
         be specified either as a specific version or as a comma separated string
         of constraints like "<2.0,>=1.5".
-    channels : List[str]
+    channels : Optional[List[str]]
         Additional channels to search
-    pip_packages : Dict[str, str]
+    pip_packages : Optional[Dict[str, str]]
         Same as libraries but for pip packages
-    pip_sources : List[str]
+    pip_sources : Optional[List[str]]
         Same as channels but for pip sources
-    python : str
-        Version of Python to use, e.g. '3.7.4'
-        (default: None, i.e. the current Python version).
-    disabled : bool
-        If set to True, disables Conda (default: False).
+    python : Optional[str]
+        Version of Python to use, e.g. '3.7.4'. If not specified, the current version
+        will be used.
+    disabled : bool, default False
+        If set to True, disables Conda.
     """
 
     name = "conda"
@@ -150,45 +156,27 @@ class CondaStepDecorator(StepDecorator):
         )
 
     @property
-    def source_deps(self) -> Sequence[TStr]:
-        sources = list(
-            map(
-                lambda x: TStr("conda", x),
-                self._conda_channels(),
-            )
-        )
+    def non_base_source_deps(self) -> Sequence[TStr]:
+        return self._resolve_deps_sources()[1]
 
-        sources.extend(
-            map(
-                lambda x: TStr("pip", x),
-                self._pip_sources(),
-            )
-        )
-        return sources
+    @property
+    def non_base_step_deps(self) -> Sequence[TStr]:
+        return self._resolve_deps_sources()[0]
+
+    @property
+    def source_deps(self) -> Sequence[TStr]:
+        return self._resolve_deps_sources()[3]
 
     @property
     def step_deps(self) -> Sequence[TStr]:
-        py_version = self._python_version()
-        if py_version == self._from_env_python():
-            deps = []
-        else:
-            deps = [TStr("conda", "python==%s" % self._python_version())]
-        # Empty version will just be "I want this package with no version constraints"
-        deps.extend(
-            TStr("conda", "%s==%s" % (name, ver) if ver else name)
-            for name, ver in self._conda_deps().items()
-        )
-        deps.extend(
-            TStr("npconda", "%s==%s" % (name, ver) if ver else name)
-            for name, ver in self._np_conda_deps().items()
-        )
-        # If we have an empty version, we consider that the name is a direct
-        # link to a package like a URL
-        deps.extend(
-            TStr("pip", "%s==%s" % (name, ver) if ver else name)
-            for name, ver in self._pip_deps().items()
-        )
-        return deps
+        return self._resolve_deps_sources()[2]
+
+    @property
+    def env_type(self) -> Optional[EnvType]:
+        # We return an env-type in only one case: this is an environment that has
+        # a base environment and the derived environment is of the same type (PIP)
+        self._resolve_deps_sources()
+        return self._env_type
 
     @property
     def requested_arch(self) -> str:
@@ -224,15 +212,6 @@ class CondaStepDecorator(StepDecorator):
                     % (from_alias, self._arch)
                 )
         return self._from_env
-
-    @property
-    def clean_from_env(self) -> bool:
-        if self.from_env:
-            # env_id forces the computation of all dependencies for this step which
-            # will update _clean_from_env if there is any update to the base env
-            self.env_id
-            return self._clean_from_env
-        return False
 
     def set_conda(self, conda: Conda):
         self.conda = conda
@@ -275,17 +254,11 @@ class CondaStepDecorator(StepDecorator):
 
         # Information about the environment this environment is built from
         self._from_env = None  # type: Optional[ResolvedEnvironment]
-        self._from_env_conda_deps = None  # type: Optional[Dict[str, str]]
-        self._from_env_np_conda_deps = None  # type: Optional[Dict[str, str]]
-        self._from_env_conda_channels = None  # type: Optional[List[str]]
-        self._from_env_pip_deps = None  # type: Optional[Dict[str, str]]
-        self._from_env_pip_sources = None  # type: Optional[List[str]]
-
-        # This variable indicates if the environment is a pure "from" environment
-        # in which case we do not try to re-resolve. We only re-resolve if there
-        # are modifications to the environment (from either new user dependencies or
-        # potentially because Metaflow's dependencies have changed)
-        self._clean_from_env = True  # type: bool
+        self._resolved_non_base_deps = None  # type: Optional[Sequence[TStr]]
+        self._resolved_non_base_sources = None  # type: Optional[Sequence[TStr]]
+        self._resolved_deps = None  # type: Optional[Sequence[TStr]]
+        self._resolved_sources = None  # type: Optional[Sequence[TStr]]
+        self._env_type = None  # type: Optional[EnvType]
 
         if (self.attributes["name"] or self.attributes["pathspec"]) and len(
             [
@@ -372,45 +345,50 @@ class CondaStepDecorator(StepDecorator):
         if self._is_remote:
             return
 
-        self._get_conda(self._echo, self._flow_datastore_type)
-        assert self.conda
-        resolved_env = cast(ResolvedEnvironment, self.conda.environment(self.env_id))
-        my_env_id = resolved_env.env_id
-        # Export this for local runs, we will use it to read the "resolved"
-        # environment ID in task_pre_step; this makes it compatible with the remote
-        # bootstrap which also exports it. We do this even for UBF control tasks as
-        # this environment variable is then passed to the actual tasks. We don't create
-        # the environment for the control task -- just for the actual tasks.
-        cli_args.env["_METAFLOW_CONDA_ENV"] = json.dumps(my_env_id)
+        if self.is_enabled(UBF_TASK):
+            self._get_conda(self._echo, self._flow_datastore_type)
+            assert self.conda
+            resolved_env = cast(
+                ResolvedEnvironment, self.conda.environment(self.env_id)
+            )
+            my_env_id = resolved_env.env_id
+            # Export this for local runs, we will use it to read the "resolved"
+            # environment ID in task_pre_step; this makes it compatible with the remote
+            # bootstrap which also exports it. We do this even for UBF control tasks as
+            # this environment variable is then passed to the actual tasks. We don't create
+            # the environment for the control task -- just for the actual tasks.
+            cli_args.env["_METAFLOW_CONDA_ENV"] = json.dumps(my_env_id)
 
-        if self.is_enabled(ubf_context):
-            # Create the environment we are going to use
-            if self.conda.created_environment(my_env_id):
-                self._echo(
-                    "Using existing Conda environment %s (%s)"
-                    % (my_env_id.req_id, my_env_id.full_id)
-                )
-            else:
-                # Otherwise, we read the conda file and create the environment locally
-                self._echo(
-                    "Creating Conda environment %s (%s)..."
-                    % (my_env_id.req_id, my_env_id.full_id)
-                )
-                self.conda.create_for_step(self._step_name, resolved_env)
+        if not self.is_enabled(ubf_context):
+            return
+        # Create the environment we are going to use
 
-            # Actually set it up.
-            python_path = self._metaflow_home
-            if self._addl_paths is not None:
-                addl_paths = os.pathsep.join(self._addl_paths)
-                python_path = os.pathsep.join([addl_paths, python_path])
+        if self.conda.created_environment(my_env_id):
+            self._echo(
+                "Using existing Conda environment %s (%s)"
+                % (my_env_id.req_id, my_env_id.full_id)
+            )
+        else:
+            # Otherwise, we read the conda file and create the environment locally
+            self._echo(
+                "Creating Conda environment %s (%s)..."
+                % (my_env_id.req_id, my_env_id.full_id)
+            )
+            self.conda.create_for_step(self._step_name, resolved_env)
 
-            cli_args.env["PYTHONPATH"] = python_path
-            entrypoint = self.conda.python(my_env_id)
-            if entrypoint is None:
-                # This should never happen -- it means the environment was not
-                # created somehow
-                raise InvalidEnvironmentException("No executable found for environment")
-            cli_args.entrypoint[0] = entrypoint
+        # Actually set it up.
+        python_path = self._metaflow_home
+        if self._addl_paths is not None:
+            addl_paths = os.pathsep.join(self._addl_paths)
+            python_path = os.pathsep.join([addl_paths, python_path])
+
+        cli_args.env["PYTHONPATH"] = python_path
+        entrypoint = self.conda.python(my_env_id)
+        if entrypoint is None:
+            # This should never happen -- it means the environment was not
+            # created somehow
+            raise InvalidEnvironmentException("No executable found for environment")
+        cli_args.entrypoint[0] = entrypoint
 
     def task_pre_step(
         self,
@@ -462,7 +440,7 @@ class CondaStepDecorator(StepDecorator):
         return self.defaults
 
     def _python_version(self) -> str:
-        s = next(
+        return next(
             x
             for x in [
                 self.attributes["python"],
@@ -472,9 +450,6 @@ class CondaStepDecorator(StepDecorator):
             ]
             if x is not None
         )
-        if self.from_env != None and s != self._from_env_python():
-            self._clean_from_env = False
-        return s
 
     def _from(self) -> Optional[str]:
         return (
@@ -496,106 +471,47 @@ class CondaStepDecorator(StepDecorator):
             or None
         )
 
-    def _compute_from_env(self):
-        base = self.from_env
-        if base and self._from_env_conda_deps is None:
-            # We either compute all or nothing so it means we computed none
-            self._from_env_conda_deps = {}
-            self._from_env_pip_deps = {}
-            self._from_env_np_conda_deps = {}
-            self._from_env_conda_channels = []
-            self._from_env_pip_sources = []
-
-            # Take care of dependencies first
-            all_deps = base.deps
-            for d in all_deps:
-                vals = d.value.split("==")
-                if len(vals) == 1:
-                    vals.append("")
-                if d.category == "pip":
-                    self._from_env_pip_deps[vals[0]] = vals[1]
-                elif d.category == "conda":
-                    self._from_env_conda_deps[vals[0]] = vals[1]
-                elif d.category == "npconda":
-                    self._from_env_np_conda_deps[vals[0]] = vals[1]
-
-            # Now of channels/sources
-            all_sources = base.sources
-            self._from_env_conda_channels = [
-                s.value for s in all_sources if s.category == "conda"
-            ]
-            self._from_env_pip_sources = [
-                s.value for s in all_sources if s.category == "pip"
-            ]
-
-    def _from_conda_deps(self) -> Optional[Dict[str, str]]:
-        self._compute_from_env()
-        return self._from_env_conda_deps
-
-    def _from_np_conda_deps(self) -> Optional[Dict[str, str]]:
-        self._compute_from_env()
-        return self._from_env_np_conda_deps
-
-    def _from_pip_deps(self) -> Optional[Dict[str, str]]:
-        self._compute_from_env()
-        return self._from_env_pip_deps
-
-    def _from_conda_channels(self) -> Optional[List[str]]:
-        self._compute_from_env()
-        return self._from_env_conda_channels
-
-    def _from_pip_sources(self) -> Optional[List[str]]:
-        self._compute_from_env()
-        return self._from_env_pip_sources
-
     def _from_env_python(self) -> Optional[str]:
-        self._compute_from_env()
-        conda_deps = self._from_conda_deps()
-        if conda_deps:
-            return conda_deps["python"]
+        from_env = self.from_env
+        if from_env:
+            for p in from_env.packages:
+                if p.package_name == "python":
+                    return p.package_version
+            raise InvalidEnvironmentException(
+                "Cannot determine Python version from the base environment"
+            )
         return None
 
     def _np_conda_deps(self) -> Dict[str, str]:
-        if self.from_env:
-            return dict(cast(Dict[str, str], self._from_np_conda_deps()))
         return {}
 
     def _conda_deps(self) -> Dict[str, str]:
+        deps = {}  # type: Dict[str, str]
         if self.from_env:
-            if self.from_env.env_type == EnvType.PIP_ONLY:
+            if self.from_env.env_type != EnvType.PIP_ONLY:
                 # We don't get pinned deps here -- we will set them as pip ones to
                 # allow things like @conda_base(name=<piponlyenv>)
-                deps = dict(self._from_conda_deps())
-            else:
                 deps = dict(
                     get_pinned_conda_libs(
                         self._python_version(), self._flow_datastore_type
                     )
                 )
-                deps.update(cast(Dict[str, str], self._from_conda_deps()))
         else:
             deps = dict(
                 get_pinned_conda_libs(self._python_version(), self._flow_datastore_type)
             )
 
-        deps.update(self._base_attributes["libraries"])
-        deps.update(self.attributes["libraries"])
+        # Things in the @conda decorator replace the ones in the base decorator
+        user_deps = dict(self._base_attributes["libraries"])
+        user_deps.update(self.attributes["libraries"])
 
-        if self.from_env and self._from_conda_deps() != deps:
-            self._clean_from_env = False
-
-        return deps
+        # We merge with the base deps so user can't override what we need
+        return merge_dep_dicts(deps, user_deps)
 
     def _conda_channels(self) -> List[str]:
-        if self.from_env:
-            from_channels = cast(List[str], self._from_conda_channels())
-        else:
-            from_channels = []
-
         seen = set()  # type: Set[str]
         result = []  # type: List[str]
         for c in chain(
-            from_channels,
             self.attributes["channels"],
             self._base_attributes["channels"],
         ):
@@ -603,42 +519,24 @@ class CondaStepDecorator(StepDecorator):
                 continue
             seen.add(c)
             result.append(c)
-
-        if self.from_env and sorted(from_channels) != sorted(result):
-            self._clean_from_env = False
         return result
 
     def _pip_deps(self) -> Dict[str, str]:
-        if self.from_env:
-            if self.from_env.env_type == EnvType.PIP_ONLY:
-                deps = dict(
-                    get_pinned_conda_libs(
-                        self._python_version(), self._flow_datastore_type
-                    )
-                )
-                deps.update(cast(Dict[str, str], self._from_pip_deps()))
-            else:
-                deps = dict(cast(Dict[str, str], self._from_pip_deps()))
-        else:
-            deps = {}
+        deps = {}  # type: Dict[str, str]
+        if self.from_env and self.from_env == EnvType.PIP_ONLY:
+            deps = dict(
+                get_pinned_conda_libs(self._python_version(), self._flow_datastore_type)
+            )
 
-        deps.update(self._base_attributes["pip_packages"])
-        deps.update(self.attributes["pip_packages"])
+        user_deps = dict(self._base_attributes["pip_packages"])
+        user_deps.update(self.attributes["pip_packages"])
 
-        if self.from_env and self._from_pip_deps() != deps:
-            self._clean_from_env = False
-
-        return deps
+        return merge_dep_dicts(deps, user_deps)
 
     def _pip_sources(self) -> List[str]:
-        if self.from_env:
-            from_sources = cast(List[str], self._from_pip_sources())
-        else:
-            from_sources = []
         seen = set()  # type: Set[str]
         result = []  # type: List[str]
         for c in chain(
-            from_sources,
             self.attributes["pip_sources"],
             self._base_attributes["pip_sources"],
         ):
@@ -646,11 +544,104 @@ class CondaStepDecorator(StepDecorator):
                 continue
             seen.add(c)
             result.append(c)
-
-        if self.from_env and sorted(from_sources) != sorted(result):
-            self._clean_from_env = False
-
         return result
+
+    def _resolve_deps_sources(
+        self,
+    ) -> Tuple[Sequence[TStr], Sequence[TStr], Sequence[TStr], Sequence[TStr]]:
+        if all(
+            [
+                self._resolved_non_base_deps,
+                self._resolved_non_base_sources,
+                self._resolved_deps,
+                self._resolved_sources,
+            ]
+        ):
+            return (
+                self._resolved_non_base_deps,
+                self._resolved_non_base_sources,
+                self._resolved_deps,
+                self._resolved_sources,
+            )
+
+        self._resolved_non_base_deps = []
+        # Empty version will just be "I want this package with no version constraints"
+        self._resolved_non_base_deps.extend(
+            TStr("conda", "%s==%s" % (name, ver) if ver else name)
+            for name, ver in self._conda_deps().items()
+        )
+
+        # We keep the same env-type if we can.
+        self._env_type = (
+            EnvType.PIP_ONLY
+            if self.from_env
+            and self.from_env.env_type == EnvType.PIP_ONLY
+            and len(self._resolved_non_base_deps) == 0
+            else None
+        )
+
+        self._resolved_non_base_deps.extend(
+            TStr("npconda", "%s==%s" % (name, ver) if ver else name)
+            for name, ver in self._np_conda_deps().items()
+        )
+        self._resolved_non_base_deps.extend(
+            TStr(
+                "pip",
+                "%s==%s" % (name, canonicalize_version(ver)) if ver else name,
+            )
+            for name, ver in self._pip_deps().items()
+        )
+        if not self.from_env:
+            self._resolved_non_base_deps.append(
+                TStr(
+                    "conda",
+                    "python==%s" % canonicalize_version(self._python_version()),
+                )
+            )
+
+        self._resolved_non_base_sources = []
+        self._resolved_non_base_sources.extend(
+            map(
+                lambda x: TStr("conda", x),
+                self._conda_channels(),
+            )
+        )
+        self._resolved_non_base_sources.extend(
+            map(
+                lambda x: TStr("pip", x),
+                self._pip_sources(),
+            )
+        )
+
+        if self.from_env:
+            from .envsresolver import EnvsResolver  # Avoid circular import
+
+            # We need to recompute the req ID based on the base environment
+            self._get_conda(self._echo, self._flow_datastore_type)
+            assert self.conda
+            # Maybe we can get rid of this. Not sure.
+            (
+                _,
+                self._resolved_sources,
+                self._resolved_deps,
+                _,
+                _,
+            ) = EnvsResolver.extract_info_from_base(
+                self.from_env,
+                self._resolved_non_base_deps,
+                self._resolved_non_base_sources,
+                [],
+                self.from_env.env_id.arch,
+            )
+        else:
+            self._resolved_deps = self._resolved_non_base_deps
+            self._resolved_sources = self._resolved_non_base_sources
+        return (
+            self._resolved_non_base_deps,
+            self._resolved_non_base_sources,
+            self._resolved_deps,
+            self._resolved_sources,
+        )
 
     def _resolve_pip_or_conda_deco(
         self, flow: FlowSpec, decorators: List[StepDecorator]
@@ -720,6 +711,10 @@ class PipStepDecorator(CondaStepDecorator):
     attributes set in the `@pip_base` flow-level decorator. Hence
     you can use `@pip_base` to set common libraries required by all
     steps and use `@pip` to specify step-specific additions.
+    Information specified in this decorator will augment the information in the base
+    decorator and, in case of a conflict (for example the same library specified in
+    both the base decorator and the step decorator), the step decorator's information
+    will prevail.
 
     Parameters
     ----------
@@ -731,16 +726,16 @@ class PipStepDecorator(CondaStepDecorator):
         If specified, can refer to the pathspec of an existing step. The environment
         of this referred step will be used here. If specified, nothing else can be
         specified in this decorator.
-    packages : Dict[str, str]
+    packages : Optional[Dict[str, str]]
         Packages to use for this step. The key is the name of the package
         and the value is the version to use (default: `{}`).
-    sources : List[str]
+    sources : Optional[List[str]]
         Additional channels to search for
-    python : str
-        Version of Python to use, e.g. '3.7.4'
-        (default: None, i.e. the current Python version).
-    disabled : bool
-        If set to True, disables Pip (default: False).
+    python : Optional[str]
+        Version of Python to use, e.g. '3.7.4'. If not specified, the current python
+        version will be used.
+    disabled : bool, default False
+        If set to True, disables Pip.
     """
 
     name = "pip"
@@ -754,60 +749,42 @@ class PipStepDecorator(CondaStepDecorator):
         "disabled": None,
     }
 
-    def _conda_deps(self) -> Dict[str, str]:
-        if self.from_env:
-            if self.from_env.env_type != EnvType.PIP_ONLY:
-                deps = dict(
-                    get_pinned_conda_libs(
-                        self._python_version(), self._flow_datastore_type
-                    )
-                )
-                deps.update(cast(Dict[str, str], self._from_conda_deps()))
+    def _np_conda_deps(self) -> Dict[str, str]:
+        return {}
 
-                if deps != self._from_conda_deps():
-                    self._clean_from_env = False
-                return deps
-            return cast(Dict[str, str], self._from_conda_deps())
+    def _conda_deps(self) -> Dict[str, str]:
+        if self.from_env and self.from_env.env_type != EnvType.PIP_ONLY:
+            return dict(
+                get_pinned_conda_libs(self._python_version(), self._flow_datastore_type)
+            )
         return {}
 
     def _conda_channels(self) -> List[str]:
-        if self.from_env:
-            return cast(List[str], self._from_conda_channels())
         return []
 
     def _pip_deps(self) -> Dict[str, str]:
+        deps = {}  # type: Dict[str, str]
         if self.from_env:
-            if self.from_env.env_type != EnvType.PIP_ONLY:
-                deps = dict(cast(Dict[str, str], self._from_pip_deps()))
-            else:
+            if self.from_env.env_type == EnvType.PIP_ONLY:
                 deps = dict(
                     get_pinned_conda_libs(
                         self._python_version(), self._flow_datastore_type
                     )
                 )
-                deps.update(cast(Dict[str, str], self._from_pip_deps()))
         else:
             deps = dict(
                 get_pinned_conda_libs(self._python_version(), self._flow_datastore_type)
             )
 
-        deps.update(self._base_attributes["packages"])
-        deps.update(self.attributes["packages"])
+        user_deps = dict(self._base_attributes["packages"])
+        user_deps.update(self.attributes["packages"])
 
-        if self.from_env and self._from_pip_deps() != deps:
-            self._clean_from_env = False
-
-        return deps
+        return merge_dep_dicts(deps, user_deps)
 
     def _pip_sources(self) -> List[str]:
-        if self.from_env:
-            from_sources = cast(List[str], self._from_pip_sources())
-        else:
-            from_sources = []
         seen = set()  # type: Set[str]
         result = []  # type: List[str]
         for c in chain(
-            from_sources,
             self.attributes["sources"],
             self._base_attributes["sources"],
         ):
@@ -815,10 +792,6 @@ class PipStepDecorator(CondaStepDecorator):
                 continue
             seen.add(c)
             result.append(c)
-
-        if self.from_env and sorted(from_sources) != sorted(result):
-            self._clean_from_env = False
-
         return result
 
     def _get_base_attributes(self) -> Dict[str, Any]:
