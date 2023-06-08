@@ -28,6 +28,7 @@ from .conda_step_decorator import CondaStepDecorator
 from .utils import (
     AliasType,
     CondaException,
+    channel_from_url,
     arch_id,
     merge_dep_dicts,
     plural_marker,
@@ -117,7 +118,7 @@ class EnvsResolver(object):
                 deps,
                 extras,
             ) = self.extract_info_from_base(
-                base_env, user_deps, user_sources, extras, architecture
+                self._conda, base_env, user_deps, user_sources, extras, architecture
             )
         else:
             env_id = EnvID(
@@ -212,6 +213,7 @@ class EnvsResolver(object):
                 deps,
                 extras,
             ) = self.extract_info_from_base(
+                self._conda,
                 from_env,
                 decorator.non_base_step_deps,
                 decorator.source_deps,
@@ -718,7 +720,12 @@ class EnvsResolver(object):
                         # We "hack" the extract_from_base to get the proper user and
                         # full requirements from addl_builder_env
                         _, _, user_deps, full_deps, _ = self.extract_info_from_base(
-                            addl_builder_env, [], [], [], addl_builder_env.env_id.arch
+                            self._conda,
+                            addl_builder_env,
+                            [],
+                            [],
+                            [],
+                            addl_builder_env.env_id.arch,
                         )
                         self._builder_envs[addl_builder_env.env_id] = {
                             "id": addl_builder_env.env_id,
@@ -769,6 +776,7 @@ class EnvsResolver(object):
 
     @staticmethod
     def extract_info_from_base(
+        conda: Conda,
         base_env: ResolvedEnvironment,
         deps: Sequence[TStr],
         sources: Sequence[TStr],
@@ -832,8 +840,19 @@ class EnvsResolver(object):
             incoming_npconda_deps,
         )
 
+        # Extract the implicit channels that are already listed somewhere
+        sources = list(set(chain(base_env.sources, sources)))
+        extras = list(set(chain(base_env.extras, extras)))
+
+        included_channels = set()  # type: Set[str]
+        for s in chain(sources, conda.default_conda_channels):
+            channel = channel_from_url(s.value if isinstance(s, TStr) else s)
+            if channel:
+                included_channels.add(channel)
+
+        included_channels_list = list(included_channels)
         conda_deps = {
-            p.package_name: p.package_version
+            p.package_name_with_channel(included_channels_list): p.package_version
             for p in base_env.packages
             if p.TYPE == "conda"
         }
@@ -846,9 +865,6 @@ class EnvsResolver(object):
             if p.TYPE == "pip"
         }
         pip_deps = merge_dep_dicts(pip_deps, incoming_pip_deps)
-
-        sources = list(set(chain(base_env.sources, sources)))
-        extras = list(set(chain(base_env.extras, extras)))
 
         deps = list(
             chain(

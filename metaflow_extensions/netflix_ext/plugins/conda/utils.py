@@ -17,13 +17,18 @@ from typing import (
     Dict,
     FrozenSet,
     List,
+    Mapping,
     NamedTuple,
     Optional,
     Sequence,
     Tuple,
     Union,
+    cast,
 )
 from urllib.parse import urlparse, unquote
+
+from requests import PreparedRequest
+from requests.auth import AuthBase, HTTPBasicAuth
 
 from metaflow_extensions.netflix_ext.vendor.packaging.tags import (
     compatible_tags,
@@ -44,6 +49,7 @@ import metaflow.metaflow_config as mf_config
 from metaflow.metaflow_config import (
     CONDA_MAGIC_FILE_V2,  # type: ignore
     CONDA_PREFERRED_FORMAT,  # type: ignore
+    CONDA_SRCS_AUTH_INFO,
 )
 
 from metaflow.metaflow_environment import InvalidEnvironmentException
@@ -408,6 +414,48 @@ def normalize_to_underscore(name: str) -> str:
     return _UNDERSCORE_REGEX.sub("_", name).lower()
 
 
+def channel_from_url(url: str) -> Optional[str]:
+    up = urlparse(url)
+    if up.hostname == "conda.anaconda.org":
+        return up.path.split("/", 2)[1]
+    return None
+
+
+def auth_from_urls(urls: List[str]) -> Optional[AuthBase]:
+    auths_per_hostname = {
+        cast(str, h): HTTPBasicAuth(username, pwd)
+        for h, (username, pwd) in CONDA_SRCS_AUTH_INFO.items()
+    }
+
+    for url in urls:
+        up = urlparse(url)
+        if up.hostname and up.username:
+            auths_per_hostname[up.hostname] = HTTPBasicAuth(
+                up.username, up.password or ""
+            )
+    if auths_per_hostname:
+        return PerHostAuth(auths_per_hostname)
+    return None
+
+
+class PerHostAuth(AuthBase):
+    def __init__(self, auths_per_hostname: Mapping[str, AuthBase]):
+        self._my_auths = auths_per_hostname
+
+    def __call__(self, r: PreparedRequest):
+        up = urlparse(r.url)
+        if up.hostname:
+            h = (
+                up.hostname
+                if isinstance(up.hostname, str)
+                else up.hostname.decode(encoding="utf-8")
+            )
+            auth_provider = self._my_auths.get(h or "<none>")
+            if auth_provider:
+                return auth_provider(r)
+        return r
+
+
 # Function heavily inspired from https://github.com/hauntsaninja/change_wheel_version
 # MIT license of that source file:
 # MIT License
@@ -423,6 +471,7 @@ def normalize_to_underscore(name: str) -> str:
 
 # The above copyright notice and this permission notice shall be included in all
 # copies or substantial portions of the Software.
+
 
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

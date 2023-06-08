@@ -91,6 +91,15 @@ CONDA_PREFERRED_FORMAT = from_conf(
 
 CONDA_DEFAULT_PIP_SOURCE = from_conf("CONDA_DEFAULT_PIP_SOURCE", None)
 
+# Allows you to specify URLs that need to be authenticated (basically Conda or PIP
+# package sources). Metaflow will glean all the information it can from traditional
+# configuration sources (like pip.conf) but this allows you to specify additional URLs
+# for which authentication is required. A dictionary should be passed in (or a JSON
+# version of it in string form).
+# key: hostname that needs authentication
+# value: a tuple/list of username and password
+CONDA_SRCS_AUTH_INFO = from_conf("CONDA_SRCS_AUTH_INFO", {})
+
 CONDA_REMOTE_COMMANDS = ("batch", "kubernetes")
 
 def _validate_remote_latest(name, value):

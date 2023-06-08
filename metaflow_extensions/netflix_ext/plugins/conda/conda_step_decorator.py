@@ -627,6 +627,7 @@ class CondaStepDecorator(StepDecorator):
                 _,
                 _,
             ) = EnvsResolver.extract_info_from_base(
+                self.conda,
                 self.from_env,
                 self._resolved_non_base_deps,
                 self._resolved_non_base_sources,

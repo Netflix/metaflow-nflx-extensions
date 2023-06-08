@@ -38,6 +38,8 @@ from typing import (
 from shutil import which
 from urllib.parse import urlparse, unquote
 
+from requests.auth import AuthBase
+
 from metaflow.plugins.datastores.local_storage import LocalStorage
 from metaflow.datastore.datastore_storage import DataStoreStorage
 
@@ -73,6 +75,7 @@ from .utils import (
     CondaException,
     CondaStepException,
     arch_id,
+    auth_from_urls,
     change_pip_package_version,
     correct_splitext,
     get_conda_root,
@@ -222,6 +225,36 @@ class Conda(object):
         elif len(pip_packages) > 0:
             env_type = EnvType.MIXED
         return env_type
+
+    @property
+    def default_conda_channels(self) -> List[str]:
+        if not self._found_binaries:
+            self._find_conda_binary()
+        return list(self._info["channels"])
+
+    @property
+    def default_pip_sources(self) -> List[str]:
+        # TODO: Maybe we also need to get this from poetry but that gets a bit tricky
+        # since we don't actually check for a poetry install and use the one within
+        # conda lock. This is, for now, used to get authentication values so we should
+        # be ok relying on the pip repo. We also provide a side mechanism to specify
+        # other authentication values so we don't need to worry too much here.
+        sources = []  # type: List[str]
+        if not self._found_binaries:
+            self._find_conda_binary()
+
+        if "pip" not in self._bins:
+            return sources
+
+        config_values = self._call_binary(["config", "list"], binary="pip").decode(
+            encoding="utf-8"
+        )
+        for line in config_values.splitlines():
+            key, value = line.split("=", 1)
+            _, key = key.split(".")
+            if key in ("index-url", "extra-index-url"):
+                sources.extend(value.splitlines())
+        return sources
 
     def resolve(
         self,
@@ -1007,8 +1040,14 @@ class Conda(object):
             cached_env if cached_env else env
             for cached_env, env in zip(cached_resolved_envs, resolved_envs)
         ]
-
+        all_sources = list(
+            chain(self.default_conda_channels, self.default_pip_sources)
+        )  # type: List[str]
         for resolved_env in resolved_envs:
+            # First check the sources so we can figure out any authentication that
+            # may be needed
+            all_sources.extend([s.value for s in resolved_env.sources])
+
             # We are now going to try to figure out all the locations we need to check
             # in the cache for the presence of the files we need
             env_id = resolved_env.env_id
@@ -1141,6 +1180,7 @@ class Conda(object):
                         require_conda_format = []
                     self._lazy_fetch_packages(
                         pkgs,
+                        auth_from_urls(all_sources),
                         dest_dir,
                         require_conda_format=require_conda_format,
                         require_url_format=True,
@@ -1267,6 +1307,7 @@ class Conda(object):
     def _lazy_fetch_packages(
         self,
         packages: Iterable[PackageSpecification],
+        auth_info: Optional[AuthBase],
         dest_dir: str,
         require_conda_format: Optional[Sequence[str]] = None,
         require_url_format: bool = False,
@@ -1341,7 +1382,8 @@ class Conda(object):
             )
             try:
                 with open(local_path, "wb") as f:
-                    with session.get(pkg_spec.url, stream=True) as r:
+                    with session.get(pkg_spec.url, stream=True, auth=auth_info) as r:
+                        r.raise_for_status()
                         for chunk in r.iter_content(chunk_size=None):
                             base_hash.update(chunk)
                             f.write(chunk)
@@ -1640,7 +1682,7 @@ class Conda(object):
                             % pkg_spec.filename
                         )
                 with storage.load_bytes(keys_to_info.keys()) as load_results:  # type: ignore
-                    for (key, tmpfile, _) in load_results:  # type: ignore
+                    for key, tmpfile, _ in load_results:  # type: ignore
                         pkg_spec, pkg_format, pkg_hash, local_path = keys_to_info[key]  # type: ignore
                         if not tmpfile:
                             pending_errors.append(
@@ -1723,7 +1765,6 @@ class Conda(object):
     def _resolve_env_with_micromamba_server(
         self, deps: Sequence[TStr], channels: Sequence[TStr], architecture: str
     ) -> List[PackageSpecification]:
-
         deps = [d for d in deps if d.category in ("conda", "npconda")]
 
         if not self._have_micromamba_server:
@@ -1783,7 +1824,6 @@ class Conda(object):
         builder_env: Optional[ResolvedEnvironment],
         base_env: Optional[ResolvedEnvironment],
     ) -> Tuple[List[PackageSpecification], Optional[ResolvedEnvironment]]:
-
         if base_env:
             local_packages = [
                 p for p in base_env.packages if not p.is_downloadable_url()
@@ -1906,7 +1946,6 @@ class Conda(object):
         builder_env: Optional[ResolvedEnvironment],
         base_env: Optional[ResolvedEnvironment],
     ) -> Tuple[List[PackageSpecification], Optional[ResolvedEnvironment]]:
-
         if base_env:
             local_packages = [
                 p
@@ -1970,17 +2009,19 @@ class Conda(object):
                 os.path.join(pip_dir, "out.json"),
             ]
             args.extend(extra_args)
+            all_sources = []  # type: List[str]
             if CONDA_DEFAULT_PIP_SOURCE:
                 args.extend(["-i", CONDA_DEFAULT_PIP_SOURCE])
+                all_sources.append(CONDA_DEFAULT_PIP_SOURCE)
             for c in chain(
                 (s.value for s in sources if s.category == "pip"),
             ):
                 args.extend(["--extra-index-url", c])
+                all_sources.append(c)
 
             supported_tags = pip_tags_from_arch(python_version, architecture)
 
             if architecture != arch_id():
-
                 implementations = []  # type: List[str]
                 abis = []  # type: List[str]
                 platforms = []  # type: List[str]
@@ -2008,8 +2049,9 @@ class Conda(object):
             local_packages_dict = {}  # type: Dict[str, PackageSpecification]
             if local_packages:
                 os.makedirs(os.path.join(pip_dir, "local_packages"))
+                # This will not fetch on the web so no need for auth object
                 self._lazy_fetch_packages(
-                    local_packages, os.path.join(pip_dir, "local_packages")
+                    local_packages, None, os.path.join(pip_dir, "local_packages")
                 )
                 args.extend(
                     ["--find-links", os.path.join(pip_dir, "local_packages", "pip")]
@@ -2278,6 +2320,7 @@ class Conda(object):
                         pip_dir,
                         architecture,
                         supported_tags,
+                        all_sources,
                     )
                     result.extend(built_pip_packages)
                 else:
@@ -2637,6 +2680,7 @@ class Conda(object):
                             build_dir,
                             architecture,
                             supported_tags,
+                            pip_channels,
                         )
                         result.extend(built_pip_packages)
                     else:
@@ -2667,7 +2711,6 @@ class Conda(object):
     def _build_builder_env(
         self, deps: Sequence[TStr], sources: Sequence[TStr], architecture: str
     ) -> ResolvedEnvironment:
-
         python_dep = [
             d for d in deps if d.category == "conda" and d.value.startswith("python==")
         ]
@@ -2711,8 +2754,8 @@ class Conda(object):
         build_dir: str,
         architecture: str,
         supported_tags: List[Tag],
+        pip_sources: List[str],
     ) -> Tuple[List[PackageSpecification], Optional[ResolvedEnvironment]]:
-
         # We check in the cache -- we don't actually have the filename or
         # hash so we check things starting with the partial URL.
         # The URL in cache will be:
@@ -2890,7 +2933,10 @@ class Conda(object):
             % ", ".join([p.filename for p in pkgs_to_fetch])
         )
         if pkgs_to_fetch:
-            self._lazy_fetch_packages(pkgs_to_fetch, target_directory)
+            pip_sources.extend(self.default_pip_sources)
+            self._lazy_fetch_packages(
+                pkgs_to_fetch, auth_from_urls(pip_sources), target_directory
+            )
 
         def _build_with_pip(
             identifier: int, key: str, spec: PipPackageSpecification, build_url: str
@@ -3160,7 +3206,6 @@ class Conda(object):
         self._conda_executable_type = "micromamba"
 
     def _validate_conda_installation(self) -> Optional[Exception]:
-
         # If this is installed in CONDA_LOCAL_PATH look for special marker
         if self._mode == "local" and CONDA_LOCAL_PATH is not None:
             if not os.path.isfile(
@@ -3231,7 +3276,7 @@ class Conda(object):
             pip_version = self._call_binary(["--version"], binary="pip").split(b" ", 2)[
                 1
             ]
-            # 22.3 has PEP 658 support which is a bit performance boost
+            # 22.3 has PEP 658 support which can be a big performance boost
             if LooseVersion(pip_version.decode("utf-8")) < LooseVersion("22.3"):
                 self._echo(
                     "pip is installed but not recent enough (22.3 or later is required) "
@@ -3478,7 +3523,6 @@ class Conda(object):
         return self._cached_info
 
     def _create(self, env: ResolvedEnvironment, env_name: str) -> None:
-
         # We first check to see if the environment exists -- if it does, we skip it
         env_dir = os.path.join(self._root_env_dir, env_name)
 
@@ -3511,7 +3555,18 @@ class Conda(object):
 
         # We first get all the packages needed
         self._lazy_fetch_packages(
-            env.packages, self._package_dirs[0], search_dirs=self._package_dirs
+            env.packages,
+            auth_from_urls(
+                list(
+                    chain(
+                        [s.value for s in env.sources],
+                        self.default_conda_channels,
+                        self.default_pip_sources,
+                    )
+                )
+            ),
+            self._package_dirs[0],
+            search_dirs=self._package_dirs,
         )
 
         # We build the list of explicit URLs to pass to conda to create the environment
