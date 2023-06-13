@@ -33,6 +33,13 @@ class CondaFlowDecorator(FlowDecorator):
     python : Optional[str]
         Version of Python to use, e.g. '3.7.4'. If not specified, the current Python
         version will be used.
+    fetch_at_exec : bool, default False
+        If set to True, the environment will be fetched when the task is
+        executing as opposed to at the beginning of the flow (or at deploy time if
+        deploying to a scheduler). This option requires name or pathspec to be
+        specified. This is useful, for example, if you want this step to always use
+        the latest named environment when it runs as opposed to the latest when it
+        is deployed.
     disabled : bool, default False
         If set to True, disables Conda
     """
@@ -46,6 +53,7 @@ class CondaFlowDecorator(FlowDecorator):
         "pip_packages": {},
         "pip_sources": [],
         "python": None,
+        "fetch_at_exec": None,
         "disabled": None,
     }
 
@@ -102,6 +110,13 @@ class PipFlowDecorator(FlowDecorator):
     python : Optional[str]
         Version of Python to use, e.g. '3.7.4'. If not specified, the current version
         will be used.
+    fetch_at_exec : bool, default False
+        If set to True, the environment will be fetched when the task is
+        executing as opposed to at the beginning of the flow (or at deploy time if
+        deploying to a scheduler). This option requires name or pathspec to be
+        specified. This is useful, for example, if you want this step to always use
+        the latest named environment when it runs as opposed to the latest when it
+        is deployed.
     disabled : bool, default False
         If set to True, disables Pip
     """
@@ -114,6 +129,7 @@ class PipFlowDecorator(FlowDecorator):
         "packages": {},
         "sources": [],
         "python": None,
+        "fetch_at_exec": None,
         "disabled": None,
     }
 

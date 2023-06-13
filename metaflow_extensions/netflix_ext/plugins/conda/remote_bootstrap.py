@@ -1,4 +1,5 @@
 # pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
+import json
 import os
 import shutil
 import sys
@@ -14,6 +15,7 @@ from metaflow.debug import debug
 from metaflow.plugins.env_escape import generate_trampolines, ENV_ESCAPE_PY
 
 from .conda import Conda
+from .conda_step_decorator import CondaStepDecorator
 from .env_descr import EnvID
 from .utils import arch_id
 
@@ -32,6 +34,17 @@ def bootstrap_environment(
     my_conda = Conda(my_echo_always, datastore_type, mode="remote")
     my_echo_always(" done in %d seconds." % int(time.time() - start))
 
+    # Resolve a late environment if full_id is a special string _fetch_exec
+    if full_id == "_fetch_exec":
+        alias_to_fetch = CondaStepDecorator.sub_envvars_in_envname(req_id)
+        env_id = my_conda.env_id_from_alias(alias_to_fetch)
+        if env_id is None:
+            raise RuntimeError(
+                "Cannot find environment '%s' (from '%s') for arch '%s'"
+                % (alias_to_fetch, req_id, arch_id())
+            )
+        req_id = env_id.req_id
+        full_id = env_id.full_id
     resolved_env = my_conda.environment(
         EnvID(req_id=req_id, full_id=full_id, arch=arch_id())
     )
@@ -52,6 +65,10 @@ def bootstrap_environment(
     else:
         pass
         # print("Could not find a environment escape interpreter")
+
+    # We write out the env_id to _env_id so it can be read by the outer bash script
+    with open("_env_id", mode="w", encoding="utf-8") as f:
+        json.dump(EnvID(req_id, full_id, arch_id()), f)
 
 
 def setup_conda_manifest():

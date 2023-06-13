@@ -390,8 +390,10 @@ class PackageSpecification:
 
     @property
     def local_files(self) -> Iterable[Tuple[str, str]]:
-        for pkg_fmt, local_path in self._local_path.items():
-            yield (pkg_fmt, local_path)
+        for pkg_fmt in self.allowed_formats():
+            local_path = self._local_path.get(pkg_fmt)
+            if local_path:
+                yield (pkg_fmt, local_path)
 
     def is_fetched(self, pkg_format: str) -> bool:
         # Return whether the local tar-ball for this package had to be fetched from
@@ -440,31 +442,29 @@ class PackageSpecification:
         local_path: str,
         pkg_hash: Optional[str] = None,
         downloaded: bool = False,
+        replace: bool = False,
     ):
         # Add a local file for this package indicating whether it was downloaded
         existing_path = self.local_file(pkg_format)
-        if existing_path:
-            if local_path != existing_path:
-                raise ValueError(
-                    "Attempting to add inconsistent local files of format %s for a package %s; "
-                    "adding %s when already have %s"
-                    % (pkg_format, self.filename, local_path, existing_path)
-                )
-        else:
-            self._dirty = True
-            self._local_path[pkg_format] = local_path
+        if not replace and existing_path and local_path != existing_path:
+            raise ValueError(
+                "Attempting to add inconsistent local files of format %s for a package %s; "
+                "adding %s when already have %s"
+                % (pkg_format, self.filename, local_path, existing_path)
+            )
+
         known_hash = self._hashes.get(pkg_format)
         added_hash = pkg_hash or self.hash_pkg(local_path)
-        if known_hash:
-            if known_hash != added_hash:
-                raise ValueError(
-                    "Attempting to add inconsistent local files of format %s for package %s; "
-                    "got a hash of %s but expected %s"
-                    % (pkg_format, self.filename, added_hash, known_hash)
-                )
-        else:
-            self._dirty = True
-            self._hashes[pkg_format] = added_hash
+        if not replace and known_hash and known_hash != added_hash:
+            raise ValueError(
+                "Attempting to add inconsistent local files of format %s for package %s; "
+                "got a hash of %s but expected %s"
+                % (pkg_format, self.filename, added_hash, known_hash)
+            )
+        self._dirty = replace or existing_path is None or known_hash is None
+        self._local_path[pkg_format] = local_path
+        self._hashes[pkg_format] = added_hash
+
         if downloaded and pkg_format not in self._is_fetched:
             self._dirty = True
             self._is_fetched.append(pkg_format)

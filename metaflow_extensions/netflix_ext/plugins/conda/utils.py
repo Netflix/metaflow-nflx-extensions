@@ -34,6 +34,7 @@ from metaflow_extensions.netflix_ext.vendor.packaging.tags import (
     compatible_tags,
     _cpython_abis,
     cpython_tags,
+    mac_platforms,
     Tag,
 )
 
@@ -60,8 +61,8 @@ from metaflow.metaflow_environment import InvalidEnvironmentException
 _ALL_CONDA_FORMATS = (".tar.bz2", ".conda")
 # NOTE: Order is important as it is a preference order
 _ALL_PIP_FORMATS = (".whl", ".tar.gz", ".zip")
-_VALID_IMAGE_NAME = "[^a-z0-9_/]"
-_VALID_TAG_NAME = "[^a-z0-9_]"
+_VALID_IMAGE_NAME = "[^-a-z0-9_/]"
+_VALID_TAG_NAME = "[^-a-z0-9_]"
 
 
 class AliasType(Enum):
@@ -154,25 +155,30 @@ def pip_tags_from_arch(python_version: str, arch: str) -> List[Tag]:
     # This is inspired by what pip does:
     # https://github.com/pypa/pip/blob/0442875a68f19b0118b0b88c747bdaf6b24853ba/src/pip/_internal/utils/compatibility_tags.py
     py_version = tuple(map(int, python_version.split(".")[:2]))
-    if arch.startswith("linux-"):
-        detail = arch.split("-")[-1]
-        if detail == "64":
-            detail = "x86_64"
+    if arch == "linux-64":
         platforms = [
-            "manylinux%s_%s" % (tag, arch) for tag in ["_2_17", "2014", "2010", "1"]
+            "manylinux%s_x86_64" % s
+            for s in (
+                "1",
+                "2010",
+                "2014",
+                "_2_17",
+                "_2_18",
+                "_2_19",
+                "_2_20",
+                "_2_21",
+                "_2_23",
+                "_2_24",
+                "_2_25",
+                "_2_26",
+                "_2_27",
+            )
         ]
-        platforms.append("linux_%s" % detail)
+        platforms.append("linux_x86_64")
     elif arch == "osx-64":
-        platforms = [
-            "macosx_10_9_x86_64",
-            *("macosx_10_%s_universal2" % v for v in range(16, 3, -1)),
-            *("macosx_10_%s_universal" % v for v in range(16, 3, -1)),
-        ]
+        platforms = mac_platforms((11, 0), "x86_64")
     elif arch == "osx-arm64":
-        platforms = [
-            "macosx_11_0_arm64",
-            *("macosx_10_%s_universal2" % v for v in range(16, 3, -1)),
-        ]
+        platforms = mac_platforms((11, 0), "arm64")
     else:
         raise InvalidEnvironmentException("Unsupported platform: %s" % arch)
 
@@ -302,7 +308,7 @@ def resolve_env_alias(env_alias: str) -> Tuple[AliasType, str]:
         if re.search(_VALID_IMAGE_NAME, image_name):
             raise MetaflowException(
                 "An environment name must contain only "
-                "lowercase alphanumeric characters, underscores and forward slashes."
+                "lowercase alphanumeric characters, dashes, underscores and forward slashes."
             )
         if image_name[0] == "/" or image_name[-1] == "/":
             raise MetaflowException(
@@ -311,7 +317,7 @@ def resolve_env_alias(env_alias: str) -> Tuple[AliasType, str]:
         if re.search(_VALID_TAG_NAME, image_tag):
             raise MetaflowException(
                 "An environment tag name must contain only "
-                "lowercase alphanumeric characters and underscores."
+                "lowercase alphanumeric characters, dashes and underscores."
             )
         return AliasType.GENERIC, "/".join([image_name, image_tag])
     raise MetaflowException("Invalid format for environment alias: '%s'" % env_alias)
@@ -428,7 +434,7 @@ def auth_from_urls(urls: List[str]) -> Optional[AuthBase]:
     }
 
     for url in urls:
-        up = urlparse(url)
+        up = urlparse(url.strip("'\" \t\n"))
         if up.hostname and up.username:
             auths_per_hostname[up.hostname] = HTTPBasicAuth(
                 up.username, up.password or ""
