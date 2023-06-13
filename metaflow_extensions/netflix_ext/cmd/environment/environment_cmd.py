@@ -355,6 +355,10 @@ def create(
 
         cast(Conda, obj.conda).write_out_environments()
 
+        # We are going to be creating this new environment going forward (not the
+        # initial env we got)
+        _, env, _ = next(resolver.resolved_environments())
+
         delta_time = int(time.time() - start)
         obj.echo(" done in %d second%s." % (delta_time, plural_marker(delta_time)))
 

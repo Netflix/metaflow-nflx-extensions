@@ -13,17 +13,19 @@ from typing import (
     Optional,
     Set,
     Tuple,
+    Union,
     cast,
 )
 
 from metaflow.plugins.datastores.local_storage import LocalStorage
 from metaflow.flowspec import FlowSpec
 
-from metaflow.metaflow_config import (
-    CONDA_MAGIC_FILE_V2,
-)
+from metaflow.exception import MetaflowException
+
+from metaflow.metaflow_config import CONDA_MAGIC_FILE_V2
 
 from metaflow.metaflow_environment import MetaflowEnvironment
+
 
 from .envsresolver import EnvsResolver
 from .utils import get_conda_manifest_path
@@ -71,7 +73,7 @@ class CondaEnvironment(MetaflowEnvironment):
             # Figure out the environments that we need to resolve for all steps
             # We will resolve all unique environments in parallel
             step_conda_dec = get_conda_decorator(self._flow, step.name)
-            if step_conda_dec.is_enabled():
+            if step_conda_dec.is_enabled() and not step_conda_dec.is_fetch_at_exec():
                 resolver.add_environment_for_step(step.name, step_conda_dec)
 
         resolver.resolve_environments(echo)
@@ -120,12 +122,25 @@ class CondaEnvironment(MetaflowEnvironment):
         # We will later resolve which to keep.
         return ("conda", "pip") + self.base_env.decospecs()
 
-    def _get_env_id(self, step_name: str) -> Optional[EnvID]:
+    def _get_env_id(self, step_name: str) -> Optional[Union[str, EnvID]]:
         conda_decorator = get_conda_decorator(self._flow, step_name)
         if conda_decorator.is_enabled():
-            resolved_env = cast(Conda, self._conda).environment(conda_decorator.env_id)
-            if resolved_env:
-                return resolved_env.env_id
+            if not conda_decorator.is_fetch_at_exec():
+                resolved_env = cast(Conda, self._conda).environment(
+                    conda_decorator.env_id
+                )
+                if resolved_env:
+                    return resolved_env.env_id
+                else:
+                    raise MetaflowException(
+                        "Cannot find environment for step '%s'" % step_name
+                    )
+            else:
+                resolved_env_id = os.environ.get("_METAFLOW_CONDA_ENV")
+                if resolved_env_id:
+                    return EnvID(*json.loads(resolved_env_id))
+                # Here we will return the name of the environment
+                return conda_decorator.from_env_name_unresolved
         return None
 
     def _get_executable(self, step_name: str) -> Optional[str]:
@@ -140,6 +155,12 @@ class CondaEnvironment(MetaflowEnvironment):
         # Bootstrap conda and execution environment for step
         env_id = self._get_env_id(step_name)
         if env_id is not None:
+            if isinstance(env_id, EnvID):
+                arg1 = env_id.req_id
+                arg2 = env_id.full_id
+            else:
+                arg1 = env_id
+                arg2 = "_fetch_exec"
             return [
                 "export CONDA_START=$(date +%s)",
                 "echo 'Bootstrapping environment ...'",
@@ -148,17 +169,15 @@ class CondaEnvironment(MetaflowEnvironment):
                     "metaflow_extensions.netflix_ext.plugins.conda",
                     self._flow.name,
                     step_name,
-                    env_id.req_id,
-                    env_id.full_id,
+                    arg1,
+                    arg2,
                     datastore_type,
                 ),
-                "export _METAFLOW_CONDA_ENV='%s'"
-                % json.dumps(env_id).replace('"', '\\"'),
+                "export _METAFLOW_CONDA_ENV=$(cat _env_id)",
                 "export PYTHONPATH=$(pwd)/_escape_trampolines:$(printenv PYTHONPATH)",
                 "echo 'Environment bootstrapped.'",
                 "export CONDA_END=$(date +%s)",
             ]
-            # TODO: Add the PATH part (need conda directory)
         return []
 
     def add_to_package(self) -> List[Tuple[str, str]]:

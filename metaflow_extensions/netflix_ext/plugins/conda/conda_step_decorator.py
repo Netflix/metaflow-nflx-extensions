@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 import platform
+import re
 import shutil
 import sys
 import tempfile
@@ -19,6 +20,7 @@ from typing import (
     Sequence,
     Set,
     Tuple,
+    Union,
     cast,
 )
 
@@ -74,11 +76,13 @@ class CondaStepDecorator(StepDecorator):
     name : Optional[str]
         If specified, can refer to a named environment. The environment referred to
         here will be the one used for this step. If specified, nothing else can be
-        specified in this decorator
+        specified in this decorator. In the name, you can use `@{}` values and
+        environment variables will be used to substitute.
     pathspec : Optional[str]
         If specified, can refer to the pathspec of an existing step. The environment
         of this referred step will be used here. If specified, nothing else can be
-        specified in this decorator.
+        specified in this decorator. In the pathspec, you can use `@{}` values and
+        environment variables will be used to substitute.
     libraries : Optional[Dict[str, str]]
         Libraries to use for this step. The key is the name of the package
         and the value is the version to use (default: `{}`). Note that versions can
@@ -93,11 +97,20 @@ class CondaStepDecorator(StepDecorator):
     python : Optional[str]
         Version of Python to use, e.g. '3.7.4'. If not specified, the current version
         will be used.
+    fetch_at_exec : bool, default False
+        If set to True, the environment will be fetched when the task is
+        executing as opposed to at the beginning of the flow (or at deploy time if
+        deploying to a scheduler). This option requires name or pathspec to be
+        specified. This is useful, for example, if you want this step to always use
+        the latest named environment when it runs as opposed to the latest when it
+        is deployed.
     disabled : bool, default False
         If set to True, disables Conda.
     """
 
     name = "conda"
+    TYPE = "conda"
+
     defaults = {
         "name": None,
         "pathspec": None,
@@ -106,6 +119,7 @@ class CondaStepDecorator(StepDecorator):
         "pip_packages": {},
         "pip_sources": [],
         "python": None,
+        "fetch_at_exec": None,
         "disabled": None,
     }  # type: Dict[str, Any]
 
@@ -118,8 +132,21 @@ class CondaStepDecorator(StepDecorator):
         return not next(
             x
             for x in [
-                self.attributes["disabled"],
+                self._self_disabled(),
                 self._base_attributes["disabled"],
+                False,
+            ]
+            if x is not None
+        )
+
+    def is_fetch_at_exec(self, ubf_context: Optional[str] = None) -> bool:
+        if ubf_context == UBF_CONTROL:
+            return False
+        return next(
+            x
+            for x in [
+                self.attributes["fetch_at_exec"],
+                self._base_attributes["fetch_at_exec"],
                 False,
             ]
             if x is not None
@@ -191,6 +218,10 @@ class CondaStepDecorator(StepDecorator):
         return self._from()
 
     @property
+    def from_env_name_unresolved(self) -> Optional[str]:
+        return self._from(True)
+
+    @property
     def from_env(self) -> Optional[ResolvedEnvironment]:
         from_alias = self._from()
         if from_alias is not None:
@@ -216,6 +247,27 @@ class CondaStepDecorator(StepDecorator):
     def set_conda(self, conda: Conda):
         self.conda = conda
 
+    @staticmethod
+    def sub_envvars_in_envname(
+        name: str, addl_env: Optional[Dict[str, Union[str, Callable[[], str]]]] = None
+    ) -> str:
+        init_name = name
+        if addl_env is None:
+            addl_env = {}
+        envvars_to_sub = re.findall(r"\@{(\w+)}", name)
+        for envvar in set(envvars_to_sub):
+            replacement = os.environ.get(envvar, addl_env.get(envvar))
+            if callable(replacement):
+                replacement = replacement()
+            if replacement is not None:
+                name = name.replace("@{%s}" % envvar, replacement)
+            else:
+                raise InvalidEnvironmentException(
+                    "Could not find '%s' in the environment -- needed to resolve '%s'"
+                    % (envvar, name)
+                )
+        return name
+
     def step_init(
         self,
         flow: FlowSpec,
@@ -238,6 +290,7 @@ class CondaStepDecorator(StepDecorator):
         self._flow = flow
         self._step_name = step_name
         self._flow_datastore_type = flow_datastore.TYPE  # type: str
+        self._flow_datastore = flow_datastore
         self._base_attributes = self._get_base_attributes()
 
         self._is_remote = any(
@@ -259,18 +312,46 @@ class CondaStepDecorator(StepDecorator):
         self._resolved_deps = None  # type: Optional[Sequence[TStr]]
         self._resolved_sources = None  # type: Optional[Sequence[TStr]]
         self._env_type = None  # type: Optional[EnvType]
+        self._env_for_fetch = {}  # type: Dict[str, Union[str, Callable[[], str]]]
+        self._flow = None  # type: Optional[FlowSpec]
 
-        if (self.attributes["name"] or self.attributes["pathspec"]) and len(
+        if (self.attributes["name"] or self.attributes["pathspec"]) and any(
             [
-                k
+                True
                 for k, v in self.attributes.items()
-                if v and k not in ("name", "pathspec")
+                if v and k not in ("name", "pathspec", "fetch_at_exec")
             ]
         ):
             raise InvalidEnvironmentException(
                 "You cannot specify `name` or `pathspec` along with other attributes in @%s"
                 % self.name
             )
+
+        if self.is_fetch_at_exec():
+            if not self._from(raw_name=True):
+                raise InvalidEnvironmentException(
+                    "You cannot specify a `fetch_at_exec` environment and no environment "
+                    "to fetch (either through `name` or `pathspec`) in @%s" % self.name
+                )
+            # We are also very strict that the environment should be *only* a name
+            # and nothing else as we won't re-resolve
+            if any(
+                [
+                    True
+                    for k, v in self.attributes.items()
+                    if v and k not in ("name", "pathspec", "fetch_at_exec")
+                ]
+            ) or any(
+                [
+                    True
+                    for k, v in self._base_attributes.items()
+                    if v and k not in ("name", "pathspec", "fetch_at_exec")
+                ]
+            ):
+                raise InvalidEnvironmentException(
+                    "You cannot specify a `fetch_at_exec` environment with anything "
+                    "other than a pure named environment in @%s" % self.name
+                )
 
         os.environ["PYTHONNOUSERSITE"] = "1"
 
@@ -334,6 +415,53 @@ class CondaStepDecorator(StepDecorator):
         # the escape to work even in non metaflow-created subprocesses
         generate_trampolines(self._metaflow_home)
 
+        # If we need to fetch the environment on exec, save the information we need
+        # so that we can resolve it using information such as run id, step name, task
+        # id and parameter values
+        if self.is_enabled() and self.is_fetch_at_exec():
+            self._flow = flow
+            self._env_for_fetch["METAFLOW_RUN_ID"] = run_id
+            self._env_for_fetch["METAFLOW_STEP_NAME"] = self.name
+
+    def runtime_task_created(
+        self,
+        task_datastore: TaskDataStore,
+        task_id: str,
+        split_index: int,
+        input_paths: List[str],
+        is_cloned: bool,
+        ubf_context: str,
+    ):
+        if self.is_enabled(ubf_context) and self.is_fetch_at_exec(ubf_context):
+            # We need to ensure we can properly find the environment we are
+            # going to run in
+            run_id, step_name, task_id = input_paths[0].split("/")
+            parent_ds = self._flow_datastore.get_task_datastore(
+                run_id, step_name, task_id
+            )
+            for var, _ in self._flow._get_parameters():
+                self._env_for_fetch[
+                    "METAFLOW_INIT_%s" % var.upper().replace("-", "_")
+                ] = lambda _param=getattr(
+                    self._flow, var
+                ), _var=var, _ds=parent_ds: str(
+                    _param.load_parameter(_ds[_var])
+                )
+            self._env_for_fetch["METAFLOW_TASK_ID"] = task_id
+
+            self._get_conda(self._echo, self._flow_datastore_type)
+            assert self.conda
+            # Calling from_env_name will resolve the environment name using all the
+            # additional variables injected above.
+            resolved_env_id = self.conda.env_id_from_alias(
+                cast(str, self.from_env_name), arch=self._arch
+            )
+            if resolved_env_id is None:
+                raise RuntimeError(
+                    "Cannot find environment '%s' (from '%s') for arch '%s'"
+                    % (self.from_env_name, self.from_env_name_unresolved, self._arch)
+                )
+
     def runtime_step_cli(
         self,
         cli_args: Any,  # Importing CLIArgs causes an issue so ignore for now
@@ -341,11 +469,10 @@ class CondaStepDecorator(StepDecorator):
         max_user_code_retries: int,
         ubf_context: str,
     ):
-        # If remote -- we don't do anything
-        if self._is_remote:
-            return
-
-        if self.is_enabled(UBF_TASK):
+        # We also set the env var in remote case for is_fetch_at_exec
+        # so that it can be used to fill out the bootstrap command with
+        # the proper environment
+        if self.is_enabled(UBF_TASK) or self.is_fetch_at_exec(ubf_context):
             self._get_conda(self._echo, self._flow_datastore_type)
             assert self.conda
             resolved_env = cast(
@@ -359,7 +486,7 @@ class CondaStepDecorator(StepDecorator):
             # the environment for the control task -- just for the actual tasks.
             cli_args.env["_METAFLOW_CONDA_ENV"] = json.dumps(my_env_id)
 
-        if not self.is_enabled(ubf_context):
+        if not self.is_enabled(ubf_context) or self._is_remote:
             return
         # Create the environment we are going to use
 
@@ -439,6 +566,20 @@ class CondaStepDecorator(StepDecorator):
             return self._flow._flow_decorators["conda_base"][0].attributes
         return self.defaults
 
+    def _self_disabled(self) -> bool:
+        self_disabled = self.attributes["disabled"]
+        if self_disabled is None:
+            # If the user sets anything we consider that disabled = False
+            if (
+                self.attributes["name"]
+                or self.attributes["pathspec"]
+                or self.attributes["libraries"]
+                or self.attributes["pip_packages"]
+                or self.attributes["python"]
+            ):
+                self_disabled = False
+        return self_disabled
+
     def _python_version(self) -> str:
         return next(
             x
@@ -451,8 +592,8 @@ class CondaStepDecorator(StepDecorator):
             if x is not None
         )
 
-    def _from(self) -> Optional[str]:
-        return (
+    def _from(self, raw_name: bool = False) -> Optional[str]:
+        possible_name = (
             next(
                 x
                 for x in [
@@ -470,6 +611,16 @@ class CondaStepDecorator(StepDecorator):
             )
             or None
         )
+
+        if possible_name is None:
+            return None
+
+        possible_name = cast(str, possible_name)
+        if raw_name:
+            return possible_name
+
+        # Substitute environment variables
+        return self.sub_envvars_in_envname(possible_name, self._env_for_fetch)
 
     def _from_env_python(self) -> Optional[str]:
         from_env = self.from_env
@@ -649,54 +800,105 @@ class CondaStepDecorator(StepDecorator):
     ) -> bool:
         has_pip_base = "pip_base" in flow._flow_decorators
         has_conda_base = "conda_base" in flow._flow_decorators
-        conda_decs = [(d, idx) for idx, d in enumerate(decorators) if d.name == "conda"]
-        pip_decs = [(d, idx) for idx, d in enumerate(decorators) if d.name == "pip"]
 
-        # It is possible we don't have both if we call step_init twice (which can
-        # happen when deploying to schedulers since we attach an additional deco
-        # and then call step_init again. In that case, we just continue for the
-        # decorator and ignore this function -- we already properly checked the
-        # first time around since both conda and pip decorators are added to all
-        # steps
+        # Note that other decorators *extend* either a conda decorator or a pip decorator
+        # so we look for those decorators as well.
+        # The pip decorator also extends the conda decorator but here we mean more
+        # in terms of functionality:
+        #  - extending a conda decorator means providing both pip and conda dependencies
+        #    (potentially)
+        #  - extending a pip decorator means providing only pip packages
+        all_decs = [d for d in decorators if isinstance(d, CondaStepDecorator)]
+        last_deco = all_decs[-1]
+        conda_decs = [d for d in all_decs if d.TYPE == "conda"]
+        pip_decs = [d for d in all_decs if d.TYPE == "pip"]
+
+        to_remove = []
+        if len(conda_decs) > 1:
+            # There is at least one user defined decorator so we remove all the others
+            to_remove = [x for x in conda_decs if not x.statically_defined]
+            conda_decs = [x for x in conda_decs if x.statically_defined]
+        if len(pip_decs) > 1:
+            # Ditto for pip
+            to_remove = [x for x in pip_decs if not x.statically_defined]
+            pip_decs = [x for x in pip_decs if x.statically_defined]
+
+        # In the environment with decospecs, we add both conda and pip
+        # decorators so that we can choose the best one based on the presence of the
+        # base decorators for example. In this function, we clean up the
+        # decorators and remove all the extraneous ones. In some cases, however,
+        # this function can be called multiple times (when deploying to a scheduler,
+        # the step_init (which calls this) is called twice). In that case, we just
+        # continue along as we already cleaned things out the first time.
         if len(conda_decs) == 0 or len(pip_decs) == 0:
             return True
 
-        conda_step_decorator, conda_idx = conda_decs[0]
-        pip_step_decorator, pip_idx = pip_decs[0]
+        if len(conda_decs) > 1:
+            # We can only have one Conda-type decorator
+            raise InvalidEnvironmentException(
+                "Multiple decorators (%s) provide @conda-like functionality for "
+                "step '%s'. Please add only one such decorator and include any "
+                "additional dependencies using the same arguments as for @conda."
+                % (", ".join(["@%s" % d.name for d in conda_decs]), self.name)
+            )
+        if len(pip_decs) > 1:
+            # Ditto with Pip-type decorators
+            raise InvalidEnvironmentException(
+                "Multiple decorators (%s) provide @pip-like functionality for "
+                "step '%s'. Please add only one such decorator and include any "
+                "additional dependencies using the same arguments as for @pip."
+                % (", ".join(["@%s" % d.name for d in pip_decs]), self.name)
+            )
 
-        my_idx = pip_idx if self.name == "pip" else conda_idx
+        conda_deco = conda_decs[0]
+        pip_deco = pip_decs[0]
 
         debug.conda_exec(
-            "In %s decorator: pip_base(%s), conda_base(%s), conda_idx(%d), pip_idx(%d)"
-            % (self.name, has_pip_base, has_conda_base, conda_idx, pip_idx)
+            "In %s decorator: pip_base(%s), conda_base(%s), conda_deco(%s), pip_deco(%s)"
+            % (self.name, has_pip_base, has_conda_base, conda_deco.name, pip_deco.name)
         )
-        if (
-            conda_step_decorator.statically_defined
-            and pip_step_decorator.statically_defined
-        ):
+        if conda_deco.statically_defined and pip_deco.statically_defined:
             raise InvalidEnvironmentException(
-                "Cannot specify both @conda and @pip on a step. "
-                "If you need both pip and conda dependencies, use @conda and "
-                "pass in the pip dependencies as `pip_packages` and the sources as "
-                "`pip_sources`"
+                "Cannot specify both @%s (Conda decorator) and @%s (Pip decorator) "
+                "in step '%s'. If you need both pip and conda dependencies, "
+                "use @%s and pass in the pip dependencies as `pip_packages` and "
+                "the sources as `pip_sources`"
+                % (
+                    conda_deco.name,
+                    pip_deco.name,
+                    self.name,
+                    conda_deco.name,
+                )
             )
-        if has_pip_base and conda_step_decorator.statically_defined:
-            raise InvalidEnvironmentException("@pip_base is not compatible with @conda")
-        if has_conda_base and pip_step_decorator.statically_defined:
-            raise InvalidEnvironmentException("@conda_base is not compatible with @pip")
+        if has_pip_base and conda_deco.statically_defined:
+            raise InvalidEnvironmentException(
+                "@pip_base is not compatible with @%s. "
+                "Use @conda_base instead (using `pip_packages` instead of `packages` "
+                "and `pip_sources` instead of `sources`)" % conda_deco.name
+            )
+        if has_conda_base and pip_deco.statically_defined:
+            raise InvalidEnvironmentException(
+                "@conda_base is not compatible with @%s. Use @pip_base if only using "
+                "pip dependencies or replace @%s with a @conda decorator (using "
+                "`pip_packages` instead of `packages` and `pip_sources` instead of "
+                "`sources)" % (pip_deco.name, pip_deco.name)
+            )
 
         # At this point, we have at most one statically defined so we keep that one
         # or the one derived from the base decorator.
-        # If we have none, we keep the conda one (base one). We remove only when
-        # we are the second decorator
+        # If we have none, we keep the conda one (base one).
         # Return true if we should continue the function. False if we return (ie:
         # we are going to be deleted)
-        del_idx = pip_idx
-        if pip_step_decorator.statically_defined or has_pip_base:
-            del_idx = conda_idx
-        if my_idx == max(pip_idx, conda_idx):
-            del decorators[del_idx]
-        return my_idx != del_idx
+        del_deco = pip_deco
+        if pip_deco.statically_defined or has_pip_base:
+            del_deco = conda_deco
+        to_remove.append(del_deco)
+        # We remove only when we are the last decorator since this is called while
+        # we are iterating on the list
+        if self.name == last_deco.name:
+            for d in to_remove:
+                decorators.remove(d)
+        return self.name not in [d.name for d in to_remove]
 
     @classmethod
     def _get_conda(cls, echo: Callable[..., None], datastore_type: str) -> None:
@@ -722,11 +924,13 @@ class PipStepDecorator(CondaStepDecorator):
     name : Optional[str]
         If specified, can refer to a named environment. The environment referred to
         here will be the one used for this step. If specified, nothing else can be
-        specified in this decorator
+        specified in this decorator. In the name, you can use `@{}` values and
+        environment variables will be used to substitute.
     pathspec : Optional[str]
         If specified, can refer to the pathspec of an existing step. The environment
         of this referred step will be used here. If specified, nothing else can be
-        specified in this decorator.
+        specified in this decorator. In the name, you can use `@{}` values and
+        environment variables will be used to substitute.
     packages : Optional[Dict[str, str]]
         Packages to use for this step. The key is the name of the package
         and the value is the version to use (default: `{}`).
@@ -735,11 +939,19 @@ class PipStepDecorator(CondaStepDecorator):
     python : Optional[str]
         Version of Python to use, e.g. '3.7.4'. If not specified, the current python
         version will be used.
+    fetch_at_exec : bool, default False
+        If set to True, the environment will be fetched when the task is
+        executing as opposed to at the beginning of the flow (or at deploy time if
+        deploying to a scheduler). This option requires name or pathspec to be
+        specified. This is useful, for example, if you want this step to always use
+        the latest named environment when it runs as opposed to the latest when it
+        is deployed.
     disabled : bool, default False
         If set to True, disables Pip.
     """
 
     name = "pip"
+    TYPE = "pip"
 
     defaults = {
         "name": None,
@@ -747,8 +959,22 @@ class PipStepDecorator(CondaStepDecorator):
         "packages": {},
         "sources": [],
         "python": None,
+        "fetch_at_exec": None,
         "disabled": None,
     }
+
+    def _self_disabled(self) -> bool:
+        self_disabled = self.attributes["disabled"]
+        if self_disabled is None:
+            # If the user sets anything we consider that disabled = False
+            if (
+                self.attributes["name"]
+                or self.attributes["pathspec"]
+                or self.attributes["packages"]
+                or self.attributes["python"]
+            ):
+                self_disabled = False
+        return self_disabled
 
     def _np_conda_deps(self) -> Dict[str, str]:
         return {}

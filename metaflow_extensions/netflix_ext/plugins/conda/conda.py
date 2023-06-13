@@ -230,7 +230,7 @@ class Conda(object):
     def default_conda_channels(self) -> List[str]:
         if not self._found_binaries:
             self._find_conda_binary()
-        return list(self._info["channels"])
+        return list(self._info["channels"] or [])
 
     @property
     def default_pip_sources(self) -> List[str]:
@@ -790,14 +790,15 @@ class Conda(object):
             % (env_alias, alias_type.value, " " if env_id else " not ", resolved_alias)
         )
 
-        if env_id:
-            return env_id
-
-        if not local_only and self._storage is not None:
-            env_id = self._remote_fetch_alias([(alias_type, resolved_alias)], arch)
-            if env_id:
-                return env_id[0]
-        return None
+        if (
+            not local_only
+            and self._storage is not None
+            and (env_id is None or is_alias_mutable(alias_type, resolved_alias))
+        ):
+            env_id_list = self._remote_fetch_alias([(alias_type, resolved_alias)], arch)
+            if env_id_list:
+                env_id = env_id_list[0]
+        return env_id
 
     def environment_from_alias(
         self, env_alias: str, arch: Optional[str] = None, local_only: bool = False
@@ -2032,7 +2033,7 @@ class Conda(object):
                 implementations = [x.interpreter for x in supported_tags]
                 extra_args = (
                     "--only-binary=:all:",
-                    # This seems to overly constrain things so skipping for now
+                    # Seems to overly constrain stuff
                     # *(
                     #    chain.from_iterable(
                     #        product(["--implementation"], set(implementations))
@@ -2048,7 +2049,38 @@ class Conda(object):
             # pip to it using the `--find-links` argument.
             local_packages_dict = {}  # type: Dict[str, PackageSpecification]
             if local_packages:
-                os.makedirs(os.path.join(pip_dir, "local_packages"))
+                # This is a bit convoluted but we try to avoid downloading packages
+                # that we already have but we also don't want to point pip to a directory
+                # full of packages that we may not want to use so we will create symlinks
+                # to packages we already have and download the others
+                base_local_pip_packages = os.path.join(self._package_dirs[0], "pip")
+                tmp_local_pip_packages = os.path.realpath(
+                    os.path.join(pip_dir, "local_packages", "pip")
+                )
+                os.makedirs(tmp_local_pip_packages)
+                new_local_packages = []  # type: List[PackageSpecification]
+                for p in local_packages:
+                    for fmt in PipPackageSpecification.allowed_formats():
+                        filename = "%s%s" % (p.filename, fmt)
+                        if os.path.isfile(
+                            os.path.join(base_local_pip_packages, filename)
+                        ):
+                            os.symlink(
+                                os.path.join(base_local_pip_packages, filename),
+                                os.path.join(tmp_local_pip_packages, filename),
+                            )
+                            local_packages_dict[
+                                os.path.join(tmp_local_pip_packages, filename)
+                            ] = p
+                            p.add_local_file(
+                                fmt,
+                                os.path.join(base_local_pip_packages, filename),
+                                replace=True,
+                            )
+                            break
+                    else:
+                        new_local_packages.append(p)
+                local_packages = new_local_packages
                 # This will not fetch on the web so no need for auth object
                 self._lazy_fetch_packages(
                     local_packages, None, os.path.join(pip_dir, "local_packages")
@@ -2119,18 +2151,28 @@ class Conda(object):
                         packages_to_build.append(dl_info)
                     else:
                         # A local wheel or tarball
-                        if url in local_packages_dict:
-                            debug.conda_exec("This is a known local package")
+                        if local_path in local_packages_dict:
                             # We are going to move this file to a less "temporary"
                             # location so that it can be installed if needed
+
                             pkg_spec = local_packages_dict[local_path]
-                            filename = os.path.split(local_path)[1]
-                            file_format = correct_splitext(filename)[1]
-                            shutil.move(local_path, self._package_dirs[0])
-                            pkg_spec.add_local_file(
-                                file_format,
-                                os.path.join(self._package_dirs[0], filename),
-                            )
+                            if not os.path.islink(local_path):
+                                debug.conda_exec("Known package -- moving in place")
+                                filename = os.path.split(local_path)[1]
+                                file_format = correct_splitext(filename)[1]
+                                shutil.move(
+                                    local_path,
+                                    os.path.join(self._package_dirs[0], "pip"),
+                                )
+                                pkg_spec.add_local_file(
+                                    file_format,
+                                    os.path.join(
+                                        self._package_dirs[0], "pip", filename
+                                    ),
+                                    replace=True,
+                                )
+                            else:
+                                debug.conda_exec("Known package already in place")
                             result.append(pkg_spec)
                         else:
                             parse_result = parse_explicit_path_pip(url)
@@ -3168,7 +3210,15 @@ class Conda(object):
         from metaflow.plugins import DATASTORES
 
         # We download the installer and return a path to it
-        final_path = os.path.join(os.getcwd(), "__conda_installer")
+        # To be clean, we try to be in the parent of our current directory to avoid
+        # polluting the user code. If that is not possible though, we create something
+        # inside the current directory
+        parent_dir = os.path.dirname(os.getcwd())
+        if os.access(parent_dir, os.W_OK):
+            final_path = os.path.join(parent_dir, "conda_env", "__conda_installer")
+        else:
+            final_path = os.path.join(os.getcwd(), "conda_env", "__conda_installer")
+        os.makedirs(os.path.dirname(final_path))
 
         path_to_fetch = os.path.join(
             CONDA_REMOTE_INSTALLER_DIRNAME,
