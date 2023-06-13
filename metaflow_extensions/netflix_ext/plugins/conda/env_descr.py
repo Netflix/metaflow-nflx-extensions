@@ -37,6 +37,7 @@ from .utils import (
     FAKEURL_PATHCOMPONENT,
     AliasType,
     arch_id,
+    channel_from_url,
     correct_splitext,
     get_conda_manifest_path,
     is_alias_mutable,
@@ -171,7 +172,6 @@ class CachePackage:
         )
 
     def __init__(self, url: str):
-
         self._url = url
         basename, filename = os.path.split(url)
         _, self._pkg_fmt = correct_splitext(filename)
@@ -317,6 +317,22 @@ class PackageSpecification:
     @property
     def package_name(self) -> str:
         return self._package_name
+
+    def package_name_with_channel(
+        self, ignore_channels: Optional[List[str]] = None
+    ) -> str:
+        if ignore_channels is None:
+            ignore_channels = []
+        if self.TYPE != "conda":
+            return self.package_name
+        if self.is_downloadable_url():
+            # Extract the channel information from the URL. We only extract implicit
+            # channels (ie: things like comet_ml) that can be embedded in the name
+            # (for example: comet_ml::comet_ml)
+            channel = channel_from_url(self.url)
+            if channel and channel not in ignore_channels:
+                return "%s::%s" % (channel, self.package_name)
+        return self.package_name
 
     @property
     def package_version(self) -> str:
