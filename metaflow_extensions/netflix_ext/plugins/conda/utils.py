@@ -413,6 +413,20 @@ def correct_splitext(filename_with_ext: str) -> Tuple[str, str]:
     return "", ""
 
 
+def conda_deps_to_pip_deps(d: Dict[str, str]) -> Dict[str, str]:
+    # This is a hack for now -- real fix would be to specify get_pinned_pip_libs
+    # but at least for now this allows channels to be specified in the conda_libs
+    # but still work with pip
+    r = {}  # type: Dict[str, str]
+    for k, v in d.items():
+        s = k.split("::")
+        if len(s) > 1:
+            r[s[1]] = v
+        else:
+            r[k] = v
+    return r
+
+
 _UNDERSCORE_REGEX = re.compile(r"[-_.]+")
 
 

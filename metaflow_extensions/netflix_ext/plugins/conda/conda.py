@@ -379,6 +379,8 @@ class Conda(object):
                         deps, sources, extras, architecture, builder_env, base_env
                     )
                     assert returned_builder_env
+                    # packages contains only pip packages so the order between the
+                    # two does not really matter
                     packages += list(returned_builder_env.packages)
                 else:
                     # Should also never happen and be caught earlier but being clean
@@ -3252,6 +3254,10 @@ class Conda(object):
             | stat.S_IROTH
             | stat.S_IXOTH,
         )
+        # In some cases, we were seeing text file busy errors. This will hopefully
+        # force everything to be written out (including the chmod above) before we need
+        # to use it.
+        os.sync()
         self._bins = {"conda": final_path, "micromamba": final_path}
         self._conda_executable_type = "micromamba"
 

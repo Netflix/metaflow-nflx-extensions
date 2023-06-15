@@ -54,7 +54,7 @@ from metaflow.util import get_metaflow_root
 
 from metaflow_extensions.netflix_ext.vendor.packaging.utils import canonicalize_version
 
-from .utils import arch_id, merge_dep_dicts
+from .utils import arch_id, conda_deps_to_pip_deps, merge_dep_dicts
 from .conda import Conda
 
 
@@ -675,7 +675,7 @@ class CondaStepDecorator(StepDecorator):
     def _pip_deps(self) -> Dict[str, str]:
         deps = {}  # type: Dict[str, str]
         if self.from_env and self.from_env == EnvType.PIP_ONLY:
-            deps = dict(
+            deps = conda_deps_to_pip_deps(
                 get_pinned_conda_libs(self._python_version(), self._flow_datastore_type)
             )
 
@@ -993,13 +993,13 @@ class PipStepDecorator(CondaStepDecorator):
         deps = {}  # type: Dict[str, str]
         if self.from_env:
             if self.from_env.env_type == EnvType.PIP_ONLY:
-                deps = dict(
+                deps = conda_deps_to_pip_deps(
                     get_pinned_conda_libs(
                         self._python_version(), self._flow_datastore_type
                     )
                 )
         else:
-            deps = dict(
+            deps = conda_deps_to_pip_deps(
                 get_pinned_conda_libs(self._python_version(), self._flow_datastore_type)
             )
 

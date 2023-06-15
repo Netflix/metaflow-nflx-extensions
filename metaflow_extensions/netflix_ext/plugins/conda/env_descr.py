@@ -682,11 +682,11 @@ class ResolvedEnvironment:
     ):
         self._env_type = env_type
         self._user_dependencies = list(user_dependencies)
+        # We sort the user dependencies as the order does not matter and it makes
+        # it easier for users to find their dependencies
+        self._user_dependencies.sort(key=lambda k: k.value)
         self._user_sources = list(user_sources) if user_sources else []
         self._user_extra_args = list(user_extra_args) if user_extra_args else []
-        if all_packages is not None:
-            # It should already be sorted but being very safe
-            all_packages = sorted(all_packages, key=lambda p: p.filename)
 
         self._accurate_source = accurate_source
 
@@ -750,7 +750,10 @@ class ResolvedEnvironment:
             archs.append(env.env_id.arch)
             to_hash.append(env.env_id.arch)
             to_hash.extend(
-                ["%s#%s" % (p.filename, p.pkg_hash(p.url_format)) for p in env.packages]
+                [
+                    "%s#%s" % (p.filename, p.pkg_hash(p.url_format))
+                    for p in sorted(env.packages, key=lambda p: p.filename)
+                ]
             )
         new_full_id = ResolvedEnvironment._compute_hash(to_hash)
         for env in envs:
@@ -779,19 +782,18 @@ class ResolvedEnvironment:
     @property
     def env_id(self) -> EnvID:
         if self._env_id.full_id in ("_default", "_unresolved") and self._all_packages:
-            self._all_packages.sort(key=lambda p: p.filename)
+            all_packages = sorted(self._all_packages, key=lambda p: p.filename)
             env_full_id = self._compute_hash(
-                [p.filename for p in self._all_packages]
-                + [self._env_id.arch or arch_id()]
+                [p.filename for p in all_packages] + [self._env_id.arch or arch_id()]
             )
             self._env_id = self._env_id._replace(full_id=env_full_id)
         return self._env_id
 
     @property
     def packages(self) -> Iterable[PackageSpecification]:
-        # We always make sure it is sorted and we can do this by checking the env_id
-        # which will sort _all_packages if not sorted
-        _ = self.env_id
+        # This returns the packages in the order in which they were added which
+        # corresponds to the installation order. In some cases, the installation order
+        # matters so we make sure to preserve it.
         for p in self._all_packages:
             yield p
 
@@ -1317,8 +1319,12 @@ class CachedEnvironmentInfo:
 def read_conda_manifest(ds_root: str) -> CachedEnvironmentInfo:
     path = get_conda_manifest_path(ds_root)
     if os.path.exists(path) and os.path.getsize(path) > 0:
-        with open(path, mode="r", encoding="utf-8") as f:
-            return CachedEnvironmentInfo.from_dict(json.load(f))
+        with os.fdopen(os.open(path, os.O_RDONLY), "r", encoding="utf-8") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_SH)
+                return CachedEnvironmentInfo.from_dict(json.load(f))
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
     else:
         return CachedEnvironmentInfo()
 
@@ -1347,8 +1353,5 @@ def write_to_conda_manifest(ds_root: str, info: CachedEnvironmentInfo):
             f.truncate(0)
             current_content.update(info)
             json.dump(current_content.to_dict(), f)
-        except IOError as e:
-            if e.errno != errno.EAGAIN:
-                raise
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)

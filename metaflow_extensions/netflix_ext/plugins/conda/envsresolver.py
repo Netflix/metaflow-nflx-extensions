@@ -767,7 +767,9 @@ class EnvsResolver(object):
                             resolved_env_id.req_id,
                             resolved_env_id.full_id,
                             self._requested_envs[orig_env_id],
-                            ", ".join([p.filename for p in resolved_env.packages]),
+                            ", ".join(
+                                sorted([p.filename for p in resolved_env.packages])
+                            ),
                         )
                     )
 

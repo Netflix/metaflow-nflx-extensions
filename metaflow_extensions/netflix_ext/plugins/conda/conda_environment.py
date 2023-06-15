@@ -201,12 +201,12 @@ class CondaEnvironment(MetaflowEnvironment):
         config.append("--disable=F0401")
         return config
 
-    def executable(self, step_name: str) -> str:
+    def executable(self, step_name: str, default: Optional[str] = None) -> str:
         # Get relevant python interpreter for step
         executable = self._get_executable(step_name)
         if executable is not None:
             return executable
-        return self.base_env.executable(step_name)
+        return self.base_env.executable(step_name, default)
 
     @classmethod
     def get_client_info(
@@ -239,7 +239,12 @@ class CondaEnvironment(MetaflowEnvironment):
                 "req_id": env_id[0],
                 "full_id": env_id[1],
                 "user_deps": "; ".join(map(str, resolved_env.deps)),
-                "all_packages": "; ".join([p.filename for p in resolved_env.packages]),
+                "all_packages": "; ".join(
+                    [
+                        p.filename
+                        for p in sorted(resolved_env.packages, key=lambda p: p.filename)
+                    ]
+                ),
             }
             return new_info
         return {"type": "conda"}

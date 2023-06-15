@@ -40,6 +40,7 @@ from metaflow_extensions.netflix_ext.plugins.conda.envsresolver import EnvsResol
 from metaflow_extensions.netflix_ext.plugins.conda.utils import (
     AliasType,
     arch_id,
+    conda_deps_to_pip_deps,
     resolve_env_alias,
     plural_marker,
     merge_dep_dicts,
@@ -581,7 +582,10 @@ def resolve(
         not base_env or base_env.env_type == EnvType.PIP_ONLY
     ):
         # Assume a pip environment for base deps
-        pip_deps = dict(get_pinned_conda_libs(base_env_python, obj.datastore_type))
+        pip_deps = conda_deps_to_pip_deps(
+            get_pinned_conda_libs(base_env_python, obj.datastore_type)
+        )
+
         conda_deps = {}
     else:
         conda_deps = dict(get_pinned_conda_libs(base_env_python, obj.datastore_type))
