@@ -80,14 +80,12 @@ from .utils import (
     correct_splitext,
     get_conda_root,
     is_alias_mutable,
-    merge_dep_dicts,
     parse_explicit_url_conda,
     parse_explicit_url_pip,
     parse_explicit_path_pip,
     pip_tags_from_arch,
     plural_marker,
     resolve_env_alias,
-    split_into_dict,
 )
 
 from .env_descr import (
@@ -2060,6 +2058,8 @@ class Conda(object):
                     os.path.join(pip_dir, "local_packages", "pip")
                 )
                 os.makedirs(tmp_local_pip_packages)
+                # Create this in case we need to move the local packages at some point
+                os.makedirs(base_local_pip_packages, exist_ok=True)
                 new_local_packages = []  # type: List[PackageSpecification]
                 for p in local_packages:
                     for fmt in PipPackageSpecification.allowed_formats():
@@ -2823,17 +2823,19 @@ class Conda(object):
             is_file = cast(bool, is_file)
             if is_file:
                 raise CondaException("Invalid cache content at '%s'" % cache_path)
-            keys_to_check.add(cache_path)
             base_cache_path, cache_filename_with_ext = os.path.split(cache_path)
-            cache_format = os.path.splitext(cache_filename_with_ext)[1]
+            cache_format = correct_splitext(cache_filename_with_ext)[1]
             if cache_format != ".whl":
                 # This is a source format -- we add it to the keys_to_check so we can
                 keys_to_check.add(cache_path)
+                debug.conda_exec("Found source package at '%s'" % cache_path)
             else:
                 # There may be multiple wheel files so we want to pick the best one
                 # so we record for now and then we will pick the best one.
                 possible_wheels.setdefault(base_cache_path, []).append(cache_path)
-            debug.conda_exec("Found potential pre-built package at '%s'" % cache_path)
+                debug.conda_exec(
+                    "Found potential pre-built package at '%s'" % cache_path
+                )
 
         # We now check and pick the best wheel if one is compatible and then we will
         # check it further
