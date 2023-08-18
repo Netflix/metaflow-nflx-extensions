@@ -136,8 +136,7 @@ If you want support for environments containing only pip packages, you will also
 
 ##### Mixed (pip + conda)  package support
 If you want support for environments containing both pip and conda packages, you will also need:
-- `conda-lock>=2.0.0`
-- `lockfile`
+- `conda-lock>=2.1.0`
 
 ##### Support for `.tar.bz2` and `.conda` packages
 If you set `CONDA_PREFERRED_FORMAT` to either `.tar.bz2` or `.conda`, for some packages,
@@ -167,6 +166,9 @@ constantly improved and there are a few outstanding issues that we are aware of:
   transmutes due to https://github.com/mamba-org/mamba/issues/2328. It also does
   not work properly when transmuting from `.conda` packages to `.tar.bz2` packages.
   Install `conda-package-handling` as well to support this.
+- Newer mamba has issues with newer conda. Specifically, removing environments will cause
+  an error. The fix is out but has not been released yet:
+  https://github.com/mamba-org/mamba/commit/ff161149251a79c86f65f6977a2c2e84f3aea08b
 
 ### Uninstallation
 Uninstalling this package will revert the behavior of the conda decorator to the one

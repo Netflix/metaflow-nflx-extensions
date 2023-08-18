@@ -160,6 +160,16 @@ class CondaStepDecorator(StepDecorator):
             "Requested for step %s: deps: %s; sources: %s"
             % (self._step_name, str(self.step_deps), str(self.source_deps))
         )
+        if self.is_fetch_at_exec():
+            from_env = self.from_env
+            assert from_env
+            return [
+                EnvID(
+                    req_id=from_env.env_id.req_id,
+                    full_id=from_env.env_id.full_id,
+                    arch=self._arch,
+                )
+            ]
         return [
             EnvID(
                 req_id=ResolvedEnvironment.get_req_id(
@@ -421,6 +431,7 @@ class CondaStepDecorator(StepDecorator):
         if self.is_enabled() and self.is_fetch_at_exec():
             self._flow = flow
             self._env_for_fetch["METAFLOW_RUN_ID"] = run_id
+            self._env_for_fetch["METAFLOW_RUN_ID_BASE"] = run_id
             self._env_for_fetch["METAFLOW_STEP_NAME"] = self.name
 
     def runtime_task_created(
