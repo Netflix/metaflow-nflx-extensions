@@ -924,8 +924,8 @@ def _parse_req_file(
                     parsed_req = Requirement(line)
                 except InvalidRequirement as ex:
                     raise InvalidEnvironmentException(
-                        "Could not parse '%s': %s" % (line, ex)
-                    )
+                        "Could not parse '%s'" % line
+                    ) from ex
                 if parsed_req.marker is not None:
                     raise InvalidEnvironmentException(
                         "Environment markers are not supported for '%s'" % line

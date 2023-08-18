@@ -262,9 +262,9 @@ class Conda(object):
         extras: Sequence[TStr],
         architecture: str,
         env_type: Optional[EnvType] = None,
-        builder_env: Optional[ResolvedEnvironment] = None,
+        builder_envs: Optional[List[ResolvedEnvironment]] = None,
         base_env: Optional[ResolvedEnvironment] = None,
-    ) -> Tuple[ResolvedEnvironment, Optional[ResolvedEnvironment]]:
+    ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
         """
         Resolve an environment. This only resolves the environment and does not
         actually download any package (except as required by the resolver) nor does
@@ -284,20 +284,25 @@ class Conda(object):
             Architecture to resolve for
         env_type : Optional[EnvType], optional
             If specified, forces a specific type of environment resolution, by default None
-        builder_env : Optional[ResolvedEnvironment], optional
-            An environment used as a builder environment (used in PIP cases), by default None
+        builder_envs : Optional[List[ResolvedEnvironment]], optional
+            Environments that help build the current environment. This is used to build
+            a PIP environment for example. We can have no builder environment (not PIP),
+            one if we are building an environment of the same arch or two if building
+            across archs. In that latter case, we will have one to resolve the PIP
+            environment and another to form as the building basis of the overall
+            environment, by default None
         base_env : Optional[ResolvedEnvironment], optional
             Needs to sometimes be used to determine if we can fully resolve this.
 
         Returns
         -------
-        Tuple[ResolvedEnvironment, Optional[ResolvedEnvironment]]
+        Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]
             Each element of the tuple contains:
                 - the resolved environment
-                - the builder environment: either the one passed in or one that was
-                  lazily created.
+                - the builder environments: either the ones passed in or additional ones
+                  lazily created
         """
-        returned_builder_env = builder_env
+        returned_builder_envs = builder_envs
         if self._mode != "local":
             # TODO: Maybe relax this later but for now assume that the remote environment
             # is a "lighter" conda.
@@ -335,13 +340,13 @@ class Conda(object):
             )
         try:
             if env_type == EnvType.CONDA_ONLY:
-                packages, returned_builder_env = self._resolve_env_with_conda(
-                    deps, sources, architecture, builder_env, base_env
+                packages, returned_builder_envs = self._resolve_env_with_conda(
+                    deps, sources, architecture, builder_envs, base_env
                 )
             elif env_type == EnvType.MIXED:
                 if resolver_bin == "conda-lock":
-                    packages, returned_builder_env = self._resolve_env_with_conda_lock(
-                        deps, sources, architecture, builder_env, base_env
+                    packages, returned_builder_envs = self._resolve_env_with_conda_lock(
+                        deps, sources, architecture, builder_envs, base_env
                     )
                 else:
                     # Should never happen and be caught earlier but being clean
@@ -373,13 +378,9 @@ class Conda(object):
                             % ", ".join([d.value for d in npconda_deps])
                         )
                 if resolver_bin == "pip":
-                    packages, returned_builder_env = self._resolve_env_with_pip(
-                        deps, sources, extras, architecture, builder_env, base_env
+                    packages, returned_builder_envs = self._resolve_env_with_pip(
+                        deps, sources, extras, architecture, builder_envs, base_env
                     )
-                    assert returned_builder_env
-                    # packages contains only pip packages so the order between the
-                    # two does not really matter
-                    packages += list(returned_builder_env.packages)
                 else:
                     # Should also never happen and be caught earlier but being clean
                     # add other pip resolvers here if needed
@@ -396,10 +397,10 @@ class Conda(object):
                     all_packages=packages,
                     env_type=env_type,
                 ),
-                returned_builder_env,
+                returned_builder_envs,
             )
         except CondaException as e:
-            raise CondaStepException(e, using_steps)
+            raise CondaStepException(e, using_steps) from None
 
     def create_for_step(
         self,
@@ -428,7 +429,7 @@ class Conda(object):
             env_name = self._env_directory_from_envid(env.env_id)
             return self.create_for_name(env_name, env, do_symlink)
         except CondaException as e:
-            raise CondaStepException(e, [step_name])
+            raise CondaStepException(e, [step_name]) from None
 
     def create_for_name(
         self, name: str, env: ResolvedEnvironment, do_symlink: bool = False
@@ -490,7 +491,7 @@ class Conda(object):
             return self.remove_for_name(env_name)
 
         except CondaException as e:
-            raise CondaStepException(e, [step_name])
+            raise CondaStepException(e, [step_name]) from None
 
     def remove_for_name(self, name: str) -> None:
         """
@@ -766,9 +767,8 @@ class Conda(object):
                     env_id = EnvID(req_id=req_id, full_id=full_id, arch=arch)
             except MetaflowNotFound as e:
                 raise MetaflowNotFound(
-                    "Cannot locate step while looking for Conda environment: %s"
-                    % e.message
-                )
+                    "Cannot locate step while looking for Conda environment"
+                ) from e
             if not env_id:
                 raise CondaException("Step %s is not a Conda step" % resolved_alias)
 
@@ -1822,9 +1822,9 @@ class Conda(object):
         deps: Sequence[TStr],
         sources: Sequence[TStr],
         architecture: str,
-        builder_env: Optional[ResolvedEnvironment],
+        builder_envs: Optional[List[ResolvedEnvironment]],
         base_env: Optional[ResolvedEnvironment],
-    ) -> Tuple[List[PackageSpecification], Optional[ResolvedEnvironment]]:
+    ) -> Tuple[List[PackageSpecification], Optional[List[ResolvedEnvironment]]]:
         if base_env:
             local_packages = [
                 p for p in base_env.packages if not p.is_downloadable_url()
@@ -1936,7 +1936,7 @@ class Conda(object):
                         hashes={parse_result.url_format: cast(str, parse_result.hash)},
                     )
                 )
-        return result, builder_env
+        return result, builder_envs
 
     def _resolve_env_with_pip(
         self,
@@ -1944,9 +1944,9 @@ class Conda(object):
         sources: Sequence[TStr],
         extras: Sequence[TStr],
         architecture: str,
-        builder_env: Optional[ResolvedEnvironment],
+        builder_envs: Optional[List[ResolvedEnvironment]],
         base_env: Optional[ResolvedEnvironment],
-    ) -> Tuple[List[PackageSpecification], Optional[ResolvedEnvironment]]:
+    ) -> Tuple[List[PackageSpecification], Optional[List[ResolvedEnvironment]]]:
         if base_env:
             local_packages = [
                 p
@@ -1965,8 +1965,14 @@ class Conda(object):
             )
         )
 
-        if not builder_env:
-            builder_env = self._build_builder_env(deps, sources, architecture)
+        if builder_envs is None:
+            raise CondaException(
+                "Cannot build a PIP only environment without a builder "
+                "environment. This is a bug -- please report"
+            )
+        # These can be the same if building for arch on same arch
+        builder_env = [r for r in builder_envs if r.env_id.arch == arch_id()][0]
+        base_conda_env = [r for r in builder_envs if r.env_id.arch == architecture][0]
 
         deps = [d for d in deps if d.category == "pip"]
         # We get the python version for this builder env
@@ -2000,6 +2006,7 @@ class Conda(object):
             args = [
                 "-m",
                 "pip",
+                "-v",
                 "--isolated",
                 "install",
                 "--ignore-installed",
@@ -2232,6 +2239,12 @@ class Conda(object):
                             )
                         )
             if packages_to_build:
+                if not self._storage:
+                    raise CondaException(
+                        "Cannot create a relocatable environment as it depends on "
+                        "local files or non wheels and no storage backend is defined: %s"
+                        % str(packages_to_build)
+                    )
                 # Will contain:
                 #  - build_url: url to use to build with pip wheel
                 #  - cache_url: url in the cache
@@ -2356,43 +2369,30 @@ class Conda(object):
                                 parse_result.url_format
                             ]
 
-                if self._storage:
-                    built_pip_packages, builder_env = self._build_pip_packages(
-                        python_version,
-                        to_build_pkg_info,
-                        builder_env,
-                        pip_dir,
-                        architecture,
-                        supported_tags,
-                        all_sources,
-                    )
-                    result.extend(built_pip_packages)
-                else:
-                    non_relocatable_packages = [
-                        k for k, v in to_build_pkg_info.items() if not v["url"]
-                    ]
-                    if non_relocatable_packages:
-                        raise CondaException(
-                            "Cannot create a relocatable environment as it depends on "
-                            "local files or non tarballs: %s"
-                            % ", ".join(non_relocatable_packages)
-                        )
-                    result.extend(
-                        [
-                            cast(PackageSpecification, v["spec"])
-                            for v in to_build_pkg_info.values()
-                        ]
-                    )
-        return result, builder_env
+                built_pip_packages, builder_envs = self._build_pip_packages(
+                    python_version,
+                    to_build_pkg_info,
+                    builder_envs,
+                    pip_dir,
+                    architecture,
+                    supported_tags,
+                    all_sources,
+                )
+                result.extend(built_pip_packages)
+
+        # result has pip only packages so order doesn't really matter (we can just
+        # directly append))
+        result += list(base_conda_env.packages)
+        return result, builder_envs
 
     def _resolve_env_with_conda_lock(
         self,
         deps: Sequence[TStr],
         channels: Sequence[TStr],
         architecture: str,
-        builder_env: Optional[ResolvedEnvironment],
+        builder_envs: Optional[List[ResolvedEnvironment]],
         base_env: Optional[ResolvedEnvironment],
-    ) -> Tuple[List[PackageSpecification], Optional[ResolvedEnvironment]]:
+    ) -> Tuple[List[PackageSpecification], Optional[List[ResolvedEnvironment]]]:
         outfile_name = None
         my_arch = arch_id()
         if any([d.category not in ("pip", "conda", "npconda") for d in deps]):
@@ -2450,7 +2450,7 @@ class Conda(object):
                     "code {code}'; see pretty-printed error above".format(
                         cmd=e.cmd, code=e.returncode
                     )
-                )
+                ) from None
 
         pip_channels = (
             [CONDA_DEFAULT_PIP_SOURCE] if CONDA_DEFAULT_PIP_SOURCE else []
@@ -2612,7 +2612,7 @@ class Conda(object):
                         virtual_pkgs = self._info["virtual_pkgs"]
                         lines.extend(
                             [
-                                "      %s: %s-%s\n" % (pkg_name, pkg_version, pkg_id)
+                                "      %s: %s=%s\n" % (pkg_name, pkg_version, pkg_id)
                                 for pkg_name, pkg_version, pkg_id in virtual_pkgs
                                 if pkg_name != "__glibc"
                             ]
@@ -2624,7 +2624,7 @@ class Conda(object):
                             pkg_name, pkg_version, pkg_id = virtpkg.split("=")
                             if pkg_name != "__glibc":
                                 lines.append(
-                                    "      %s: %s-%s\n"
+                                    "      %s: %s=%s\n"
                                     % (pkg_name, pkg_version, pkg_id)
                                 )
 
@@ -2717,10 +2717,10 @@ class Conda(object):
                         )
                     supported_tags = pip_tags_from_arch(python_version, architecture)
                     if self._storage:
-                        built_pip_packages, builder_env = self._build_pip_packages(
+                        built_pip_packages, builder_envs = self._build_pip_packages(
                             python_version,
                             packages_to_build,
-                            builder_env,
+                            builder_envs,
                             build_dir,
                             architecture,
                             supported_tags,
@@ -2735,7 +2735,7 @@ class Conda(object):
                                 for v in packages_to_build.values()
                             ]
                         )
-            return result, builder_env
+            return result, builder_envs
         finally:
             if outfile_name and os.path.isfile(outfile_name):
                 os.unlink(outfile_name)
@@ -2794,12 +2794,12 @@ class Conda(object):
         self,
         python_version: str,
         to_build_pkg_info: Dict[str, Any],
-        builder_env: Optional[ResolvedEnvironment],
+        builder_envs: Optional[List[ResolvedEnvironment]],
         build_dir: str,
         architecture: str,
         supported_tags: List[Tag],
         pip_sources: List[str],
-    ) -> Tuple[List[PackageSpecification], Optional[ResolvedEnvironment]]:
+    ) -> Tuple[List[PackageSpecification], Optional[List[ResolvedEnvironment]]]:
         # We check in the cache -- we don't actually have the filename or
         # hash so we check things starting with the partial URL.
         # The URL in cache will be:
@@ -2909,7 +2909,7 @@ class Conda(object):
             no_info = set(not_in_cache_or_local).intersection(not_downloadable)
             if no_info:
                 raise CondaException(
-                    "Cannot build PIP package across architectures. "
+                    "Cannot build PIP packages across architectures. "
                     "Requirements would have us build: %s. "
                     "This may be because you are specifying non wheel dependencies or "
                     "no wheel dependencies exist." % ", ".join(no_info)
@@ -2917,7 +2917,7 @@ class Conda(object):
             return [
                 cast(PackageSpecification, v["spec"])
                 for v in to_build_pkg_info.values()
-            ], builder_env
+            ], builder_envs
 
         # Determine what we need to build -- all non wheels
         keys_to_build = [
@@ -2928,7 +2928,7 @@ class Conda(object):
             return [
                 cast(PackageSpecification, v["spec"])
                 for v in to_build_pkg_info.values()
-            ], builder_env
+            ], builder_envs
 
         debug.conda_exec(
             "Going to build packages %s"
@@ -2940,12 +2940,25 @@ class Conda(object):
         debug.conda_exec("Creating builder environment to build PIP packages")
 
         # Create the environment in which we will call pip
+        # We look for a builder environment for the architecture we are building on
+        # (we never build cross arch)
+        builder_env = None  # type: Optional[ResolvedEnvironment]
+        if builder_envs is not None:
+            t = [r for r in builder_envs if r.env_id.arch == arch_id()]
+            if t:
+                builder_env = t[0]
+
         if not builder_env:
             builder_env = self._build_builder_env(
                 [TStr(category="conda", value="python==%s" % python_version)],
                 [],
-                architecture,
+                arch_id(),
             )
+            if builder_envs:
+                builder_envs.append(builder_env)
+            else:
+                builder_envs = [builder_env]
+
         techo = self._echo
         self._echo = self._no_echo
         self.create_for_name(
@@ -3067,7 +3080,7 @@ class Conda(object):
 
         return [
             cast(PackageSpecification, v["spec"]) for v in to_build_pkg_info.values()
-        ], builder_env
+        ], builder_envs
 
     def _find_conda_binary(self):
         # Lock as we may be trying to resolve multiple environments at once and therefore
@@ -3166,7 +3179,7 @@ class Conda(object):
                 tar.extractall(path)
                 tar.close()
             except Exception as e:
-                raise CondaException("Could not extract environment: %s" % str(e))
+                raise CondaException("Could not extract environment") from e
         delta_time = int(time.time() - start)
         self._echo(
             " done in %d second%s." % (delta_time, plural_marker(delta_time)),
@@ -3780,7 +3793,7 @@ class Conda(object):
                         "code {code}'; see pretty-printed error above".format(
                             cmd=e.cmd, code=e.returncode
                         )
-                    )
+                    ) from None
 
         self._cached_info = None
 
@@ -3931,43 +3944,31 @@ class Conda(object):
                 env=dict(os.environ, **env),
             ).strip()
         except subprocess.CalledProcessError as e:
-            try:
-                output = json.loads(e.output)
-                if isinstance(output, dict) and "error" in output:
-                    err = [output["err"]]  # type: List[str]
-                else:
-                    err = [output]  # type: List[str]
-                for error in output.get("errors", []):
-                    err.append(error["error"])
-                if pretty_print_exception:
-                    print(
-                        "Pretty-printed exception:\n%s" % "\n".join(err),
-                        file=sys.stderr,
-                    )
+            if pretty_print_exception:
+                print(
+                    "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
+                    if e.output
+                    else "No STDOUT",
+                    file=sys.stderr,
+                )
+                print(
+                    "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
+                    if e.stderr
+                    else "No STDERR",
+                    file=sys.stderr,
+                )
                 raise CondaException(
-                    "Conda command '{cmd}' returned an error ({code}); "
+                    "Conda command '{cmd}' returned error ({code}); "
                     "see pretty-printed error above".format(
                         cmd=e.cmd, code=e.returncode
                     )
-                )
-            except (TypeError, ValueError):
-                pass
-            print(
-                "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
-                if e.output
-                else "No STDOUT",
-                file=sys.stderr,
-            )
-            print(
-                "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
-                if e.stderr
-                else "No STDERR",
-                file=sys.stderr,
-            )
-            raise CondaException(
-                "Conda command '{cmd}' returned error ({code}); "
-                "see pretty-printed error above".format(cmd=e.cmd, code=e.returncode)
-            )
+                ) from None
+            else:
+                raise CondaException(
+                    "Conda command '{cmd}' returned error ({code})".format(
+                        cmd=e.cmd, code=e.returncode
+                    )
+                ) from None
 
     def _call_binary(
         self,
@@ -4007,7 +4008,7 @@ class Conda(object):
             raise CondaException(
                 "Binary command for Conda '{cmd}' returned error ({code}); "
                 "see pretty-printed error above".format(cmd=e.cmd, code=e.returncode)
-            )
+            ) from None
 
     def _start_micromamba_server(self):
         if not self._have_micromamba_server:
@@ -4121,11 +4122,13 @@ class CondaLock(object):
                     try_count += 1
 
                 if self.timeout is None:
-                    raise CondaException("Could not acquire lock {}".format(self.lock))
+                    raise CondaException(
+                        "Could not acquire lock {}".format(self.lock)
+                    ) from e
                 if (time.time() - start) >= self.timeout:
                     raise CondaException(
                         "Timeout occurred while acquiring lock {}".format(self.lock)
-                    )
+                    ) from e
                 time.sleep(self.delay)
 
     def _release(self) -> None:
@@ -4196,11 +4199,11 @@ class CondaLockMultiDir(object):
                     if self.timeout is None:
                         raise CondaException(
                             "Could not acquire lock {}".format(full_file)
-                        )
+                        ) from e
                     if (time.time() - start) >= self.timeout:
                         raise CondaException(
                             "Timeout occurred while acquiring lock {}".format(full_file)
-                        )
+                        ) from e
                     time.sleep(self.delay)
         self.locked = True
 
