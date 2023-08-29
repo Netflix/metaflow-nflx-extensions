@@ -35,12 +35,12 @@ CONDA_DEPENDENCY_RESOLVER = from_conf(
     get_validate_choice_fn(["mamba", "conda", "micromamba"]),
 )
 
-# For pure PIP environments, if you want to support those, set to the pip resolver
-CONDA_PIP_DEPENDENCY_RESOLVER = from_conf(
-    "CONDA_PIP_DEPENDENCY_RESOLVER", "pip", get_validate_choice_fn(["pip"])
+# For pure PYPI environments, if you want to support those, set to the pypi resolver
+CONDA_PYPI_DEPENDENCY_RESOLVER = from_conf(
+    "CONDA_PYPI_DEPENDENCY_RESOLVER", "pip", get_validate_choice_fn(["pip"])
 )
 
-# For mixed conda/pip environments, if you want to support those, set this to 'conda-lock'
+# For mixed conda/pypi environments, if you want to support those, set this to 'conda-lock'
 CONDA_MIXED_DEPENDENCY_RESOLVER = from_conf(
     "CONDA_MIXED_DEPENDENCY_RESOLVER",
     None,
@@ -89,9 +89,9 @@ CONDA_PREFERRED_FORMAT = from_conf(
     get_validate_choice_fn([".tar.bz2", ".conda"]),
 )
 
-CONDA_DEFAULT_PIP_SOURCE = from_conf("CONDA_DEFAULT_PIP_SOURCE", None)
+CONDA_DEFAULT_PYPI_SOURCE = from_conf("CONDA_DEFAULT_PYPI_SOURCE", None)
 
-# Allows you to specify URLs that need to be authenticated (basically Conda or PIP
+# Allows you to specify URLs that need to be authenticated (basically Conda or PYPI
 # package sources). Metaflow will glean all the information it can from traditional
 # configuration sources (like pip.conf) but this allows you to specify additional URLs
 # for which authentication is required. A dictionary should be passed in (or a JSON

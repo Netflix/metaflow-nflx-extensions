@@ -16,24 +16,36 @@ from typing import (
     Sequence,
     Set,
     Tuple,
+    Type,
 )
 
 from metaflow.debug import debug
-from metaflow.metaflow_config import CONDA_PREFERRED_FORMAT
+from metaflow.metaflow_config import (
+    CONDA_DEPENDENCY_RESOLVER,
+    CONDA_PREFERRED_FORMAT,
+    CONDA_MIXED_DEPENDENCY_RESOLVER,
+    CONDA_PYPI_DEPENDENCY_RESOLVER,
+)
 from metaflow.metaflow_environment import InvalidEnvironmentException
 
-from .env_descr import EnvID, EnvType, PackageSpecification, ResolvedEnvironment, TStr
+from .env_descr import (
+    EnvID,
+    EnvType,
+    PackageSpecification,
+    ResolvedEnvironment,
+    env_type_for_deps,
+)
 from .conda import Conda
-from .conda_step_decorator import CondaStepDecorator
+
+from .resolvers import Resolver
 from .utils import (
-    AliasType,
     CondaException,
     channel_from_url,
     arch_id,
     merge_dep_dicts,
     plural_marker,
-    resolve_env_alias,
     split_into_dict,
+    tstr_to_dict,
 )
 
 
@@ -45,7 +57,7 @@ class EnvsResolver(object):
         #  - "user_deps": array of requested dependencies
         #  - "deps": full array of dependencies -- typically user_deps except if base_env
         #  - "sources": full array of sources
-        #  - "extras": additional arguments (typically used for PIP)
+        #  - "extras": additional arguments (typically used for PYPI)
         #  - "conda_format": list of formats we want the Conda packages in or ["_any"] if no pref
         #  - "base": optional base environment this environment derives from
         #  - "base_accurate": T/F; True if the "deps" for the base environment are known
@@ -61,9 +73,10 @@ class EnvsResolver(object):
     def add_environment(
         self,
         architecture: str,
-        user_deps: Sequence[TStr],
-        user_sources: Sequence[TStr],
-        extras: Sequence[TStr],
+        user_deps: Dict[str, List[str]],
+        user_sources: Dict[str, List[str]],
+        extras: Dict[str, List[str]],
+        step_name: str = "ad-hoc",
         base_env: Optional[ResolvedEnvironment] = None,
         env_type: Optional[EnvType] = None,
         base_from_full_id: bool = False,
@@ -80,15 +93,17 @@ class EnvsResolver(object):
         ----------
         architecture : str
             Architecture this environment is requested for
-        user_deps : Sequence[TStr]
+        user_deps : SDict[str, List[str]]
             The user dependencies of this environment -- if there is a base environment,
             these are the *additional* dependencies.
-        user_sources : Sequence[TStr]
+        user_sources : Dict[str, List[str]]
             The sources of this environment -- if there is a base environment, these are
             the *additional* sources.
-        extras : Sequence[TStr]
-            Any extra information to pass to Conda/Pip (currently just pip) -- if there
+        extras : Dict[str, List[str]]
+            Any extra information to pass to Conda/Pypi (currently just pypi) -- if there
             is a base environment, these are the *additional* extras.
+        step_name : str
+            Step needing this environment or "ad-hoc" if not needed by a step
         base_env : Optional[ResolvedEnvironment], optional
             The base environment, if any, this environment is derived from, by default None
         env_type : Optional[EnvType], optional
@@ -128,6 +143,8 @@ class EnvsResolver(object):
             )
             deps = user_deps
 
+        # Check if we have the environment resolved already
+        resolved_env = None
         if (
             not force
             and base_env
@@ -139,6 +156,8 @@ class EnvsResolver(object):
             resolved_env = (
                 self._conda.environment(env_id, local_only) if not force else None
             )
+
+        # Check if we have already requested this environment
         if env_id not in self._requested_envs:
             if force_co_resolve:
                 if resolved_env is None:
@@ -155,7 +174,7 @@ class EnvsResolver(object):
 
             self._requested_envs[env_id] = {
                 "id": env_id,
-                "steps": ["ad-hoc"],
+                "steps": [step_name],
                 "user_deps": user_deps,
                 "deps": deps,
                 "sources": user_sources,
@@ -175,109 +194,11 @@ class EnvsResolver(object):
             debug.conda_exec(
                 "Added environment to resolve %s" % str(self._requested_envs[env_id])
             )
-
-    def add_environment_for_step(
-        self,
-        step_name: str,
-        decorator: CondaStepDecorator,
-        force: bool = False,
-        archs: Optional[List[str]] = None,
-    ):
-        """
-        This is the same as `add_environment` except a lot of the information needed
-        for `add_environment` is extracted from the step decorator passed in
-
-        Parameters
-        ----------
-        step_name : str
-            Step name for which this environment is being resolved (used for debugging
-            messages)
-        decorator : CondaStepDecorator
-            Decorator to use to extract information from
-        force : bool, optional
-            True if we should resolve the environment even if we already
-            know about it, by default False
-        archs : Optional[List[str]], optional
-            List of architectures to resolve for. If None, resolves for
-            the current architecture, by default None
-        """
-        # Make sure we use the same conda object to properly cache everything
-        decorator.set_conda(self._conda)
-
-        from_env = decorator.from_env
-        if from_env:
-            (
-                env_id,
-                user_sources,
-                user_deps,
-                deps,
-                extras,
-            ) = self.extract_info_from_base(
-                self._conda,
-                from_env,
-                decorator.non_base_step_deps,
-                decorator.source_deps,
-                [],
-                arch_id(),
-            )
-            env_ids = [env_id]
         else:
-            user_deps = decorator.non_base_step_deps
-            user_sources = decorator.source_deps
-            deps = decorator.step_deps
-
-        env_ids = decorator.env_ids
-        base_req_id = env_ids[0].req_id
-        base_full_id = env_ids[0].full_id
-        env_ids = [
-            EnvID(req_id=base_req_id, full_id=base_full_id, arch=arch)
-            for arch in set((archs or []) + [env_id.arch for env_id in env_ids])
-        ]
-
-        for env_id in env_ids:
-            if (
-                not force
-                and from_env
-                and env_id.req_id == from_env.env_id.req_id
-                and env_id.arch == from_env.env_id.arch
-            ):
-                debug.conda_exec(
-                    "For step '%s', found a clean base environment -- using that"
-                    % step_name
-                )
-                resolved_env = from_env
-            else:
-                resolved_env = self._conda.environment(env_id) if not force else None
-            if env_id not in self._requested_envs:
-                self._requested_envs[env_id] = {
-                    "id": env_id,
-                    "steps": [step_name],
-                    "user_deps": user_deps,
-                    "deps": deps,
-                    "sources": user_sources,
-                    "extras": [],
-                    "conda_format": [CONDA_PREFERRED_FORMAT]
-                    if CONDA_PREFERRED_FORMAT
-                    else ["_any"],
-                    "base": from_env,
-                    "base_accurate": from_env
-                    and from_env.is_info_accurate
-                    and resolve_env_alias(cast(str, decorator.from_env_name))[0]
-                    != AliasType.FULL_ID,
-                    "resolved": resolved_env,
-                    "already_resolved": resolved_env is not None,
-                    "env_type": decorator.env_type,
-                    "force": force,
-                }
-                debug.conda_exec(
-                    "Added environment to resolve %s"
-                    % str(self._requested_envs[env_id])
-                )
-            else:
-                self._requested_envs[env_id]["steps"].append(step_name)
-                debug.conda_exec(
-                    "Environment '%s' is also needed by '%s'" % (env_id, step_name)
-                )
+            self._requested_envs[env_id]["steps"].append(step_name)
+            debug.conda_exec(
+                "Environment '%s' is also needed by '%s'" % (env_id, step_name)
+            )
 
     def resolve_environments(self, echo: Callable[..., None]):
         """
@@ -315,9 +236,9 @@ class EnvsResolver(object):
         ----------
         include_builder_envs : bool, optional
             If True, will also return builder environments that were built
-            while resolving the main environments. In the case of PIP environments,
-            we sometimes need to build another environment to build PIP packages
-            and/or resolve the PIP dependencies, by default False
+            while resolving the main environments. In the case of PYPI environments,
+            we sometimes need to build another environment to build PYPI packages
+            and/or resolve the PYPI dependencies, by default False
 
         Yields
         ------
@@ -346,9 +267,9 @@ class EnvsResolver(object):
         ----------
         include_builder_envs : bool, optional
             If True, will also return builder environments that were built
-            while resolving the main environments. In the case of PIP environments,
-            we sometimes need to build another environment to build PIP packages
-            and/or resolve the PIP dependencies, by default False
+            while resolving the main environments. In the case of PYPI environments,
+            we sometimes need to build another environment to build PYPI packages
+            and/or resolve the PYPI dependencies, by default False
 
         Yields
         ------
@@ -397,9 +318,9 @@ class EnvsResolver(object):
         ----------
         include_builder_envs : bool, optional
             If True, will also return builder environments that were built
-            while resolving the main environments. In the case of PIP environments,
-            we sometimes need to build another environment to build PIP packages
-            and/or resolve the PIP dependencies, by default False
+            while resolving the main environments. In the case of PYPI environments,
+            we sometimes need to build another environment to build PYPI packages
+            and/or resolve the PYPI dependencies, by default False
 
         Yields
         ------
@@ -437,9 +358,9 @@ class EnvsResolver(object):
         ----------
         include_builder_envs : bool, optional
             If True, will also return builder environments that were built
-            while resolving the main environments. In the case of PIP environments,
-            we sometimes need to build another environment to build PIP packages
-            and/or resolve the PIP dependencies, by default False
+            while resolving the main environments. In the case of PYPI environments,
+            we sometimes need to build another environment to build PYPI packages
+            and/or resolve the PYPI dependencies, by default False
 
         Yields
         ------
@@ -486,76 +407,16 @@ class EnvsResolver(object):
                 nl=False,
             )
 
-        def _resolve(
-            env_desc: Mapping[str, Any],
-            builder_environments: Optional[Dict[str, List[EnvID]]],
-        ) -> Tuple[EnvID, ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
-            env_id = cast(EnvID, env_desc["id"])
-            builder_env_ids = (
-                builder_environments.get(env_id.req_id, None)
-                if builder_environments
-                else None
-            )
-            builder_envs = (
-                [
-                    cast(
-                        ResolvedEnvironment,
-                        self._builder_envs[builder_env_id]["resolved"],
-                    )
-                    for builder_env_id in builder_env_ids
-                ]
-                if builder_env_ids
-                else None
-            )
-            resolved_env, builder_envs = self._conda.resolve(
-                env_desc["steps"],
-                env_desc["deps"],
-                env_desc["sources"],
-                env_desc["extras"],
-                env_id.arch,
-                env_desc.get("env_type"),
-                builder_envs=builder_envs,
-                base_env=env_desc["base"],
-            )
-            if env_desc["base"]:
-                # We try to copy things over from the base environment as it contains
-                # potential caching information we don't need to rebuild. This also
-                # properly sets the user dependencies to what we want as opposed to
-                # including everything we resolved for.
-                merged_packages = []  # type: List[PackageSpecification]
-                base_packages = {
-                    p.filename: p.to_dict()
-                    for p in cast(ResolvedEnvironment, env_desc["base"]).packages
-                }
-                for p in resolved_env.packages:
-                    existing_info = base_packages.get(p.filename)
-                    if existing_info:
-                        merged_packages.append(
-                            PackageSpecification.from_dict(existing_info)
-                        )
-                    else:
-                        merged_packages.append(p)
-                resolved_env = ResolvedEnvironment(
-                    env_desc["user_deps"],
-                    env_desc["sources"],
-                    env_desc["extras"],
-                    env_id.arch,
-                    all_packages=merged_packages,
-                    env_type=resolved_env.env_type,
-                    accurate_source=env_desc["base_accurate"],
-                )
-            return env_id, resolved_env, builder_envs
-
-        # In PIP-ONLY scenarios, we actually need a sub-environment to properly resolve
-        # the pip environment (due to https://github.com/pypa/pip/issues/11664).
+        # In PYPI-ONLY scenarios, we actually need a sub-environment to properly resolve
+        # the pypi environment (due to https://github.com/pypa/pip/issues/11664).
         # We try to mutualize these environments.
         # There are other cases where we need a builder env but we only build it
-        # for user in PIP-ONLY scenarios because we are not sure we need it in other
+        # for user in PYPI-ONLY scenarios because we are not sure we need it in other
         # cases. If we do need it in the other cases, it will be lazily built and returned
         # so we can cache them for later use (they just won't be re-used and cached
         # this time so it is possible that we resolve the same builder environment
         # multiple times). This happens, for example, in mixed mode when we need to build
-        # PIP packages from source.
+        # PYPI packages from source.
 
         # In the case of cross architecture build we need two things:
         #  - a "vanilla" builder environment for this machine's architecture
@@ -565,45 +426,50 @@ class EnvsResolver(object):
         #  - a base conda environment for the target architecture (which includes the
         #    npconda packages). We will use this as the base environment.
         # For simplicity, we call both of them the "builder" environments (the first is
-        # an environment with which we build the pip environment and the second is the
+        # an environment with which we build the pypi environment and the second is the
         # building block of the final environment).
 
-        builders_by_req_id = {}  # type: Dict[str, Any]
+        # Figure out the set of builder environments we need to build. The key is the
+        # requirement ID for which we are building these builder environments and the
+        # value is the envid of the environments built for it.
+        builders_by_req_id = {}  # type: Dict[str, List[EnvID]]
         my_arch = arch_id()
         for env_id in env_ids:
             env_type = self._requested_envs[env_id].get("env_type")
             if env_type is None:
-                env_type = self._conda.env_type_for_deps(
-                    self._requested_envs[env_id]["deps"]
-                )
-            if env_type != EnvType.PIP_ONLY:
-                # If this is not a PIP_ONLY environment -- do not build builder_env
+                env_type = env_type_for_deps(self._requested_envs[env_id]["deps"])
+            if env_type != EnvType.PYPI_ONLY:
+                # If this is not a PYPI_ONLY environment -- do not build builder_envs
                 continue
 
             to_resolve_info = self._requested_envs[env_id]
 
-            builder_sources = [
-                s for s in to_resolve_info["sources"] if s.category == "conda"
-            ]
+            # Extract just the conda sources
+            builder_sources = {"conda": to_resolve_info["sources"].get("conda", [])}
+
+            # Figure out the python dependency
             python_dep = [
                 d
-                for d in to_resolve_info["deps"]
-                if d.category == "conda" and d.value.startswith("python==")
+                for d in to_resolve_info["deps"].get("conda", [])
+                if d.startswith("python==")
             ]
+
+            # The user dependencies are everything in npconda, sys and the pythondep
             builder_user_deps = {
-                env_id.arch: [
-                    d for d in to_resolve_info["user_deps"] if d.category == "npconda"
-                ]
-                + python_dep
+                env_id.arch: {
+                    "conda": python_dep,
+                    "npconda": to_resolve_info["user_deps"].get("npconda", []),
+                    "sys": to_resolve_info["user_deps"].get("sys", []),
+                }
             }
             if env_id.arch != my_arch:
                 # Here we need an extra "vanilla" environment with just the python
                 # dependency
-                builder_user_deps[my_arch] = python_dep
+                builder_user_deps[my_arch] = {"conda": python_dep}
 
             for builder_arch, builder_deps in builder_user_deps.items():
                 builder_env_id = EnvID(
-                    ResolvedEnvironment.get_req_id(builder_deps, builder_sources, []),
+                    ResolvedEnvironment.get_req_id(builder_deps, builder_sources, {}),
                     "_default",
                     builder_arch,
                 )
@@ -620,7 +486,7 @@ class EnvsResolver(object):
                         "user_deps": builder_deps,
                         "deps": builder_deps,
                         "sources": builder_sources,
-                        "extras": [],
+                        "extras": {},
                         "conda_format": to_resolve_info["conda_format"],
                         "base": None,
                         "base_accurate": False,
@@ -631,20 +497,23 @@ class EnvsResolver(object):
                 self._builder_envs[builder_env_id] = builder_env_info
                 builders_by_req_id.setdefault(env_id.req_id, []).append(builder_env_id)
 
-        # Resolve all builder environments
+        # Resolve all builder environments first so we can share them across steps
         if len(self._builder_envs):
             debug.conda_exec("Builder environments: %s" % str(self._builder_envs))
 
             # Build the environments
             with ThreadPoolExecutor() as executor:
                 resolution_result = [
-                    executor.submit(_resolve, v, None)
+                    executor.submit(self._resolve, v, None)
                     for v in self._builder_envs.values()
                     if not v["already_resolved"]
                 ]
                 for f in as_completed(resolution_result):
                     env_id, resolved, _ = f.result()
                     self._builder_envs[env_id]["resolved"] = resolved
+
+        # Now that we have all the builder environments, we go ahead and resolve the
+        # actual environments. We can pass down the builder environments as needed
 
         # NOTE: Co-resolved environments allow you to resolve a bunch of "equivalent"
         # environments for different platforms. This is great as it can allow you to
@@ -671,7 +540,7 @@ class EnvsResolver(object):
         if len(env_ids):
             with ThreadPoolExecutor() as executor:
                 resolution_result = [
-                    executor.submit(_resolve, v, builders_by_req_id)
+                    executor.submit(self._resolve, v, builders_by_req_id)
                     for k, v in self._requested_envs.items()
                     if k in env_ids
                 ]
@@ -680,24 +549,25 @@ class EnvsResolver(object):
                     co_resolved_envs.setdefault(env_id.req_id, []).append(
                         (env_id, resolved_env)
                     )
-                    envs_to_add = (
-                        [
-                            env
-                            for env in addl_builder_envs
-                            if env.env_id not in self._builder_envs
-                        ]
-                        if addl_builder_envs
-                        else []
-                    )
-                    for addl_builder_env in envs_to_add:
+
+                    # Record any other builder environment that was built so we can
+                    # properly cache it later
+                    if addl_builder_envs is None:
+                        addl_builder_envs = []
+                    addl_builder_envs = [
+                        env
+                        for env in addl_builder_envs
+                        if env.env_id not in self._builder_envs
+                    ]
+                    for addl_builder_env in addl_builder_envs:
                         # We "hack" the extract_from_base to get the proper user and
                         # full requirements from addl_builder_env
                         _, _, user_deps, full_deps, _ = self.extract_info_from_base(
                             self._conda,
                             addl_builder_env,
-                            [],
-                            [],
-                            [],
+                            {},
+                            {},
+                            {},
                             addl_builder_env.env_id.arch,
                         )
                         self._builder_envs[addl_builder_env.env_id] = {
@@ -706,7 +576,7 @@ class EnvsResolver(object):
                             "user_deps": user_deps,
                             "deps": full_deps,
                             "sources": addl_builder_env.sources,
-                            "extras": [],
+                            "extras": {},
                             "conda_format": self._requested_envs[env_id][
                                 "conda_format"
                             ],
@@ -749,15 +619,112 @@ class EnvsResolver(object):
         duration = int(time.time() - start)
         echo(" done in %d second%s." % (duration, plural_marker(duration)))
 
+    def _resolve(
+        self,
+        env_desc: Mapping[str, Any],
+        builder_environments: Optional[Dict[str, List[EnvID]]],
+    ) -> Tuple[EnvID, ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
+        env_id = cast(EnvID, env_desc["id"])
+        if builder_environments is None:
+            builder_environments = {}
+
+        builder_envs = [
+            self._builder_envs[builder_env_id]["resolved"]
+            for builder_env_id in builder_environments.get(env_id.req_id, [])
+        ]
+
+        # Figure out the env_type
+        env_type = cast(
+            EnvType, env_desc.get("env_type") or env_type_for_deps(env_desc["deps"])
+        )
+
+        # Create the resolver object
+        resolver = self.get_resolver(env_type)(self._conda)
+
+        # Resolve the environment
+        if env_type == EnvType.PYPI_ONLY:
+            # Pypi only mode
+            # In this mode, we also allow (as a workaround for poor support for
+            # more advanced options in conda-lock (like git repo, local support,
+            # etc)) the inclusion of conda packages that are *not* python packages.
+            # To ensure this, we check the npconda packages, create an environment
+            # for it and check if that environment doesn't contain python deps.
+            # If that is the case, we then create the actual environment including
+            # both conda and npconda packages and re-resolve. We could maybe
+            # optimize to not resolve from scratch twice but given this is a rare
+            # situation and the cost is only during resolution, it doesn't seem
+            # worth it.
+            npconda_deps = env_desc["deps"].get("npconda", [])
+            if npconda_deps:
+                npcondaenv, _ = self.get_resolver(EnvType.CONDA_ONLY)(
+                    self._conda
+                ).resolve(
+                    EnvType.CONDA_ONLY,
+                    {"npconda": npconda_deps},
+                    env_desc["sources"],
+                    {},
+                    env_id.arch,
+                )
+                if any((p.filename.startswith("python-") for p in npcondaenv.packages)):
+                    raise InvalidEnvironmentException(
+                        "Cannot specify a non-python Conda dependency that uses "
+                        "python: %s. Please use the mixed mode instead."
+                        % ", ".join([d.value for d in npconda_deps])
+                    )
+        resolved_env, builder_envs = resolver.resolve(
+            env_type,
+            env_desc["deps"],
+            env_desc["sources"],
+            env_desc["extras"],
+            env_id.arch,
+            builder_envs,
+            env_desc["base"],
+        )
+
+        if env_desc["base"]:
+            # We try to copy things over from the base environment as it contains
+            # potential caching information we don't need to rebuild. This also
+            # properly sets the user dependencies to what we want as opposed to
+            # including everything we resolved for.
+            merged_packages = []  # type: List[PackageSpecification]
+            base_packages = {
+                p.filename: p.to_dict()
+                for p in cast(ResolvedEnvironment, env_desc["base"]).packages
+            }
+            for p in resolved_env.packages:
+                existing_info = base_packages.get(p.filename)
+                if existing_info:
+                    merged_packages.append(
+                        PackageSpecification.from_dict(existing_info)
+                    )
+                else:
+                    merged_packages.append(p)
+            resolved_env = ResolvedEnvironment(
+                env_desc["user_deps"],
+                env_desc["sources"],
+                env_desc["extras"],
+                env_id.arch,
+                all_packages=merged_packages,
+                env_type=resolved_env.env_type,
+                accurate_source=env_desc["base_accurate"],
+            )
+        return env_id, resolved_env, builder_envs
+
     @staticmethod
     def extract_info_from_base(
         conda: Conda,
         base_env: ResolvedEnvironment,
-        deps: Sequence[TStr],
-        sources: Sequence[TStr],
-        extras: Sequence[TStr],
+        deps: Dict[str, List[str]],
+        sources: Dict[str, List[str]],
+        extras: Dict[str, List[str]],
         architecture: str,
-    ) -> Tuple[EnvID, Sequence[TStr], Sequence[TStr], Sequence[TStr], Sequence[TStr]]:
+    ) -> Tuple[
+        EnvID,
+        Dict[str, List[str]],
+        Dict[str, List[str]],
+        Dict[str, List[str]],
+        Dict[str, List[str]],
+    ]:
         """
         Returns the information about an environment extended from a given environment
         (in other words, taking the base environment first and then extending it
@@ -767,18 +734,18 @@ class EnvsResolver(object):
         ----------
         base_env : ResolvedEnvironment
             The base environment to use
-        deps : Sequence[TStr]
+        deps : Dict[str, List[str]]
             The user dependencies to add/update
-        sources : Sequence[TStr]
+        sources : Dict[str, List[str]]
             The sources to add/update
-        extras : Sequence[TStr]
-            Additional information passed to Conda/Pip
+        extras : Dict[str, List[str]]
+            Additional information passed to Conda/Pypi
         architecture : str
             The architecture to resolve for
 
         Returns
         -------
-        Tuple[EnvID, Sequence[TStr], Sequence[TStr], Sequence[TStr], Sequence[TStr]]
+        Tuple[EnvID, Dict[str, List[str]], Dict[str, List[str]],Dict[str, List[str]], Dict[str, List[str]]]
             The tuple contains:
                 - the new EnvID
                 - the set of sources
@@ -793,83 +760,114 @@ class EnvsResolver(object):
         # We form the new list of dependencies based on the ones we have in cur_env
         # and the new ones.
         # We need to split things up and reform
+        # incoming_* is basically stuff that comes from everything outside of the
+        # base_env
+        incoming_conda_deps = split_into_dict(deps.get("conda", []))
+        incoming_npconda_deps = split_into_dict(deps.get("npconda", []))
+        incoming_pypi_deps = split_into_dict(deps.get("pypi", []))
+        incoming_sys_deps = split_into_dict(deps.get("sys", []))
 
-        incoming_conda_deps = split_into_dict(
-            [d for d in deps if d.category == "conda"]
-        )
-        incoming_npconda_deps = split_into_dict(
-            [d for d in deps if d.category == "npconda"]
-        )
-        incoming_pip_deps = split_into_dict([d for d in deps if d.category == "pip"])
+        base_deps = tstr_to_dict(base_env.deps)
+        base_sources = tstr_to_dict(base_env.sources)
+        base_extras = tstr_to_dict(base_env.extras)
 
         user_conda_deps = merge_dep_dicts(
-            split_into_dict([d for d in base_env.deps if d.category == "conda"]),
+            split_into_dict(base_deps.get("conda", [])),
             incoming_conda_deps,
         )
-        user_pip_deps = merge_dep_dicts(
-            split_into_dict([d for d in base_env.deps if d.category == "pip"]),
-            incoming_pip_deps,
+        user_pypi_deps = merge_dep_dicts(
+            split_into_dict(base_deps.get("pypi", [])),
+            incoming_pypi_deps,
         )
         user_npconda_deps = merge_dep_dicts(
-            split_into_dict([d for d in base_env.deps if d.category == "npconda"]),
+            split_into_dict(base_deps.get("npconda", [])),
             incoming_npconda_deps,
         )
 
+        # Special handling of sys deps -- it should just be __cuda right now and the way
+        # that one works is that it is the max supported version so we just take the
+        # smallest
+
+        base_sys_deps = split_into_dict(base_deps.get("sys", []))
+        d = set(base_sys_deps.keys()).difference(("__cuda",))
+        if d:
+            raise CondaException("Unhandled sys deps: %s" % ", ".join(d))
+        d = set(incoming_sys_deps.keys()).difference(("__cuda",))
+        if d:
+            raise CondaException("Unhandled sys deps: %s" % ", ".join(d))
+        if base_sys_deps or incoming_sys_deps:
+            v1 = base_sys_deps.get("__cuda", "9999")
+            v2 = incoming_sys_deps.get("__cuda", "9999")
+            v1_parts = v1.split(".")
+            v2_parts = v2.split(".")
+            vmin = None  # type: Optional[str]
+            for v1p, v2p in zip(v1_parts, v2_parts):
+                if int(v1p) == int(v2p):
+                    continue
+                if int(v1p) < int(v2p):
+                    vmin = v1
+                else:
+                    vmin = v2
+                break
+            if vmin is None:
+                vmin = v1 if len(v1_parts) < len(v2_parts) else v2
+            user_sys_deps = {"__cuda": vmin}
+        else:
+            user_sys_deps = {}
+
         # Extract the implicit channels that are already listed somewhere
-        sources = list(set(chain(base_env.sources, sources)))
-        extras = list(set(chain(base_env.extras, extras)))
 
-        included_channels = set()  # type: Set[str]
-        for s in chain(sources, conda.default_conda_channels):
-            channel = channel_from_url(s.value if isinstance(s, TStr) else s)
+        for category, srcs in base_sources:
+            sources.setdefault(category, []).extend(srcs)
+
+        for category, extra in base_extras:
+            extras.setdefault(category, []).extend(extra)
+
+        already_have_channels = set()  # type: Set[str]
+        for s in sources.get("conda", []):
+            channel = channel_from_url(s)
             if channel:
-                included_channels.add(channel)
+                already_have_channels.add(channel)
 
-        included_channels_list = list(included_channels)
+        # We include the channel iff we don't already have it in `already_have_channels`
         conda_deps = {
-            p.package_name_with_channel(included_channels_list): p.package_version
+            p.package_name_with_channel(list(already_have_channels)): p.package_version
             for p in base_env.packages
             if p.TYPE == "conda"
         }
-        conda_deps = merge_dep_dicts(conda_deps, incoming_conda_deps)
-        conda_deps = merge_dep_dicts(conda_deps, incoming_npconda_deps)
 
-        pip_deps = {
+        conda_deps = merge_dep_dicts(
+            merge_dep_dicts(conda_deps, incoming_conda_deps), incoming_npconda_deps
+        )
+
+        pypi_deps = {
             p.package_name: p.package_version
             for p in base_env.packages
-            if p.TYPE == "pip"
+            if p.TYPE == "pypi"
         }
-        pip_deps = merge_dep_dicts(pip_deps, incoming_pip_deps)
+        pypi_deps = merge_dep_dicts(pypi_deps, incoming_pypi_deps)
 
-        deps = list(
-            chain(
-                [
-                    TStr("conda", "%s==%s" % (k, v) if v else k)
-                    for k, v in conda_deps.items()
-                ],
-                [
-                    TStr("pip", "%s==%s" % (k, v) if v else k)
-                    for k, v in pip_deps.items()
-                ],
-            )
-        )
+        # The dependencies we need to resolve for are:
+        #  - the packages from the base environment
+        #  - the packages the user requested
+        deps = {
+            "conda": ["%s==%s" % (p, v) if v else p for p, v in conda_deps.items()],
+            "pypi": ["%s==%s" % (p, v) if v else p for p, v in pypi_deps.items()],
+        }
 
-        user_deps = list(
-            chain(
-                [
-                    TStr("conda", "%s==%s" % (k, v) if v else k)
-                    for k, v in user_conda_deps.items()
-                ],
-                [
-                    TStr("npconda", "%s==%s" % (k, v) if v else k)
-                    for k, v in user_npconda_deps.items()
-                ],
-                [
-                    TStr("pip", "%s==%s" % (k, v) if v else k)
-                    for k, v in user_pip_deps.items()
-                ],
-            )
-        )
+        # The user requested dependencies are the ones that were requested for the
+        # base environment as well as the ones that were added here
+        user_deps = {
+            "conda": [
+                "%s==%s" % (k, v) if v else k for k, v in user_conda_deps.items()
+            ],
+            "npconda": [
+                "%s==%s" % (k, v) if v else k for k, v in user_npconda_deps.items()
+            ],
+            "pypi": ["%s==%s" % (k, v) if v else k for k, v in user_pypi_deps.items()],
+            "sys": ["%s==%s" % (k, v) if v else k for k, v in user_sys_deps.items()],
+        }
+
         new_env_id = EnvID(
             ResolvedEnvironment.get_req_id(user_deps, sources, extras),
             "_default",
@@ -877,3 +875,20 @@ class EnvsResolver(object):
         )
 
         return new_env_id, sources, user_deps, deps, extras
+
+    @staticmethod
+    def get_resolver(env_type: EnvType) -> Type[Resolver]:
+        if env_type == EnvType.CONDA_ONLY:
+            resolver_name = CONDA_DEPENDENCY_RESOLVER
+        elif env_type == EnvType.PYPI_ONLY:
+            resolver_name = CONDA_PYPI_DEPENDENCY_RESOLVER
+        elif env_type == EnvType.MIXED:
+            resolver_name = CONDA_MIXED_DEPENDENCY_RESOLVER
+        else:
+            raise CondaException("Unhandled environment type %s" % env_type.value)
+        if resolver_name is None:
+            raise CondaException(
+                "Cannot resolve environments in %s mode because no resolver is configured"
+                % env_type.value
+            )
+        return Resolver.get_resolver(resolver_name)

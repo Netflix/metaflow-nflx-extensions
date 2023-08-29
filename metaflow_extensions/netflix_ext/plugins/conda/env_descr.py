@@ -33,14 +33,16 @@ from metaflow.metaflow_config import CONDA_PACKAGES_DIRNAME
 from metaflow.util import get_username
 
 from .utils import (
-    _ALL_PIP_FORMATS,
+    _ALL_PYPI_FORMATS,
     FAKEURL_PATHCOMPONENT,
     AliasType,
     arch_id,
     channel_from_url,
     correct_splitext,
+    dict_to_tstr,
     get_conda_manifest_path,
     is_alias_mutable,
+    tstr_to_dict,
 )
 
 # Order should be maintained
@@ -51,12 +53,16 @@ VALID_IMAGE_NAME_RE = "[^a-z0-9_]"
 
 class EnvType(Enum):
     CONDA_ONLY = "conda-only"
-    PIP_ONLY = "pip-only"
+    PYPI_ONLY = "pypi-only"
+    PIP_ONLY = "pip-only"  # Here for legacy reasons -- we now use pypi-only
     MIXED = "mixed"
 
 
 class TStr:
     def __init__(self, category: str, value: str):
+        if category == "pip":
+            # Legacy support for "pip" packages (now called pypi)
+            category = "pypi"
         self._category = category
         self._value = value
 
@@ -83,7 +89,33 @@ class TStr:
         splits = value.split("::", 1)
         if len(splits) != 2:
             raise ValueError("Cannot parse a TStr from %s" % value)
-        return TStr(splits[0], splits[1])
+        c = splits[0]
+        if c == "pip":
+            c = "pypi"
+        return TStr(c, splits[1])
+
+
+def env_type_for_deps(deps: Dict[str, List[str]]) -> EnvType:
+    """
+    Returns the environment type based on a set of dependencies
+
+    Parameters
+    ----------
+    deps : List[TStr]
+        User-requested dependencies for this environment
+
+    Returns
+    -------
+    EnvType
+        The environment type, either CONDA_ONLY, PYPI_ONLY or MIXED
+    """
+    env_type = EnvType.CONDA_ONLY
+    if len(deps.get("conda", [])) == 1:
+        # This is a pypi only mode
+        env_type = EnvType.PYPI_ONLY
+    elif deps.get("pypi", []):
+        env_type = EnvType.MIXED
+    return env_type
 
 
 class CachePackage:
@@ -92,13 +124,13 @@ class CachePackage:
     #    if the file is in cache.
     #  - in some cases, we want to store multiple formats for the same package (for
     #    example .conda and .tar.bz2 for conda packages or a source .tar.gz and a .whl
-    #    for pip packages)
+    #    for pypi packages)
     #  - some URLs are "fake" URLs that don't actually correspond to something we can
-    #    actually download or use like local paths for locally built PIP packages or
+    #    actually download or use like local paths for locally built PYPI packages or
     #    pointers to GIT repositories (ie: there is no one file pointed to by that URL).
     #    We still use the URL as a unique identifier but mark it as fake
     #  - we therefore form the cache url using the following components ("/" separated):
-    #    - pkg_type: so pip or conda
+    #    - pkg_type: so pypi or conda (pip as legacy)
     #    - a special marker for fake URLs (if needed)
     #    - the netloc of the base source URL
     #    - the path in the base source URL
@@ -114,7 +146,7 @@ class CachePackage:
     #
     # If we have a GIT repository like git+https://github.com/foo/myrepo/@123#subdirectory=bar,
     # we would have:
-    #  - pip/github.com/foo/myrepo/123/bar/mypackage.whl/<hash>/mypackage.whl
+    #  - pypi/github.com/foo/myrepo/123/bar/mypackage.whl/<hash>/mypackage.whl
     TYPE = "invalid"
 
     _class_per_type = None  # type: Optional[Dict[str, Type[CachePackage]]]
@@ -205,7 +237,11 @@ class CachePackage:
     def from_dict(cls, d: Mapping[str, Any]):
         cls._ensure_class_per_type()
         assert cls._class_per_type
-        return cls._class_per_type[d["_type"]](url=d["url"])
+        t = d["_type"]
+        if t == "pip":
+            # Support legacy files that mention "pip" packages (now called "pypi")
+            t = "pypi"
+        return cls._class_per_type[t](url=d["url"])
 
     def __str__(self):
         return "%s#%s" % (self.url, self.hash)
@@ -221,12 +257,12 @@ class CondaCachePackage(CachePackage):
         return CONDA_FORMATS
 
 
-class PipCachePackage(CachePackage):
-    TYPE = "pip"
+class PypiCachePackage(CachePackage):
+    TYPE = "pypi"
 
     @classmethod
     def allowed_formats(cls) -> Sequence[str]:
-        return _ALL_PIP_FORMATS
+        return _ALL_PYPI_FORMATS
 
 
 class PackageSpecification:
@@ -419,7 +455,7 @@ class PackageSpecification:
 
     def can_add_filename(self, filename_with_ext: str) -> bool:
         # Tests if a filename is a compatible filename for this package. This is used
-        # when there are multiple possibilities with PIP packages for example
+        # when there are multiple possibilities with PYPI packages for example
         raise NotImplementedError
 
     def add_local_dir(self, local_path: str):
@@ -549,7 +585,11 @@ class PackageSpecification:
 
         cache_info = d.get("cache_info", {})  # type: Dict[str, Any]
         url_format = d["url_format"]
-        return cls._class_per_type[d["_type"]](
+        t = d["_type"]
+        if t == "pip":
+            # Legacy support for "pip" packages, now called "pypi"
+            t = "pypi"
+        return cls._class_per_type[t](
             filename=d["filename"],
             url=d["url"],
             url_format=url_format,
@@ -607,7 +647,7 @@ class CondaPackageSpecification(PackageSpecification):
 
     def can_add_filename(self, filename_with_ext: str) -> bool:
         # Tests if a filename is a compatible filename for this package. This is used
-        # when there are multiple possibilities with PIP packages for example
+        # when there are multiple possibilities with PYPI packages for example
         ext = correct_splitext(filename_with_ext)[1]
         return ext in self.allowed_formats()
 
@@ -616,16 +656,16 @@ class CondaPackageSpecification(PackageSpecification):
         return pkg, v, "-".join([v, addl])
 
 
-class PipPackageSpecification(PackageSpecification):
-    TYPE = "pip"
+class PypiPackageSpecification(PackageSpecification):
+    TYPE = "pypi"
 
     @classmethod
     def cache_pkg_type(cls):
-        return PipCachePackage
+        return PypiCachePackage
 
     @classmethod
     def allowed_formats(cls) -> Sequence[str]:
-        return _ALL_PIP_FORMATS
+        return _ALL_PYPI_FORMATS
 
     @classmethod
     def base_hash(cls):
@@ -637,7 +677,7 @@ class PipPackageSpecification(PackageSpecification):
 
     def can_add_filename(self, filename_with_ext: str) -> bool:
         # Tests if a filename is a compatible filename for this package. This is used
-        # when there are multiple possibilities with PIP packages for example
+        # when there are multiple possibilities with PYPI packages for example
         base_filename, ext = correct_splitext(filename_with_ext)
 
         if ext == ".whl":
@@ -645,7 +685,7 @@ class PipPackageSpecification(PackageSpecification):
             return base_filename == self.filename
         else:
             # Source packages are always ok to add. It may have a different name
-            return ext in _ALL_PIP_FORMATS
+            return ext in _ALL_PYPI_FORMATS
 
     def _split_filename(self) -> Tuple[str, str, str]:
         try:
@@ -668,9 +708,9 @@ class PipPackageSpecification(PackageSpecification):
 class ResolvedEnvironment:
     def __init__(
         self,
-        user_dependencies: Sequence[TStr],
-        user_sources: Optional[Sequence[TStr]],
-        user_extra_args: Optional[Sequence[TStr]],
+        user_dependencies: Dict[str, List[str]],
+        user_sources: Optional[Dict[str, List[str]]],
+        user_extra_args: Optional[Dict[str, List[str]]],
         arch: Optional[str] = None,
         env_id: Optional[EnvID] = None,
         all_packages: Optional[Sequence[PackageSpecification]] = None,
@@ -681,19 +721,20 @@ class ResolvedEnvironment:
         accurate_source: bool = True,
     ):
         self._env_type = env_type
-        self._user_dependencies = list(user_dependencies)
+        self._user_dependencies = dict_to_tstr(user_dependencies)
         # We sort the user dependencies as the order does not matter and it makes
         # it easier for users to find their dependencies
         self._user_dependencies.sort(key=lambda k: k.value)
-        self._user_sources = list(user_sources) if user_sources else []
-        self._user_extra_args = list(user_extra_args) if user_extra_args else []
+        self._user_sources = dict_to_tstr(user_sources) if user_sources else []
+        self._user_extra_args = dict_to_tstr(user_extra_args) if user_extra_args else []
 
         self._accurate_source = accurate_source
 
         if not env_id:
             env_req_id = ResolvedEnvironment.get_req_id(
-                self._user_dependencies, self._user_sources, self._user_extra_args
+                user_dependencies, user_sources or {}, user_extra_args or {}
             )
+
             env_full_id = "_unresolved"
             if all_packages is not None:
                 env_full_id = self._compute_hash(
@@ -710,34 +751,37 @@ class ResolvedEnvironment:
             self._env_id = env_id
         self._all_packages = list(all_packages) if all_packages else []
         self._resolved_on = resolved_on or datetime.now()
-        self._resolved_by = resolved_by or get_username() or "unknown"
+        self._resolved_by = (
+            resolved_by or cast(Optional[str], get_username()) or "unknown"
+        )
         self._co_resolved = co_resolved or [arch or arch_id()]
         self._parent = None  # type: Optional["CachedEnvironmentInfo"]
         self._dirty = False
 
     @staticmethod
     def get_req_id(
-        deps: Sequence[TStr],
-        sources: Optional[Sequence[TStr]] = None,
-        extra_args: Optional[Sequence[TStr]] = None,
+        deps: Dict[str, List[str]],
+        sources: Optional[Dict[str, List[str]]] = None,
+        extra_args: Optional[Dict[str, List[str]]] = None,
     ) -> str:
-        # Extract per category so we can sort independently for each category
-        deps_by_category = {}  # type: Dict[str, List[str]]
-        sources_by_category = {}  # type: Dict[str, List[str]]
-        extras_by_category = {}  # type: Dict[str, List[str]]
-        for d in deps:
-            deps_by_category.setdefault(d.category, []).append(d.value)
-        if sources:
-            for s in sources:
-                sources_by_category.setdefault(s.category, []).append(s.value)
-        if extra_args:
-            for e in extra_args:
-                extras_by_category.setdefault(e.category, []).append(e.value)
+        if sources is None:
+            sources = {}
+        if extra_args is None:
+            extra_args = {}
         return ResolvedEnvironment._compute_hash(
             chain(
-                *(sorted(deps_by_category[c]) for c in sorted(deps_by_category)),
-                *(sorted(sources_by_category[c]) for c in sorted(sources_by_category)),
-                *(sorted(extras_by_category[c]) for c in sorted(extras_by_category))
+                *(
+                    map(lambda x, c=c: str(TStr(c, x)), sorted(deps[c]))
+                    for c in sorted(deps)
+                ),
+                *(
+                    map(lambda x, c=c: str(TStr(c, x)), sorted(sources[c]))
+                    for c in sorted(sources)
+                ),
+                *(
+                    map(lambda x, c=c: str(TStr(c, x)), sorted(extra_args[c]))
+                    for c in sorted(extra_args)
+                )
             )
         )
 
@@ -837,15 +881,15 @@ class ResolvedEnvironment:
 
     def pretty_print(self, local_instances: Optional[List[str]]) -> str:
         lines = []  # type: List[str]
-        pip_packages = []  # type: List[PackageSpecification]
+        pypi_packages = []  # type: List[PackageSpecification]
         conda_packages = []  # type: List[PackageSpecification]
         for p in self.packages:
-            if p.TYPE == "pip":
-                pip_packages.append(p)
+            if p.TYPE == "pypi":
+                pypi_packages.append(p)
             else:
                 conda_packages.append(p)
 
-        pip_packages.sort(key=lambda x: x.package_name)
+        pypi_packages.sort(key=lambda x: x.package_name)
         conda_packages.sort(key=lambda x: x.package_name)
 
         if self._parent:
@@ -933,13 +977,13 @@ class ResolvedEnvironment:
                 )
             )
 
-        if pip_packages:
+        if pypi_packages:
             lines.append(
-                "*Pip Packages installed* %s"
+                "*Pypi Packages installed* %s"
                 % ", ".join(
                     [
                         "%s==%s" % (p.package_name, p.package_version)
-                        for p in pip_packages
+                        for p in pypi_packages
                     ]
                 )
             )
@@ -947,15 +991,15 @@ class ResolvedEnvironment:
         return "\n".join(lines)
 
     def quiet_print(self, local_instances: Optional[List[str]] = None) -> str:
-        pip_packages = []  # type: List[PackageSpecification]
+        pypi_packages = []  # type: List[PackageSpecification]
         conda_packages = []  # type: List[PackageSpecification]
         for p in self.packages:
-            if p.TYPE == "pip":
-                pip_packages.append(p)
+            if p.TYPE == "pypi":
+                pypi_packages.append(p)
             else:
                 conda_packages.append(p)
 
-        pip_packages.sort(key=lambda x: x.package_name)
+        pypi_packages.sort(key=lambda x: x.package_name)
         conda_packages.sort(key=lambda x: x.package_name)
 
         if self._parent:
@@ -975,7 +1019,7 @@ class ResolvedEnvironment:
                 ("%s(m)" % ":".join(a.rsplit("/", 1)) for a in mutable_aliases),
             )
         )
-        return "%s %s %s %s %s %s %s %s %s conda:%s pip:%s %s" % (
+        return "%s %s %s %s %s %s %s %s %s conda:%s pypi:%s %s" % (
             self.env_id.req_id,
             self.env_id.full_id,
             aliases,
@@ -992,7 +1036,7 @@ class ResolvedEnvironment:
                 ]
             ),
             ",".join(
-                ["%s==%s" % (p.package_name, p.package_version) for p in pip_packages]
+                ["%s==%s" % (p.package_name, p.package_version) for p in pypi_packages]
             ),
             ",".join(local_instances) if local_instances else "NONE",
         )
@@ -1021,9 +1065,11 @@ class ResolvedEnvironment:
     ):
         all_packages = [PackageSpecification.from_dict(pd) for pd in d["packages"]]
         return cls(
-            user_dependencies=[TStr.from_str(x) for x in d["deps"]],
-            user_sources=[TStr.from_str(x) for x in d["sources"]],
-            user_extra_args=[TStr.from_str(x) for x in d.get("extras", [])],
+            user_dependencies=tstr_to_dict([TStr.from_str(x) for x in d["deps"]]),
+            user_sources=tstr_to_dict([TStr.from_str(x) for x in d["sources"]]),
+            user_extra_args=tstr_to_dict(
+                [TStr.from_str(x) for x in d.get("extras", [])]
+            ),
             env_id=env_id,
             all_packages=all_packages,
             resolved_on=datetime.fromisoformat(d["resolved_on"]),

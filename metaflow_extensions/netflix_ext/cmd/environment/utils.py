@@ -18,75 +18,58 @@ _ext_parse = re.compile(r"([-_\w]+)\(([^)]+)\)")
 
 name_to_pkg = {"netflix-ext": "metaflow-netflixext"}
 
-
-def parse_deps(deps: str) -> List[TStr]:
-    deps = deps.split(";")
-    result = []
-    for dep in deps:
-        match = _deps_parse.match(dep)
-        if match is None:
-            raise ValueError("Dependency %s is not a valid constraint")
-        pkg, version = match.groups()
-        pkg_with_category = pkg.split("::")
-        if len(pkg_with_category) > 1:
-            category = pkg_with_category[0]
-            pkg = pkg_with_category[1]
-        else:
-            category = "conda"
-        version = version.lstrip("=")
-        result.append(TStr(category, "%s==%s" % (pkg, version)))
-    return result
-
-
-def parse_channels(channels: Optional[str]) -> List[TStr]:
-    if not channels:
-        return []
-
-    result = []
-    channels = channels.split(",")
-    for c in channels:
-        channel_with_category = c.split("::")
-        if len(channel_with_category) > 1:
-            category = channel_with_category[0]
-            c = channel_with_category[1]
-        else:
-            category = "conda"
-        result.append(TStr(category, c))
-    return result
+# NOT used for now -- used in the commented out list command from environment_cmd.py
+# May require cleanup
+# def parse_deps(deps: str) -> List[TStr]:
+#     deps = deps.split(";")
+#     result = []
+#     for dep in deps:
+#         match = _deps_parse.match(dep)
+#         if match is None:
+#             raise ValueError("Dependency %s is not a valid constraint")
+#         pkg, version = match.groups()
+#         pkg_with_category = pkg.split("::")
+#         if len(pkg_with_category) > 1:
+#             category = pkg_with_category[0]
+#             pkg = pkg_with_category[1]
+#         else:
+#             category = "conda"
+#         version = version.lstrip("=")
+#         result.append(TStr(category, "%s==%s" % (pkg, version)))
+#     return result
 
 
-def req_id_from_spec(python: str, deps: str, channels: str) -> str:
-    deps = parse_deps(deps)
-    channels = parse_channels(channels)
-    deps.append(TStr("conda", "python==%s" % python))
-    return ResolvedEnvironment.get_req_id(deps, channels)
+# def parse_channels(channels: Optional[str]) -> List[TStr]:
+#     if not channels:
+#         return []
+
+#     result = []
+#     channels = channels.split(",")
+#     for c in channels:
+#         channel_with_category = c.split("::")
+#         if len(channel_with_category) > 1:
+#             category = channel_with_category[0]
+#             c = channel_with_category[1]
+#         else:
+#             category = "conda"
+#         result.append(TStr(category, c))
+#     return result
+
+# def req_id_from_spec(python: str, deps: str, channels: str) -> str:
+#    deps = parse_deps(deps)
+#    channels = parse_channels(channels)
+#    deps.append(TStr("conda", "python==%s" % python))
+#    return ResolvedEnvironment.get_req_id(deps, channels)
 
 
-def env_id_from_step(step: Step) -> EnvID:
-    conda_env_id = step.task.metadata_dict.get("conda_env_id")
-    if conda_env_id:
-        conda_env_id = json.loads(conda_env_id)
-        if isinstance(conda_env_id, type([])) and len(conda_env_id) == 3:
-            return EnvID(
-                req_id=conda_env_id[0], full_id=conda_env_id[1], arch=arch_id()
-            )
-        else:
-            raise ValueError(
-                "%s ran with a version of Metaflow that is too old for this functionality"
-                % str(step)
-            )
-    else:
-        raise ValueError("%s did not run with a Conda environment" % str(step))
-
-
-def local_instances_for_req_id(conda: Conda, req_id: str):
-    created_envs = conda.created_environments()  # This returns all MF environments
-    local_instances = {}  # type: Dict[str, List[str]]
-    for env_id, present_list in created_envs.items():
-        if env_id.req_id != req_id:
-            continue
-        local_instances[env_id.full_id] = present_list
-    return local_instances
+# def local_instances_for_req_id(conda: Conda, req_id: str):
+#     created_envs = conda.created_environments()  # This returns all MF environments
+#     local_instances = {}  # type: Dict[str, List[str]]
+#     for env_id, present_list in created_envs.items():
+#         if env_id.req_id != req_id:
+#             continue
+#         local_instances[env_id.full_id] = present_list
+#     return local_instances
 
 
 def download_mf_version(executable: str, version_str: str):

@@ -8,7 +8,6 @@ import tempfile
 import time
 
 from functools import wraps
-from itertools import chain
 from shutil import copy
 from typing import Any, Dict, List, Optional, Set, Tuple, cast
 from metaflow._vendor import click
@@ -20,7 +19,6 @@ from metaflow import Step, metaflow_config
 from metaflow.exception import CommandException
 from metaflow.plugins import DATASTORES
 from metaflow.metaflow_config import (
-    CONDA_PREFERRED_FORMAT,
     DEFAULT_DATASTORE,
     DEFAULT_METADATA,
     get_pinned_conda_libs,
@@ -34,13 +32,13 @@ from metaflow_extensions.netflix_ext.plugins.conda.env_descr import (
     EnvID,
     EnvType,
     ResolvedEnvironment,
-    TStr,
 )
 from metaflow_extensions.netflix_ext.plugins.conda.envsresolver import EnvsResolver
 from metaflow_extensions.netflix_ext.plugins.conda.utils import (
     AliasType,
     arch_id,
-    conda_deps_to_pip_deps,
+    conda_deps_to_pypi_deps,
+    get_sys_packages,
     resolve_env_alias,
     plural_marker,
     merge_dep_dicts,
@@ -290,7 +288,9 @@ def create(
                 "--pathspec not used but environment name is a pathspec"
             )
 
-    env_id_for_alias = cast(Conda, obj.conda).env_id_from_alias(env_name, local_only)
+    env_id_for_alias = cast(Conda, obj.conda).env_id_from_alias(
+        env_name, local_only=local_only
+    )
     if env_id_for_alias is None:
         raise CommandException(
             "Environment '%s' does not refer to a known environment" % env_name
@@ -312,14 +312,11 @@ def create(
         # by adding these deps.
         resolver.add_environment(
             arch_id(),
-            user_deps=[
-                TStr(
-                    category="pip" if env.env_type == EnvType.PIP_ONLY else "conda",
-                    value="ipykernel",
-                )
-            ],
-            user_sources=[],
-            extras=[],
+            user_deps={
+                "pypi" if env.env_type == EnvType.PYPI_ONLY else "conda": ["ipykernel"]
+            },
+            user_sources={},
+            extras={},
             base_env=env,
             env_type=env.env_type,
         )
@@ -349,10 +346,10 @@ def create(
         cast(Conda, obj.conda).add_environments(update_envs)
 
         # Update the default environment
-        for env_id, resolved_env, _ in resolver.all_environments(
+        for _, resolved_env, _ in resolver.resolved_environments(
             include_builder_envs=True
         ):
-            obj.conda.set_default_environment(resolved_env.env_id)
+            cast(Conda, obj.conda).set_default_environment(resolved_env.env_id)
 
         cast(Conda, obj.conda).write_out_environments()
 
@@ -521,10 +518,10 @@ def resolve(
     resolver = EnvsResolver(obj.conda)
 
     new_conda_deps = {}  # type: Dict[str, str]
-    new_pip_deps = {}  # type: Dict[str, str]
+    new_pypi_deps = {}  # type: Dict[str, str]
     new_np_conda_deps = {}  # type: Dict[str, str]
-    new_sources = []  # type: List[TStr]
-    new_extras = []  # type: List[TStr]
+    new_sources = {}  # type: Dict[str, List[str]]
+    new_extras = {}  # type: Dict[str, List[str]]
 
     using_str = None  # type: Optional[str]
     if using:
@@ -535,12 +532,15 @@ def resolve(
     archs = list(arch) if arch else [arch_id()]
     base_env_id = None
     base_env = None  # type: Optional[ResolvedEnvironment]
+    base_env_python = None  # type: Optional[str]
     if using_str:
-        base_env_id = cast(Conda, obj.conda).env_id_from_alias(using_str, local_only)
+        # We can pick any of the architecture to get the info about the base environment
+        base_env_id = cast(Conda, obj.conda).env_id_from_alias(
+            using_str, archs[0], local_only
+        )
         if base_env_id is None:
             raise CommandException("No known environment for '%s'" % using_str)
 
-        # We can pick any of the architecture to get the info about the base environment
         base_env = cast(Conda, obj.conda).environment(
             EnvID(
                 req_id=base_env_id.req_id,
@@ -563,15 +563,15 @@ def resolve(
             raise InvalidEnvironmentException(
                 "Cannot determine python version of base environment"
             )
-    else:
-        base_env_python = python
 
     # Parse yaml first to put conda sources first to be consistent with step decorator
     if yml_file:
-        _parse_yml_file(yml_file, new_extras, new_sources, new_conda_deps, new_pip_deps)
+        _parse_yml_file(
+            yml_file, new_extras, new_sources, new_conda_deps, new_pypi_deps
+        )
     if req_file:
         _parse_req_file(
-            req_file, new_extras, new_sources, new_pip_deps, new_np_conda_deps
+            req_file, new_extras, new_sources, new_pypi_deps, new_np_conda_deps
         )
 
     if base_env_python is None:
@@ -579,47 +579,42 @@ def resolve(
 
     # Compute the deps
     if len(new_conda_deps) == 0 and (
-        not base_env or base_env.env_type == EnvType.PIP_ONLY
+        not base_env or base_env.env_type == EnvType.PYPI_ONLY
     ):
-        # Assume a pip environment for base deps
-        pip_deps = conda_deps_to_pip_deps(
+        # Assume a pypi environment for base deps
+        pypi_deps = conda_deps_to_pypi_deps(
             get_pinned_conda_libs(base_env_python, obj.datastore_type)
         )
 
         conda_deps = {}
     else:
         conda_deps = dict(get_pinned_conda_libs(base_env_python, obj.datastore_type))
-        pip_deps = {}
+        pypi_deps = {}
 
-    pip_deps = merge_dep_dicts(pip_deps, new_pip_deps)
+    pypi_deps = merge_dep_dicts(pypi_deps, new_pypi_deps)
     conda_deps = merge_dep_dicts(conda_deps, new_conda_deps)
 
-    deps = list(
-        chain(
-            (
-                TStr("conda", "%s==%s" % (name, ver) if ver else name)
-                for name, ver in conda_deps.items()
-            ),
-            (
-                TStr(
-                    "pip",
-                    "%s==%s" % (name, canonicalize_version(ver)) if ver else name,
-                )
-                for name, ver in pip_deps.items()
-            ),
-            (
-                TStr("npconda", "%s==%s" % (name, ver) if ver else name)
-                for name, ver in new_np_conda_deps.items()
-            ),
-        )
-    )
+    deps = {
+        "conda": [
+            "%s==%s" % (name, ver) if ver else name for name, ver in conda_deps.items()
+        ],
+        "pypi": [
+            "%s==%s" % (name, canonicalize_version(ver)) if ver else name
+            for name, ver in pypi_deps.items()
+        ],
+        "npconda": [
+            "%s==%s" % (name, ver) if ver else name
+            for name, ver in new_np_conda_deps.items()
+        ],
+    }
+
     env_type = None
     if not base_env:
-        deps.append(TStr("conda", "python==%s" % base_env_python))
+        deps["conda"].append("python==%s" % base_env_python)
     else:
         # We try to see if we can keep the env_type as close as possible to base_env
-        if base_env.env_type == EnvType.PIP_ONLY and len(new_conda_deps) == 0:
-            env_type = EnvType.PIP_ONLY
+        if base_env.env_type == EnvType.PYPI_ONLY and len(new_conda_deps) == 0:
+            env_type = EnvType.PYPI_ONLY
 
     for cur_arch in archs:
         if base_env_id:
@@ -636,6 +631,13 @@ def resolve(
                     "Environment for '%s' is not available on architecture '%s'"
                     % (using_str, cur_arch)
                 )
+        deps["sys"] = [
+            "%s==%s" % (name, ver)
+            for name, ver in get_sys_packages(
+                cast(Conda, obj.conda).virtual_packages, cur_arch, False, False
+            ).items()
+        ]
+
         resolver.add_environment(
             cur_arch,
             deps,
@@ -814,7 +816,9 @@ def show(obj, local_only: bool, arch: str, pathspec: bool, envs: Tuple[str]):
 def alias(obj, local_only: bool, pathspec: bool, source_env: str, alias: str):
     if pathspec:
         source_env = "step:%s" % source_env
-    env_id_for_alias = cast(Conda, obj.conda).env_id_from_alias(source_env, local_only)
+    env_id_for_alias = cast(Conda, obj.conda).env_id_from_alias(
+        source_env, local_only=local_only
+    )
     if env_id_for_alias is None:
         raise CommandException(
             "Environment '%s' does not refer to a known environment" % source_env
@@ -872,8 +876,8 @@ def get(obj, default: bool, arch: Optional[str], pathspec: bool, source_env: str
 
 def _parse_req_file(
     file_name: str,
-    extra_args: List[TStr],
-    sources: List[TStr],
+    extra_args: Dict[str, List[str]],
+    sources: Dict[str, List[str]],
     deps: Dict[str, str],
     np_deps: Dict[str, str],
 ):
@@ -890,17 +894,15 @@ def _parse_req_file(
                 rem = None
             if first_word in ("-i", "--index-url"):
                 raise InvalidEnvironmentException(
-                    "To specify a base PIP index, set `METAFLOW_CONDA_DEFAULT_PIP_SOURCE; "
+                    "To specify a base PYPI index, set `METAFLOW_CONDA_DEFAULT_PYPI_SOURCE; "
                     "you can specify additional indices using --extra-index-url"
                 )
             elif first_word == "--extra-index-url" and rem:
-                sources.append(TStr(category="pip", value=rem))
+                sources.setdefault("pypi", []).append(rem)
             elif first_word in ("-f", "--find-links", "--trusted-host") and rem:
-                extra_args.append(
-                    TStr(category="pip", value=" ".join([first_word, rem]))
-                )
+                extra_args.setdefault("pypi", []).append(" ".join([first_word, rem]))
             elif first_word in ("--pre", "--no-index"):
-                extra_args.append(TStr(category="pip", value=first_word))
+                extra_args.setdefault("pypi", []).append(first_word)
             elif first_word == "--conda-pkg":
                 # Special extension to allow non-python conda package specification
                 split_res = REQ_SPLIT_LINE.match(splits[1])
@@ -941,10 +943,10 @@ def _parse_req_file(
 
 def _parse_yml_file(
     file_name: str,
-    _: List[TStr],
-    sources: List[TStr],
+    _: Dict[str, List[str]],
+    sources: Dict[str, List[str]],
     conda_deps: Dict[str, str],
-    pip_deps: Dict[str, str],
+    pypi_deps: Dict[str, str],
 ):
     with open(file_name, mode="r", encoding="utf-8") as f:
         # Very poor man's yaml parsing
@@ -962,13 +964,13 @@ def _parse_yml_file(
                     mode = "ignore"
             elif mode == "sources":
                 line = line.lstrip(" -").rstrip()
-                sources.append(TStr(category="conda", value=line))
-            elif mode == "deps" or mode == "pip_deps":
+                sources.setdefault("conda", []).append(line)
+            elif mode == "deps" or mode == "pypi_deps":
                 line = line.lstrip(" -").rstrip()
                 if line == "pip:":
-                    mode = "pip_deps"
+                    mode = "pypi_deps"
                 else:
-                    to_update = conda_deps if mode == "deps" else pip_deps
+                    to_update = conda_deps if mode == "deps" else pypi_deps
                     splits = line.split("=", 1)
                     if len(splits) == 1:
                         to_update[line] = ""
