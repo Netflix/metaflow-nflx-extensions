@@ -40,7 +40,7 @@ from .conda import Conda
 from .resolvers import Resolver
 from .utils import (
     CondaException,
-    channel_from_url,
+    channel_or_url,
     arch_id,
     merge_dep_dicts,
     plural_marker,
@@ -78,7 +78,6 @@ class EnvsResolver(object):
         extras: Dict[str, List[str]],
         step_name: str = "ad-hoc",
         base_env: Optional[ResolvedEnvironment] = None,
-        env_type: Optional[EnvType] = None,
         base_from_full_id: bool = False,
         local_only: bool = False,
         force: bool = False,
@@ -106,10 +105,6 @@ class EnvsResolver(object):
             Step needing this environment or "ad-hoc" if not needed by a step
         base_env : Optional[ResolvedEnvironment], optional
             The base environment, if any, this environment is derived from, by default None
-        env_type : Optional[EnvType], optional
-            The environment type -- this is only used if base_env is not None and
-            we know what the derived environment should be. Else it is automatically
-            determined.
         base_from_full_id : bool, optional
             True if the base environment was extracted using just the full ID of the
             environment which makes it imprecise, by default False
@@ -127,6 +122,7 @@ class EnvsResolver(object):
         # If there is a base environment, get all the resolved information
         if base_env:
             (
+                env_type,
                 env_id,
                 user_sources,
                 user_deps,
@@ -136,6 +132,7 @@ class EnvsResolver(object):
                 self._conda, base_env, user_deps, user_sources, extras, architecture
             )
         else:
+            env_type = env_type_for_deps(user_deps)
             env_id = EnvID(
                 ResolvedEnvironment.get_req_id(user_deps, user_sources, extras),
                 "_default",
@@ -450,7 +447,7 @@ class EnvsResolver(object):
             # Figure out the python dependency
             python_dep = [
                 d
-                for d in to_resolve_info["deps"].get("conda", [])
+                for d in to_resolve_info["user_deps"].get("conda", [])
                 if d.startswith("python==")
             ]
 
@@ -562,7 +559,7 @@ class EnvsResolver(object):
                     for addl_builder_env in addl_builder_envs:
                         # We "hack" the extract_from_base to get the proper user and
                         # full requirements from addl_builder_env
-                        _, _, user_deps, full_deps, _ = self.extract_info_from_base(
+                        _, _, _, user_deps, full_deps, _ = self.extract_info_from_base(
                             self._conda,
                             addl_builder_env,
                             {},
@@ -719,6 +716,7 @@ class EnvsResolver(object):
         extras: Dict[str, List[str]],
         architecture: str,
     ) -> Tuple[
+        EnvType,
         EnvID,
         Dict[str, List[str]],
         Dict[str, List[str]],
@@ -745,8 +743,9 @@ class EnvsResolver(object):
 
         Returns
         -------
-        Tuple[EnvID, Dict[str, List[str]], Dict[str, List[str]],Dict[str, List[str]], Dict[str, List[str]]]
+        Tuple[EnvType, EnvID, Dict[str, List[str]], Dict[str, List[str]],Dict[str, List[str]], Dict[str, List[str]]]
             The tuple contains:
+                - the EnvType
                 - the new EnvID
                 - the set of sources
                 - the set of user dependencies
@@ -815,23 +814,11 @@ class EnvsResolver(object):
         else:
             user_sys_deps = {}
 
-        # Extract the implicit channels that are already listed somewhere
-
-        for category, srcs in base_sources:
-            sources.setdefault(category, []).extend(srcs)
-
-        for category, extra in base_extras:
+        for category, extra in base_extras.items():
             extras.setdefault(category, []).extend(extra)
 
-        already_have_channels = set()  # type: Set[str]
-        for s in sources.get("conda", []):
-            channel = channel_from_url(s)
-            if channel:
-                already_have_channels.add(channel)
-
-        # We include the channel iff we don't already have it in `already_have_channels`
         conda_deps = {
-            p.package_name_with_channel(list(already_have_channels)): p.package_version
+            p.package_name_with_channel(): p.package_version
             for p in base_env.packages
             if p.TYPE == "conda"
         }
@@ -868,13 +855,48 @@ class EnvsResolver(object):
             "sys": ["%s==%s" % (k, v) if v else k for k, v in user_sys_deps.items()],
         }
 
+        if base_env.env_type == EnvType.PYPI_ONLY and len(incoming_conda_deps) == 0:
+            env_type = EnvType.PYPI_ONLY
+        else:
+            env_type = env_type_for_deps(deps)
+
+        # Sources will be:
+        #   - for Conda: base_sources, then user sources then default sources
+        #   - for Pypi: default sources then base_sources then user sources
+
+        new_sources = {
+            "conda": list(
+                dict.fromkeys(
+                    map(
+                        channel_or_url,
+                        chain(
+                            base_sources.get("conda", []),
+                            sources.get("conda", []),
+                            conda.default_conda_channels,
+                        ),
+                    )
+                )
+            )
+        }
+
+        if env_type != EnvType.CONDA_ONLY:
+            new_sources["pypi"] = list(
+                dict.fromkeys(
+                    chain(
+                        conda.default_pypi_sources,
+                        base_sources.get("pypi", []),
+                        sources.get("pypi", []),
+                    )
+                )
+            )
+
         new_env_id = EnvID(
-            ResolvedEnvironment.get_req_id(user_deps, sources, extras),
+            ResolvedEnvironment.get_req_id(user_deps, new_sources, extras),
             "_default",
             architecture,
         )
 
-        return new_env_id, sources, user_deps, deps, extras
+        return env_type, new_env_id, new_sources, user_deps, deps, extras
 
     @staticmethod
     def get_resolver(env_type: EnvType) -> Type[Resolver]:

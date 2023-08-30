@@ -432,39 +432,40 @@ class CondaEnvInternalDecorator(StepDecorator):
         is_cloned: bool,
         ubf_context: str,
     ):
-        if self._is_enabled(ubf_context) and self._is_fetch_at_exec(ubf_context):
-            # We need to ensure we can properly find the environment we are
-            # going to run in
-            run_id, step_name, task_id = input_paths[0].split("/")
-            parent_ds = self._flow_datastore.get_task_datastore(
-                run_id, step_name, task_id
-            )
-            for var, _ in self._flow._get_parameters():
-                self._env_for_fetch[
-                    "METAFLOW_INIT_%s" % var.upper().replace("-", "_")
-                ] = lambda _param=getattr(
-                    self._flow, var
-                ), _var=var, _ds=parent_ds: str(
-                    _param.load_parameter(_ds[_var])
+        if self._is_enabled(ubf_context):
+            if self._is_fetch_at_exec(ubf_context):
+                # We need to ensure we can properly find the environment we are
+                # going to run in
+                run_id, step_name, task_id = input_paths[0].split("/")
+                parent_ds = self._flow_datastore.get_task_datastore(
+                    run_id, step_name, task_id
                 )
-            self._env_for_fetch["METAFLOW_TASK_ID"] = task_id
+                for var, _ in self._flow._get_parameters():
+                    self._env_for_fetch[
+                        "METAFLOW_INIT_%s" % var.upper().replace("-", "_")
+                    ] = lambda _param=getattr(
+                        self._flow, var
+                    ), _var=var, _ds=parent_ds: str(
+                        _param.load_parameter(_ds[_var])
+                    )
+                self._env_for_fetch["METAFLOW_TASK_ID"] = task_id
 
-            self._env_id = self._env.resolve_fetch_at_exec_env(
-                self._step_name, self._env_for_fetch
-            )
-            if self._env_id is None:
-                raise InvalidEnvironmentException(
-                    "Cannot find the environment ID for a fetch-at-exec step"
+                self._env_id = self._env.resolve_fetch_at_exec_env(
+                    self._step_name, self._env_for_fetch
                 )
-        else:
-            t = self._env.get_env_id_noconda(self._step_name)
-            if isinstance(t, EnvID):
-                self._env_id = t
+                if self._env_id is None:
+                    raise InvalidEnvironmentException(
+                        "Cannot find the environment ID for a fetch-at-exec step"
+                    )
             else:
-                raise InvalidEnvironmentException(
-                    "Unexpected ID for the Conda environment for step '%s': '%s'"
-                    % (self._step_name, str(t))
-                )
+                t = self._env.get_env_id_noconda(self._step_name)
+                if isinstance(t, EnvID):
+                    self._env_id = t
+                else:
+                    raise InvalidEnvironmentException(
+                        "Unexpected ID for the Conda environment for step '%s': '%s'"
+                        % (self._step_name, str(t))
+                    )
 
     def runtime_step_cli(
         self,

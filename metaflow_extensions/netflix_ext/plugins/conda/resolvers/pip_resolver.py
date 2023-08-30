@@ -117,15 +117,11 @@ class PipResolver(Resolver):
                 os.path.join(pypi_dir, "out.json"),
             ]
             args.extend(extra_args)
-            index_url = self._conda.default_pypi_sources[0]
 
-            # First source is always the index-url
-            args.extend(["-i", index_url])
-            for c in sources.get("pypi", []):
-                # We have the index url in there since we merge the sources with
-                # default_pypi_sources but we don't know which so we check
-                if c == index_url:
-                    continue
+            pypi_sources = sources.get("pypi", [])
+            # The first source is always the index
+            args.extend(["-i", pypi_sources[0]])
+            for c in pypi_sources[1:]:
                 args.extend(["--extra-index-url", c])
 
             supported_tags = pypi_tags_from_arch(python_version, architecture)
@@ -341,22 +337,22 @@ class PipResolver(Resolver):
                                     parse_result.url_format, url[7:]
                                 )
                                 packages.append(package_spec)
-                        if to_build_local_pkg:
-                            parse_result = parse_explicit_path_pypi(to_build_local_pkg)
-                            cache_base_url = PypiCachePackage.make_partial_cache_url(
-                                parse_result.url, is_real_url=False
-                            )
+                    if to_build_local_pkg:
+                        parse_result = parse_explicit_path_pypi(to_build_local_pkg)
+                        cache_base_url = PypiCachePackage.make_partial_cache_url(
+                            parse_result.url, is_real_url=False
+                        )
 
-                            to_build_pkg_info[cache_base_url] = PackageToBuild(
-                                package_desc["url"],
-                                # We get the name once we build the package
-                                PypiPackageSpecification(
-                                    _FAKE_WHEEL,
-                                    parse_result.url,
-                                    is_real_url=False,
-                                    url_format=".whl",
-                                ),
-                            )
+                        to_build_pkg_info[cache_base_url] = PackageToBuild(
+                            dl_info["url"],
+                            # We get the name once we build the package
+                            PypiPackageSpecification(
+                                _FAKE_WHEEL,
+                                parse_result.url,
+                                is_real_url=False,
+                                url_format=".whl",
+                            ),
+                        )
                 elif "vcs_info" in dl_info:
                     # This is a repository that we can go build
 
@@ -442,7 +438,7 @@ class PipResolver(Resolver):
                             url_format=parse_result.url_format,
                         )
                         to_build_pkg_info[cache_base_url] = PackageToBuild(
-                            package_desc["url"],
+                            dl_info["url"],
                             spec,
                         )
                         if not is_real_url:

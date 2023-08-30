@@ -7,6 +7,7 @@ import re
 import tarfile
 
 from io import BytesIO
+from itertools import chain
 from typing import (
     Any,
     Callable,
@@ -42,6 +43,7 @@ from metaflow_extensions.netflix_ext.vendor.packaging.utils import canonicalize_
 from .envsresolver import EnvsResolver
 from .utils import (
     arch_id,
+    channel_or_url,
     conda_deps_to_pypi_deps,
     get_conda_manifest_path,
     get_sys_packages,
@@ -129,8 +131,7 @@ class CondaEnvironment(MetaflowEnvironment):
                 {},
                 step.name,
                 base_env,
-                env_type,
-                base_from_full_id,
+                base_from_full_id=base_from_full_id,
             )
 
         resolver.resolve_environments(echo)
@@ -350,10 +351,12 @@ class CondaEnvironment(MetaflowEnvironment):
             if step_info[1].is_disabled is None:
                 return False
             return not step_info[1].is_disabled
-        return False
+        return os.environ.get("_METAFLOW_CONDA_ENV") is not None
 
     @classmethod
     def fetch_at_exec_for_step(cls, step_name: str) -> bool:
+        # NOTE: This method does not work after runtime_step_cli
+        # The good thing is we don't need it :)
         step_info = cls._result_for_step.get(step_name)
         if step_info:
             return step_info[1].is_fetch_at_exec or False
@@ -541,24 +544,44 @@ class CondaEnvironment(MetaflowEnvironment):
                 step_gpu_requested,
             )
         }
-        my_arch = arch_id()
-        sys_reqs.sources = {
-            "conda": list(
-                map(
-                    lambda x: x.replace(my_arch, step_arch),
-                    conda.default_conda_channels,
-                )
-            ),
-            "pypi": conda.default_pypi_sources,
-        }
+
         final_req.merge_update(sys_reqs)
+
+        # Update sources -- here the order is important so we explicitly set it
+        # This code will put:
+        #  - unique conda sources using user sources *first*
+        #  - conda sources will be just channels if possible
+        #  - pypi sources: default ones first followed by users who basically adds
+        #    only extra-indices
+        final_req.sources = {
+            "conda": list(
+                dict.fromkeys(
+                    map(
+                        channel_or_url,
+                        chain(
+                            final_req.sources.get("conda", []),
+                            conda.default_conda_channels,
+                        ),
+                    )
+                )
+            )
+        }
+
+        if env_type != EnvType.CONDA_ONLY:
+            final_req.sources["pypi"] = list(
+                dict.fromkeys(
+                    conda.default_pypi_sources, final_req.sources.get("pypi", [])
+                )
+            )
+        else:
+            final_req.sources["pypi"] = []
 
         # TODO: This is a bit wasteful because we will do this twice but we need
         # to store the env_id here in case this is called from the CLI (ie: we need
         # to be able to get the req_id from steps even if init_environment is not called)
         # We could improve this though it is likely not a huge overhead.
         if from_env:
-            env_id, _, _, _, _ = EnvsResolver.extract_info_from_base(
+            _, env_id, _, _, _, _ = EnvsResolver.extract_info_from_base(
                 conda,
                 from_env,
                 final_req.packages_as_str,

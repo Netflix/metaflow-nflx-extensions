@@ -502,6 +502,13 @@ def channel_from_url(url: str) -> Optional[str]:
     return None
 
 
+def channel_or_url(url: str) -> str:
+    up = urlparse(url)
+    if up.hostname == "conda.anaconda.org":
+        return up.path.split("/", 2)[1]
+    return url
+
+
 def auth_from_urls(urls: List[str]) -> Optional[AuthBase]:
     auths_per_hostname = {
         cast(str, h): HTTPBasicAuth(username, pwd)

@@ -29,6 +29,7 @@ from ..utils import (
     CondaException,
     WithDir,
     arch_id,
+    channel_or_url,
     parse_explicit_url_conda,
     parse_explicit_url_pypi,
     pypi_tags_from_arch,
@@ -133,15 +134,15 @@ class CondaLockResolver(Resolver):
                 "\n" "[tool.conda-lock]\n",
             ]
             # Add channels
-            extra_channels = [
-                c
-                for c in set(sources.get("conda", [])).difference(
-                    map(
-                        lambda x: x.replace(my_arch, architecture),
-                        self._conda.default_conda_channels,
+            have_extra_channels = (
+                len(
+                    set(sources.get("conda", [])).difference(
+                        map(channel_or_url, self._conda.default_conda_channels)
                     )
                 )
-            ]
+                > 0
+            )
+
             toml_lines.append(
                 "channels = [%s]\n"
                 % ", ".join(["'%s'" % c for c in sources.get("conda", [])])
@@ -151,7 +152,9 @@ class CondaLockResolver(Resolver):
                 toml_lines.append("allow-pypi-requests = false\n")
 
             toml_lines.append("\n")
-            if any(["::" in conda_deps]) or extra_channels:
+            # TODO: Maybe we can make this better and only relax if :: is for channels
+            # that don't exist in the list
+            if any(["::" in conda_deps]) or have_extra_channels:
                 addl_env = {"CONDA_CHANNEL_PRIORITY": "flexible"}
             else:
                 addl_env = {}

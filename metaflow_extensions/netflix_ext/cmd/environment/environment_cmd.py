@@ -8,6 +8,7 @@ import tempfile
 import time
 
 from functools import wraps
+from itertools import chain
 from shutil import copy
 from typing import Any, Dict, List, Optional, Set, Tuple, cast
 from metaflow._vendor import click
@@ -32,11 +33,13 @@ from metaflow_extensions.netflix_ext.plugins.conda.env_descr import (
     EnvID,
     EnvType,
     ResolvedEnvironment,
+    env_type_for_deps,
 )
 from metaflow_extensions.netflix_ext.plugins.conda.envsresolver import EnvsResolver
 from metaflow_extensions.netflix_ext.plugins.conda.utils import (
     AliasType,
     arch_id,
+    channel_or_url,
     conda_deps_to_pypi_deps,
     get_sys_packages,
     resolve_env_alias,
@@ -318,7 +321,6 @@ def create(
             user_sources={},
             extras={},
             base_env=env,
-            env_type=env.env_type,
         )
         resolver.resolve_environments(obj.echo)
         update_envs = []  # type: List[ResolvedEnvironment]
@@ -501,7 +503,7 @@ def resolve(
     dry_run: bool,
     set_default: bool,
     arch: Optional[Tuple[str]],
-    python: str,
+    python: Optional[str],
     req_file: Optional[str],
     yml_file: Optional[str],
     using_pathspec: Optional[str],
@@ -516,7 +518,6 @@ def resolve(
             "Cannot specify a Python version if using --using-pathspec or --using",
         )
     resolver = EnvsResolver(obj.conda)
-
     new_conda_deps = {}  # type: Dict[str, str]
     new_pypi_deps = {}  # type: Dict[str, str]
     new_np_conda_deps = {}  # type: Dict[str, str]
@@ -532,7 +533,7 @@ def resolve(
     archs = list(arch) if arch else [arch_id()]
     base_env_id = None
     base_env = None  # type: Optional[ResolvedEnvironment]
-    base_env_python = None  # type: Optional[str]
+    base_env_python = python  # type: Optional[str]
     if using_str:
         # We can pick any of the architecture to get the info about the base environment
         base_env_id = cast(Conda, obj.conda).env_id_from_alias(
@@ -608,7 +609,7 @@ def resolve(
         ],
     }
 
-    env_type = None
+    env_type = env_type_for_deps(deps)
     if not base_env:
         deps["conda"].append("python==%s" % base_env_python)
     else:
@@ -638,13 +639,35 @@ def resolve(
             ).items()
         ]
 
+        # We add the default sources as well -- those sources go last and we convert
+        # to simple channels if we can
+        # Conda sources are always there since we get the base environment
+        sources = {
+            "conda": list(
+                dict.fromkeys(
+                    map(
+                        channel_or_url,
+                        chain(
+                            new_sources.get("conda", []),
+                            obj.conda.default_conda_channels,
+                        ),
+                    )
+                )
+            )
+        }
+        if env_type != EnvType.CONDA_ONLY:
+            sources["pypi"] = list(
+                dict.fromkeys(
+                    chain(obj.conda.default_pypi_sources, new_sources.get("pypi", []))
+                )
+            )
+
         resolver.add_environment(
             cur_arch,
             deps,
-            new_sources,
+            sources,
             new_extras,
             base_env=base_env,
-            env_type=env_type,
             base_from_full_id=base_env.is_info_accurate if base_env else False,
             local_only=local_only,
             force=force,

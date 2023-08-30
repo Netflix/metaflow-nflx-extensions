@@ -111,9 +111,9 @@ class Conda(object):
                     del kwargs["timestamp"]
                 echo(*args, **kwargs)
 
-            self._echo = _modified_logger
+            self.echo = _modified_logger
         else:
-            self._echo = echo
+            self.echo = echo
 
         self._no_echo = echo_dev_null
 
@@ -415,9 +415,9 @@ class Conda(object):
         # This is not great but doing so prevents errors when multiple runs run in
         # parallel. In a typical use-case, the locks are non-contended and it should
         # be very fast.
-        with CondaLock(self._echo, self._env_lock_file(name)):
+        with CondaLock(self.echo, self._env_lock_file(name)):
             with CondaLockMultiDir(
-                self._echo, self._package_dirs, self._package_dir_lockfile_name
+                self.echo, self._package_dirs, self._package_dir_lockfile_name
             ):
                 self._create(env, name)
 
@@ -430,12 +430,12 @@ class Conda(object):
     def create_builder_env(self, builder_env: ResolvedEnvironment) -> Optional[str]:
         # A helper to build a named environment specifically for builder environments.
         # We are more quiet and have a specific name for it
-        techo = self._echo
-        self._echo = self._no_echo
+        techo = self.echo
+        self.echo = self._no_echo
         r = self.create_for_name(
             self._env_builder_directory_from_envid(builder_env.env_id), builder_env
         )
-        self._echo = techo
+        self.echo = techo
 
         return r
 
@@ -473,7 +473,7 @@ class Conda(object):
         """
         if not self._found_binaries:
             self._find_conda_binary()
-        with CondaLock(self._echo, self._env_lock_file(name)):
+        with CondaLock(self.echo, self._env_lock_file(name)):
             self._remove(name)
 
     def python(self, env_desc: Union[EnvID, str]) -> Optional[str]:
@@ -1142,7 +1142,7 @@ class Conda(object):
                 dest_dir = search_dirs[0]
 
                 with CondaLockMultiDir(
-                    self._echo, search_dirs, self._package_dir_lockfile_name
+                    self.echo, search_dirs, self._package_dir_lockfile_name
                 ):
                     require_conda_format = cache_formats.get("conda", [])
                     if len(require_conda_format) > 0 and "_any" in require_conda_format:
@@ -1183,7 +1183,7 @@ class Conda(object):
 
             if upload_files:
                 start = time.time()
-                self._echo(
+                self.echo(
                     "    Caching %d item%s to %s ..."
                     % (
                         len(upload_files),
@@ -1194,11 +1194,11 @@ class Conda(object):
                 )
                 self._upload_to_ds(upload_files)
                 delta_time = int(time.time() - start)
-                self._echo(
+                self.echo(
                     " done in %d second%s." % (delta_time, plural_marker(delta_time))
                 )
             else:
-                self._echo(
+                self.echo(
                     "    All packages already cached in %s." % self._datastore_type
                 )
             # If this is successful, we cache the environments. We do this *after*
@@ -1232,7 +1232,7 @@ class Conda(object):
                     )
             if upload_files:
                 start = time.time()
-                self._echo(
+                self.echo(
                     "    Caching %d environments and aliases to %s ..."
                     % (
                         len(upload_files),
@@ -1242,11 +1242,11 @@ class Conda(object):
                 )
                 self._upload_to_ds(upload_files)
                 delta_time = int(time.time() - start)
-                self._echo(
+                self.echo(
                     " done in %d second%s." % (delta_time, plural_marker(delta_time))
                 )
             else:
-                self._echo(
+                self.echo(
                     "    All environments already cached in %s." % self._datastore_type
                 )
 
@@ -1561,7 +1561,7 @@ class Conda(object):
         start = time.time()
         do_download = web_downloads or cache_downloads
         if do_download:
-            self._echo(
+            self.echo(
                 "    Downloading %d(web) + %d(cache) package%s for arch %s ..."
                 % (
                     len(web_downloads),
@@ -1650,13 +1650,13 @@ class Conda(object):
 
             if do_download:
                 delta_time = int(time.time() - start)
-                self._echo(
+                self.echo(
                     " done in %d second%s." % (delta_time, plural_marker(delta_time)),
                     timestamp=False,
                 )
             if not pending_errors and transmutes:
                 start = time.time()
-                self._echo(
+                self.echo(
                     "    Transmuting %d package%s for arch %s..."
                     % (
                         len(transmutes),
@@ -1682,7 +1682,7 @@ class Conda(object):
                             if new_url not in known_urls:
                                 url_adds.append(new_url)
                 delta_time = int(time.time() - start)
-                self._echo(
+                self.echo(
                     " done in %d second%s." % (delta_time, plural_marker(delta_time)),
                     timestamp=False,
                 )
@@ -1735,19 +1735,16 @@ class Conda(object):
     def _find_conda_binary(self):
         # Lock as we may be trying to resolve multiple environments at once and therefore
         # we may be trying to validate the installation multiple times.
-        with CondaLock(self._echo, "/tmp/mf-conda-check.lock"):
+        with CondaLock(self.echo, "/tmp/mf-conda-check.lock"):
             if self._found_binaries:
                 return
 
             if self._mode == "local":
                 self._ensure_local_conda()
             else:
-                # Remote mode -- we install a conda environment or make sure we have
-                # one already there
-                self._ensure_remote_conda()
-                err = self._validate_conda_installation()
-                if err:
-                    raise err
+                # Encapsulating remote conda installation and verification into a single function call,
+                # to perform retries with exponential backoffs as we are seeing some text file busy errors
+                self._download_validate_remote_conda()
             self._found_binaries = True
 
     def _ensure_local_conda(self):
@@ -1767,7 +1764,7 @@ class Conda(object):
             if self._validate_conda_installation():
                 # This means we have an exception so we are going to try to install
                 with CondaLock(
-                    self._echo,
+                    self.echo,
                     os.path.abspath(
                         os.path.join(CONDA_LOCAL_PATH, "..", ".conda-install.lock")
                     ),
@@ -1787,7 +1784,7 @@ class Conda(object):
     def _install_local_conda(self):
         start = time.time()
         path = CONDA_LOCAL_PATH  # type: str
-        self._echo("    Installing Conda environment at %s ..." % path, nl=False)
+        self.echo("    Installing Conda environment at %s ..." % path, nl=False)
         shutil.rmtree(path, ignore_errors=True)
 
         try:
@@ -1822,7 +1819,7 @@ class Conda(object):
             except Exception as e:
                 raise CondaException("Could not extract environment") from e
         delta_time = int(time.time() - start)
-        self._echo(
+        self.echo(
             " done in %d second%s." % (delta_time, plural_marker(delta_time)),
             timestamp=False,
         )
@@ -1942,7 +1939,7 @@ class Conda(object):
                 .split()[-1]
             )
             if LooseVersion(cph_version) < LooseVersion("1.9.0"):
-                self._echo(
+                self.echo(
                     "cph is installed but not recent enough (1.9.0 or later is required) "
                     "-- ignoring"
                 )
@@ -1955,7 +1952,7 @@ class Conda(object):
                 .split()[-1]
             )
             if LooseVersion(conda_lock_version) < LooseVersion("2.0.0"):
-                self._echo(
+                self.echo(
                     "conda-lock is installed but not recent enough (2.0.0 or later "
                     "is required) --ignoring"
                 )
@@ -1966,7 +1963,7 @@ class Conda(object):
             ]
             # 22.3 has PEP 658 support which can be a big performance boost
             if LooseVersion(pip_version.decode("utf-8")) < LooseVersion("22.3"):
-                self._echo(
+                self.echo(
                     "pip is installed but not recent enough (22.3 or later is required) "
                     "-- ignoring"
                 )
@@ -2041,9 +2038,7 @@ class Conda(object):
                 if possible_env_id:
                     return possible_env_id
                 elif full_match:
-                    self._echo(
-                        "Removing potentially corrupt directory at %s" % dir_name
-                    )
+                    self.echo("Removing potentially corrupt directory at %s" % dir_name)
                     self._remove(os.path.basename(dir_name))
             return None
 
@@ -2051,7 +2046,7 @@ class Conda(object):
             # For micromamba OR if we are using a specific conda installation
             # (so with CONDA_LOCAL_PATH), only search there
             env_dir = os.path.join(self._info["root_prefix"], "envs")
-            with CondaLock(self._echo, self._env_lock_file(os.path.join(env_dir, "_"))):
+            with CondaLock(self.echo, self._env_lock_file(os.path.join(env_dir, "_"))):
                 # Grab a lock *once* on the parent directory so we pick anyname for
                 # the "directory".
                 for entry in os.scandir(env_dir):
@@ -2062,7 +2057,7 @@ class Conda(object):
         else:
             envs = self._info["envs"]  # type: List[str]
             for env in envs:
-                with CondaLock(self._echo, self._env_lock_file(env)):
+                with CondaLock(self.echo, self._env_lock_file(env)):
                     possible_env_id = _check_match(env)
                     if possible_env_id:
                         ret.setdefault(possible_env_id, []).append(env)
@@ -2230,16 +2225,16 @@ class Conda(object):
             possible_env_id = self._is_valid_env(env_dir)
             if possible_env_id and possible_env_id == env.env_id:
                 # The environment is already created -- we can skip
-                self._echo("Environment at '%s' already created and valid" % env_dir)
+                self.echo("Environment at '%s' already created and valid" % env_dir)
                 return
             else:
                 # Invalid environment
                 if possible_env_id is None:
-                    self._echo(
+                    self.echo(
                         "Environment at '%s' is incomplete -- re-creating" % env_dir
                     )
                 else:
-                    self._echo(
+                    self.echo(
                         "Environment at '%s' expected to be for %s (%s) but found %s (%s) -- re-creating"
                         % (
                             env_dir,
@@ -2337,16 +2332,16 @@ class Conda(object):
 
         start = time.time()
         if "micromamba" not in self._bins:
-            self._echo(
+            self.echo(
                 "WARNING: conda/mamba do not properly handle installing .conda "
                 "packages in offline mode. Creating environments may fail -- if so, "
                 "please install `micromamba`. "
                 "See https://github.com/conda/conda/issues/11775."
             )
-        self._echo("    Extracting and linking Conda environment ...", nl=False)
+        self.echo("    Extracting and linking Conda environment ...", nl=False)
 
         if pypi_paths:
-            self._echo(" (conda packages) ...", timestamp=False, nl=False)
+            self.echo(" (conda packages) ...", timestamp=False, nl=False)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", delete=not debug.conda
         ) as explicit_list:
@@ -2374,7 +2369,7 @@ class Conda(object):
             )
 
         if pypi_paths:
-            self._echo(" (pypi packages) ...", timestamp=False, nl=False)
+            self.echo(" (pypi packages) ...", timestamp=False, nl=False)
             with tempfile.NamedTemporaryFile(
                 mode="w", encoding="utf-8", delete=not debug.conda
             ) as pypi_list:
@@ -2425,7 +2420,7 @@ class Conda(object):
             json.dump(env.env_id, f)
 
         delta_time = int(time.time() - start)
-        self._echo(
+        self.echo(
             " done in %s second%s." % (delta_time, plural_marker(delta_time)),
             timestamp=False,
         )

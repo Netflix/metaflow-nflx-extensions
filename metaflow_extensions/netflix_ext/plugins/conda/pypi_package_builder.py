@@ -81,6 +81,7 @@ def build_pypi_packages(
     # Value: list of possible cache paths
     possible_wheels = {}  # type: Dict[str, List[str]]
     for cache_path, is_file in found_files:
+        cache_path = cache_path.rstrip("/")
         if is_file:
             raise CondaException("Invalid cache content at '%s'" % cache_path)
         base_cache_path, cache_filename_with_ext = os.path.split(cache_path)
@@ -120,6 +121,7 @@ def build_pypi_packages(
     # next level down in the cache)
     found_files = cast(Sequence[Tuple[str, bool]], storage.list_content(keys_to_check))
     for cache_path, is_file in found_files:
+        cache_path = cache_path.rstrip("/")
         if is_file:
             raise CondaException("Invalid cache content at '%s'" % cache_path)
         head, _ = os.path.split(cache_path)
@@ -186,7 +188,7 @@ def build_pypi_packages(
     )
     # Here we are the same architecture so we can go ahead and build the wheel and
     # add it.
-    self._echo(" (building PYPI packages from repositories)", nl=False)
+    conda.echo(" (building PYPI packages from repositories)", nl=False)
     debug.conda_exec("Creating builder environment to build PYPI packages")
 
     # Create the environment in which we will call pip
@@ -222,8 +224,8 @@ def build_pypi_packages(
     # Download any source either from cache or the web. We can use our typical
     # lazy fetch to do this. We just make sure that we only pass it packages that
     # it has something to fetch
-    target_directory = conda._package_dirs[0]
-    os.makedirs(os.path.join(target_directory, "pypi"), exist_ok=True)
+    target_directory = conda.package_dir("pypi")
+    os.makedirs(target_directory, exist_ok=True)
     pkgs_to_fetch = cast(
         List[PypiPackageSpecification],
         [to_build_pkg_info[k].spec for k in keys_to_build],

@@ -13,7 +13,7 @@ from ..env_descr import (
     PackageSpecification,
     ResolvedEnvironment,
 )
-from ..utils import CondaException, arch_id, parse_explicit_url_conda
+from ..utils import CondaException, channel_or_url, parse_explicit_url_conda
 from . import Resolver
 
 
@@ -30,7 +30,6 @@ class CondaResolver(Resolver):
         builder_envs: Optional[List[ResolvedEnvironment]] = None,
         base_env: Optional[ResolvedEnvironment] = None,
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
-        my_arch = arch_id()
         if base_env:
             local_packages = [
                 p for p in base_env.packages if not p.is_downloadable_url()
@@ -52,10 +51,7 @@ class CondaResolver(Resolver):
             ]
             have_channels = False
             for c in set(sources.get("conda", [])).difference(
-                map(
-                    lambda x: x.replace(my_arch, architecture),
-                    self._conda.default_conda_channels,
-                )
+                map(channel_or_url, self._conda.default_conda_channels)
             ):
                 have_channels = True
                 args.extend(["-c", c])

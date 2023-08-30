@@ -110,7 +110,7 @@ def env_type_for_deps(deps: Dict[str, List[str]]) -> EnvType:
         The environment type, either CONDA_ONLY, PYPI_ONLY or MIXED
     """
     env_type = EnvType.CONDA_ONLY
-    if len(deps.get("conda", [])) == 1:
+    if len(deps.get("conda", [])) <= 1:
         # This is a pypi only mode
         env_type = EnvType.PYPI_ONLY
     elif deps.get("pypi", []):
