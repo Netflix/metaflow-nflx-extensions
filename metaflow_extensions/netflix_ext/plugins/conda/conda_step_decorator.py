@@ -493,19 +493,22 @@ class CondaEnvInternalDecorator(StepDecorator):
             # If we are executing remotely, we now have _METAFLOW_CONDA_ENV set-up
             # properly so we will be able to use it in _get_env_id in conda_environment
             # to figure out what environment we need to execute remotely
-            if self._is_remote:
+            if self._is_remote or not self._is_enabled(ubf_context):
                 return
         else:
             return
 
         conda = cast(Conda, self._env.conda)
         assert self._env_id
+        entrypoint = None  # type: Optional[str]
         # Create the environment we are going to use
-        if conda.created_environment(self._env_id):
+        existing_env_info = conda.created_environment(self._env_id)
+        if existing_env_info:
             self._echo(
                 "Using existing Conda environment %s (%s)"
                 % (self._env_id.req_id, self._env_id.full_id)
             )
+            entrypoint = os.path.join(existing_env_info[1], "bin", "python")
         else:
             # Otherwise, we read the conda file and create the environment locally
             self._echo(
@@ -514,7 +517,11 @@ class CondaEnvInternalDecorator(StepDecorator):
             )
             resolved_env = conda.environment(self._env_id)
             if resolved_env:
-                conda.create_for_step(self._step_name, resolved_env)
+                entrypoint = os.path.join(
+                    conda.create_for_step(self._step_name, resolved_env),
+                    "bin",
+                    "python",
+                )
             else:
                 raise InvalidEnvironmentException("Cannot create environment")
 
@@ -526,7 +533,6 @@ class CondaEnvInternalDecorator(StepDecorator):
 
         cli_args.env["PYTHONPATH"] = python_path
 
-        entrypoint = conda.python(self._env_id)
         if entrypoint is None:
             # This should never happen -- it means the environment was not
             # created somehow

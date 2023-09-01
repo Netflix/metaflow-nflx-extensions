@@ -568,7 +568,9 @@ class PerHostAuth(AuthBase):
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-def change_pypi_package_version(wheel_path: str, new_version_str: str) -> str:
+def change_pypi_package_version(
+    python_path: str, wheel_path: str, new_version_str: str
+) -> str:
     base_dir, wheel_name = os.path.split(wheel_path)
     with tempfile.TemporaryDirectory() as build_dir:
         old_parts = parse_wheel_filename(wheel_name)
@@ -582,7 +584,7 @@ def change_pypi_package_version(wheel_path: str, new_version_str: str) -> str:
         new_slug = "%s-%s" % (distribution, new_version)
 
         subprocess.check_output(
-            [sys.executable, "-m", "wheel", "unpack", "-d", build_dir, wheel_path]
+            [python_path, "-m", "wheel", "unpack", "-d", build_dir, wheel_path]
         )
         if not os.path.isdir(os.path.join(build_dir, old_slug)) or not os.path.isdir(
             os.path.join(build_dir, old_slug, "%s.dist-info" % old_slug)
@@ -632,7 +634,7 @@ def change_pypi_package_version(wheel_path: str, new_version_str: str) -> str:
         # Rewrites the RECORD file and generate the file.
         subprocess.check_output(
             [
-                sys.executable,
+                python_path,
                 "-m",
                 "wheel",
                 "pack",

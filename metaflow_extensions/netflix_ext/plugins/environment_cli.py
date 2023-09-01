@@ -118,6 +118,7 @@ def resolve(
                     step.name,
                     base_env,
                     base_from_full_id=base_from_full_id,
+                    force=force,
                 )
 
     per_req_id = {}  # type: Dict[str, Set[str]]

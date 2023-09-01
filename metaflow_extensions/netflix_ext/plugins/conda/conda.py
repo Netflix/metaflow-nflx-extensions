@@ -355,7 +355,7 @@ class Conda(object):
         step_name: str,
         env: ResolvedEnvironment,
         do_symlink: bool = False,
-    ) -> Optional[str]:
+    ) -> str:
         """
         Creates a local instance of the resolved environment
 
@@ -370,7 +370,7 @@ class Conda(object):
             pointing to the created Conda Python executable, by default False
         Returns
         -------
-        Optional[str]: Path to the python binary if successfully created
+        str: Path to the environment (add bin/python for the python binary)
         """
 
         if not self._found_binaries:
@@ -384,7 +384,7 @@ class Conda(object):
 
     def create_for_name(
         self, name: str, env: ResolvedEnvironment, do_symlink: bool = False
-    ) -> Optional[str]:
+    ) -> str:
         """
         Creates a local instance of the resolved environment
 
@@ -400,7 +400,7 @@ class Conda(object):
 
         Returns
         -------
-        Optional[str]: Path to the python binary if successfully created
+        str: Path to the environment (add bin/python for the python binary)
         """
 
         if not self._found_binaries:
@@ -419,15 +419,16 @@ class Conda(object):
             with CondaLockMultiDir(
                 self.echo, self._package_dirs, self._package_dir_lockfile_name
             ):
-                self._create(env, name)
+                env_path = self._create(env, name)
 
         if do_symlink:
-            python_path = self.python(name)
-            if python_path:
-                os.symlink(python_path, os.path.join(os.getcwd(), "__conda_python"))
-        return self.python(name)
+            os.symlink(
+                os.path.join(env_path, "bin", "python"),
+                os.path.join(os.getcwd(), "__conda_python"),
+            )
+        return env_path
 
-    def create_builder_env(self, builder_env: ResolvedEnvironment) -> Optional[str]:
+    def create_builder_env(self, builder_env: ResolvedEnvironment) -> str:
         # A helper to build a named environment specifically for builder environments.
         # We are more quiet and have a specific name for it
         techo = self.echo
@@ -475,45 +476,6 @@ class Conda(object):
             self._find_conda_binary()
         with CondaLock(self.echo, self._env_lock_file(name)):
             self._remove(name)
-
-    def python(self, env_desc: Union[EnvID, str]) -> Optional[str]:
-        """
-        Returns the path to the python interpreter for the given environment.
-
-        Note that this does not create environments and will only return a non None
-        value if the environment is already locally created. Note also that this only
-        looks at environments created by Metaflow.
-
-        Parameters
-        ----------
-        env_desc : Union[EnvID, str]
-            Environment to get the path of. This is either an environment ID or a
-            name of the Conda environment
-
-        Returns
-        -------
-        Optional[str]
-            The path to the python binary if the environment exists locally
-        """
-        # Get Python interpreter for the conda environment
-        if not self._found_binaries:
-            self._find_conda_binary()
-        env_path = None
-        if isinstance(env_desc, EnvID):
-            env_path = self.created_environment(env_desc)
-            if env_path:
-                env_path = env_path[1]
-        else:
-            env_paths = self._created_envs(env_desc, full_match=True)
-            if len(env_paths) == 1:
-                env_path = list(env_paths.values())[0]
-                if len(env_path) == 1:
-                    env_path = env_path[0]
-                else:
-                    env_path = None  # We don't do ambiguous
-        if env_path:
-            return os.path.join(env_path, "bin/python")
-        return None
 
     def created_environment(
         self, env_desc: Union[EnvID, str]
@@ -727,17 +689,28 @@ class Conda(object):
             from metaflow.client.core import Step
 
             env_id = None
+            req_id = ""
+            full_id = ""
+            old_metadata_value = None  # type: Optional[str]
             try:
                 s = Step(resolved_alias, _namespace_check=False)
-                req_id, full_id, _ = json.loads(
-                    s.task.metadata_dict.get("conda_env_id", '["", "", ""]')
-                )
-                if len(req_id) != 0:
+                try:
+                    req_id, full_id, _ = json.loads(
+                        s.task.metadata_dict.get("conda_env_id", '["", "", ""]')
+                    )
+                except json.decoder.JSONDecodeError:
+                    # Most likely old format -- raise a nicer exception
+                    old_metadata_value = s.task.metadata_dict.get("conda_env_id")
+                if old_metadata_value is None and len(req_id) != 0:
                     env_id = EnvID(req_id=req_id, full_id=full_id, arch=arch)
             except MetaflowNotFound as e:
                 raise MetaflowNotFound(
                     "Cannot locate step while looking for Conda environment"
                 ) from e
+            if old_metadata_value:
+                raise CondaException(
+                    "Step %s was created by an older Conda" % resolved_alias
+                )
             if not env_id:
                 raise CondaException("Step %s is not a Conda step" % resolved_alias)
 
@@ -1871,7 +1844,10 @@ class Conda(object):
             final_path = os.path.join(parent_dir, "conda_env", "__conda_installer")
         else:
             final_path = os.path.join(os.getcwd(), "conda_env", "__conda_installer")
-        os.makedirs(os.path.dirname(final_path))
+
+        if os.path.isfile(final_path):
+            os.unlink(final_path)
+        os.makedirs(os.path.dirname(final_path), exist_ok=True)
 
         path_to_fetch = os.path.join(
             CONDA_REMOTE_INSTALLER_DIRNAME,
@@ -2215,7 +2191,7 @@ class Conda(object):
 
         return self._cached_info
 
-    def _create(self, env: ResolvedEnvironment, env_name: str) -> None:
+    def _create(self, env: ResolvedEnvironment, env_name: str) -> str:
         # We first check to see if the environment exists -- if it does, we skip it
         env_dir = os.path.join(self._root_env_dir, env_name)
 
@@ -2226,7 +2202,7 @@ class Conda(object):
             if possible_env_id and possible_env_id == env.env_id:
                 # The environment is already created -- we can skip
                 self.echo("Environment at '%s' already created and valid" % env_dir)
-                return
+                return env_dir
             else:
                 # Invalid environment
                 if possible_env_id is None:
@@ -2424,6 +2400,7 @@ class Conda(object):
             " done in %s second%s." % (delta_time, plural_marker(delta_time)),
             timestamp=False,
         )
+        return env_dir
 
     def _remove(self, env_name: str):
         # TODO: Verify that this is a proper metaflow environment to remove

@@ -24,13 +24,19 @@ class BuilderEnvsResolver(Resolver):
         base_env: Optional[ResolvedEnvironment] = None,
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
         conda_only_sources = sources.get("conda", [])
-        python_dep = [d for d in deps.get("conda", []) if d.startswith("python==")]
+        python_deps = [d for d in deps.get("conda", []) if d.startswith("python==")]
+        # We add a few more packages that we need to support building wheels
+        # Conda typically includes pip but no harm adding it there too
+        # All packages includes are miniscule and have no dependencies.
+        for pkg in ("pip", "wheel", "tomli", "setuptools"):
+            dep = [d for d in deps.get("conda", []) if d.startswith("%s==" % pkg)]
+            python_deps.extend(dep or [pkg])
 
         if arch_id() == architecture:
             conda_only_deps = {
                 "npconda": deps.get("npconda", []),
                 "sys": deps.get("sys", []),
-                "conda": python_dep,
+                "conda": python_deps,
             }
             debug.conda_exec(
                 "Building builder environment with %s" % str(conda_only_deps)
@@ -45,11 +51,11 @@ class BuilderEnvsResolver(Resolver):
                 None,
             )
 
-        debug.conda_exec("Using vanilla builder env with %s" % str(python_dep[0]))
+        debug.conda_exec("Using vanilla builder env with %s" % str(python_deps[0]))
 
         return CondaResolver(self._conda).resolve(
             EnvType.CONDA_ONLY,
-            {"conda": python_dep},
+            {"conda": python_deps},
             {"conda": conda_only_sources},
             extras,
             arch_id(),

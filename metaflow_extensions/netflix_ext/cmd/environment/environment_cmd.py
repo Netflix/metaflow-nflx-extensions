@@ -364,8 +364,7 @@ def create(
 
     name = name or "metaflowtmp_%s_%s" % (env.env_id.req_id, env.env_id.full_id)
 
-    existing_env = obj.conda.created_environment(name)
-    if existing_env:
+    if obj.conda.created_environment(name):
         if not force:
             raise CommandException(
                 "Environment '%s' already exists; use --force to force recreating"
@@ -373,9 +372,12 @@ def create(
             )
         obj.conda.remove_for_name(name)
 
+    python_bin = None  # type: Optional[str]
     if into_dir:
         os.chdir(into_dir)
-        obj.conda.create_for_name(name, env, do_symlink=True)
+        python_bin = os.path.join(
+            obj.conda.create_for_name(name, env, do_symlink=True), "bin", "python"
+        )
         if code_pkg:
             code_pkg.tarball.extractall(path=".")
         elif alias_type == AliasType.PATHSPEC:
@@ -390,7 +392,7 @@ def create(
             "the executable to use" % (env_name, into_dir)
         )
     else:
-        obj.conda.create_for_name(name, env)
+        python_bin = os.path.join(obj.conda.create_for_name(name, env), "bin", "python")
 
     if install_notebook:
         start = time.time()
@@ -399,7 +401,7 @@ def create(
             with tempfile.TemporaryDirectory() as d:
                 kernel_info = {
                     "argv": [
-                        obj.conda.python(name),
+                        python_bin,
                         "-m",
                         "ipykernel_launcher",
                         "-f",
@@ -453,7 +455,7 @@ def create(
             obj.echo(" done in %d second%s." % (delta_time, plural_marker(delta_time)))
 
     if obj.quiet:
-        obj.echo_always(obj.conda.python(name))
+        obj.echo_always(python_bin)
     else:
         obj.echo(
             "Created environment '%s' locally, activate with `%s activate %s`"

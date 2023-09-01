@@ -2,7 +2,6 @@
 import json
 import os
 import shutil
-import sys
 import tempfile
 
 from itertools import chain, product
@@ -94,12 +93,9 @@ class PipResolver(Resolver):
 
         # Create the environment in which we will call pip
         debug.conda_exec("Creating builder conda environment")
-        builder_python = self._conda.create_builder_env(builder_env)
-
-        if builder_python is None:
-            raise CondaException(
-                "Could not create environment to resolve PYPI packages"
-            )
+        builder_python = os.path.join(
+            self._conda.create_builder_env(builder_env), "bin", "python"
+        )
 
         packages = []  # type: List[PackageSpecification]
         with tempfile.TemporaryDirectory() as pypi_dir:
@@ -268,25 +264,40 @@ class PipResolver(Resolver):
                             "Cannot include an editable PYPI package: '%s'" % url
                         )
                     if os.path.isdir(local_path):
-                        # For now support only setup.py packages.
-                        if not os.path.isfile(os.path.join(local_path, "setup.py")):
+                        if os.path.isfile(os.path.join(local_path, "setup.py")):
+                            package_name, package_version = (
+                                self._conda.call_binary(
+                                    [
+                                        os.path.join(local_path, "setup.py"),
+                                        "-q",
+                                        "--name",
+                                        "--version",
+                                    ],
+                                    binary=builder_python,
+                                )
+                                .decode(encoding="utf-8")
+                                .splitlines()
+                            )
+                        elif os.path.isfile(os.path.join(local_path, "pyproject.toml")):
+                            package_name, package_version = (
+                                self._conda.call_binary(
+                                    [
+                                        "-c",
+                                        "import tomli; f = open('%s', mode='rb'); "
+                                        "d = tomli.load(f); print(d['poetry']['name']); "
+                                        "print(d['poetry']['version'])"
+                                        % os.path.join(local_path, "pyproject.toml"),
+                                    ],
+                                    binary=builder_python,
+                                )
+                                .decode(encoding="utf-8")
+                                .splitlines()
+                            )
+                        else:
                             raise CondaException(
                                 "Local directory '%s' is not supported as it is "
-                                "missing a 'setup.py'" % local_path
+                                "missing a 'setup.py' or 'pyproject.toml'" % local_path
                             )
-                        package_name, package_version = (
-                            self._conda.call_binary(
-                                [
-                                    os.path.join(local_path, "setup.py"),
-                                    "-q",
-                                    "--name",
-                                    "--version",
-                                ],
-                                binary=sys.executable,
-                            )
-                            .decode(encoding="utf-8")
-                            .splitlines()
-                        )
                         # Make sure to use the quoted URL here
                         to_build_local_pkg = os.path.join(
                             dl_info["url"],

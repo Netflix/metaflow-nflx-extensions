@@ -56,7 +56,11 @@ def bootstrap_environment(
             "Cannot find cached environment for hash %s:%s" % (req_id, full_id)
         )
     # Install the environment; this will fetch packages as well.
-    my_conda.create_for_step(step_name, resolved_env, do_symlink=True)
+    python_bin = os.path.join(
+        my_conda.create_for_step(step_name, resolved_env, do_symlink=True),
+        "bin",
+        "python",
+    )
     # Setup anything needed by the escape hatch
     if ENV_ESCAPE_PY is not None:
         cwd = os.getcwd()
@@ -73,10 +77,9 @@ def bootstrap_environment(
 
     # Same thing for lib path
     with open("_lib_path", mode="w", encoding="utf-8") as f:
-        python_path = my_conda.python(EnvID(req_id, full_id, arch_id()))
-        if python_path is None:
+        if python_bin is None:
             raise RuntimeError("Environment was not created properly")
-        json.dump(os.path.join(os.path.dirname(os.path.dirname(python_path)), "lib"), f)
+        json.dump(os.path.join(os.path.dirname(os.path.dirname(python_bin)), "lib"), f)
 
 
 def setup_conda_manifest():

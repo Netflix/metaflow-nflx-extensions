@@ -110,6 +110,7 @@ class CondaLockResolver(Resolver):
         pypi_channels = list(
             set(sources.get("pypi", [])).difference(["https://pypi.org/simple"])
         )
+        debug.conda_exec("Will add pypi channels: %s" % ", ".join(pypi_channels))
 
         salt = str(uuid.uuid4())[:8]
         try:

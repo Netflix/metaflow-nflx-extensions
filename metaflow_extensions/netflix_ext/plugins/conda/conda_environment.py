@@ -312,37 +312,51 @@ class CondaEnvironment(MetaflowEnvironment):
 
     @classmethod
     def get_env_id(cls, conda: Conda, step_name: str) -> Optional[Union[str, EnvID]]:
-        step_result = cls._result_for_step.get(step_name)
-        if step_result is None:
-            # Remote execution will set _METAFLOW_CONDA_ENV envvar to the ID we
-            # need to use
-            resolved_env_id = os.environ.get("_METAFLOW_CONDA_ENV")
-            if resolved_env_id:
-                return EnvID(*json.loads(resolved_env_id))
-            else:
-                raise RuntimeError(
-                    "Trying to look for an environment for step '%s' "
-                    "which has not been computed -- this is an internal error"
-                    % step_name
-                )
-        elif step_result[2] is None:
-            # Either disabled or fetch_at_exec
-            if step_result[1].is_disabled:
-                return None
-            # Fetch at exec
-            resolved_env_id = os.environ.get("_METAFLOW_CONDA_ENV")
-            if resolved_env_id:
-                return EnvID(*json.loads(resolved_env_id))
-            return step_result[1].from_env_name
-        else:
-            # We have an env_id
-            resolved_env = conda.environment(step_result[2][0])
+        # _METAFLOW_CONDA_ENV is set:
+        #  - by remote_bootstrap:
+        #    - if executing on a scheduler (no runtime), this will set it to
+        #      the fully resolved ID even in the case of fetch_at_exec
+        #    - if executing on a remote node with the runtime, it will also set it but
+        #      it is unused
+        #  - in runtime_step_cli:
+        #    - if executing locally, we can use this in our actual execution to create
+        #      the environment in runtime_step_cli
+        #    - if executing remotely, we use this to determine the executable and
+        #      it is used in bootstrap_commands to build the command line
+        step_info = cls._result_for_step.get(step_name)
+        if step_info is None:
+            # _METAFLOW_CONDA_ENV is set:
+            #  - by remote_bootstrap:
+            #    - if executing on a scheduler (no runtime), this will set it to
+            #      the fully resolved ID even in the case of fetch_at_exec
+            #    - if executing on a remote node with the runtime, it will also set it but
+            #      it is unused
+            #  - in runtime_step_cli:
+            #    - if executing locally, we can use this in our actual execution to create
+            #      the environment in runtime_step_cli
+            #    - if executing remotely, we use this to determine the executable and
+            #      it is used in bootstrap_commands to build the command line
+            resolved_env_id = None
+            t = os.environ.get("_METAFLOW_CONDA_ENV")
+            if t:
+                resolved_env_id = EnvID(*json.loads(t))
+            return resolved_env_id
+        elif step_info[1].is_disabled:
+            # Another case for the use of this function is the "show" command so
+            # in that case we do not have _METAFLOW_CONDA_ENV but we do have the
+            # information in step_info[1]
+            return None
+        elif step_info[1].is_fetch_at_exec:
+            return step_info[1].from_env_name
+        elif step_info[2]:
+            # In this case, we should know about the environment -- it will have
+            # _default flag at this time
+            resolved_env = conda.environment(step_info[2][0], local_only=True)
             if resolved_env:
                 return resolved_env.env_id
-            else:
-                raise MetaflowException(
-                    "Cannot find environment for step '%s'" % step_name
-                )
+            raise RuntimeError(
+                "Cannot find environment for step '%s' -- this is a bug" % step_name
+            )
 
     @classmethod
     def enabled_for_step(cls, step_name: str) -> bool:
@@ -441,7 +455,9 @@ class CondaEnvironment(MetaflowEnvironment):
 
         final_req.override_update(step_req)
 
-        debug.conda_exec("Merged to be %s" % repr(final_req))
+        debug.conda_exec(
+            "For step %s, merged requirement: %s" % (step.name, repr(final_req))
+        )
 
         if final_req.is_disabled:
             cls._result_for_step[step.name] = (step_arch, final_req, None)
@@ -452,6 +468,18 @@ class CondaEnvironment(MetaflowEnvironment):
                 None,
             )  # No point going further -- it is disabled
         if final_req.is_fetch_at_exec:
+            # In this case, we check things are valid
+            if final_req.from_env_name is None:
+                raise InvalidEnvironmentException(
+                    "In step '%s', a 'fetch-at-exec' environment needs to have an "
+                    "environment specified with '@named_env'" % step.name
+                )
+            if final_req.sources or final_req.packages or final_req.python:
+                raise InvalidEnvironmentException(
+                    "In step '%s', a 'fetch_at_exec' environment cannot have"
+                    "any additional requirements (packages, sources, or python)"
+                    % step.name
+                )
             cls._result_for_step[step.name] = (step_arch, final_req, None)
             return (
                 EnvType.CONDA_ONLY,
@@ -553,7 +581,7 @@ class CondaEnvironment(MetaflowEnvironment):
         #  - conda sources will be just channels if possible
         #  - pypi sources: default ones first followed by users who basically adds
         #    only extra-indices
-        final_req.sources = {
+        final_sources = {
             "conda": list(
                 dict.fromkeys(
                     map(
@@ -568,14 +596,15 @@ class CondaEnvironment(MetaflowEnvironment):
         }
 
         if env_type != EnvType.CONDA_ONLY:
-            final_req.sources["pypi"] = list(
+            final_sources["pypi"] = list(
                 dict.fromkeys(
-                    conda.default_pypi_sources, final_req.sources.get("pypi", [])
+                    chain(conda.default_pypi_sources, final_req.sources.get("pypi", []))
                 )
             )
-        else:
-            final_req.sources["pypi"] = []
 
+        final_req.sources = final_sources
+
+        debug.conda_exec("For step %s, final req: %s" % (step.name, repr(final_req)))
         # TODO: This is a bit wasteful because we will do this twice but we need
         # to store the env_id here in case this is called from the CLI (ie: we need
         # to be able to get the req_id from steps even if init_environment is not called)

@@ -216,10 +216,9 @@ def build_pypi_packages(
         else:
             builder_envs = [builder_env]
 
-    builder_python = conda.create_builder_env(builder_env)
-
-    if builder_python is None:
-        raise CondaException("Could not create environment to build PYPI packages")
+    builder_python = os.path.join(
+        conda.create_builder_env(builder_env), "bin", "python"
+    )
 
     # Download any source either from cache or the web. We can use our typical
     # lazy fetch to do this. We just make sure that we only pass it packages that
@@ -288,7 +287,9 @@ def build_pypi_packages(
                     wheel_hash = PypiPackageSpecification.hash_pkg(wheel_file)
                     pkg_version_str += ".dev" + wheel_hash[:8].translate(_DEV_TRANS)
                 pkg_version_str += "+mfbuild"
-                wheel_file = change_pypi_package_version(wheel_file, pkg_version_str)
+                wheel_file = change_pypi_package_version(
+                    builder_python, wheel_file, pkg_version_str
+                )
                 parse_result = parse_explicit_path_pypi("file://%s" % wheel_file)
 
             debug.conda_exec("Package for '%s' built in '%s'" % (key, wheel_file))
