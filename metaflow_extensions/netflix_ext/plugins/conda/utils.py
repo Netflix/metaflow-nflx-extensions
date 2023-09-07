@@ -1,4 +1,5 @@
 # pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
+from __future__ import annotations
 
 import email.parser
 import email.policy
@@ -14,6 +15,7 @@ import uuid
 from enum import Enum
 from itertools import chain
 from typing import (
+    TYPE_CHECKING,
     Dict,
     FrozenSet,
     List,
@@ -50,17 +52,21 @@ import metaflow.metaflow_config as mf_config
 from metaflow.metaflow_config import (
     CONDA_MAGIC_FILE_V2,  # type: ignore
     CONDA_PREFERRED_FORMAT,  # type: ignore
-    CONDA_SRCS_AUTH_INFO,
+    CONDA_SRCS_AUTH_INFO,  # type: ignore
+    CONDA_REMOTE_PACKAGES,  # type: ignore
 )
 
 from metaflow.metaflow_environment import InvalidEnvironmentException
+
+if TYPE_CHECKING:
+    from .env_descr import TStr
 
 # NOTA: Most of the code does not assume that there are only two formats BUT the
 # transmute code does (since you can only specify the infile -- the outformat and file
 # are inferred)
 _ALL_CONDA_FORMATS = (".tar.bz2", ".conda")
 # NOTE: Order is important as it is a preference order
-_ALL_PIP_FORMATS = (".whl", ".tar.gz", ".zip")
+_ALL_PYPI_FORMATS = (".whl", ".tar.gz", ".zip")
 _VALID_IMAGE_NAME = "[^-a-z0-9_/]"
 _VALID_TAG_NAME = "[^-a-z0-9_]"
 
@@ -148,7 +154,46 @@ def arch_id() -> str:
         )
 
 
-def pip_tags_from_arch(python_version: str, arch: str) -> List[Tag]:
+def get_sys_packages(
+    virtual_packages: Dict[str, str],
+    arch_requested: str,
+    is_remote: bool,
+    gpu_requested: bool,
+) -> Dict[str, str]:
+    # For now we handle only the __cuda virtual package. We could possibly extend this to
+    # handle differing __glibc but that has other implications (mainly that we would need
+    # to build builder environments in more cases) so we are ignoring that for now.
+
+    # The goal of this function is to take the list of virtual_packages and to return
+    # the sys packages we need to add to the user dependencies (so packages that start with
+    # sys::). The reason for having them as part of user packages is that we can then
+    # use them in computing the user request hash (since these will impact the packages
+    # that are installed). The sys:: packages will then be properly added when resolving
+    # the environment as virtual packages (either through CONDA_OVERRIDE_XXX or directly
+    # as part of a virtual_packages.yml for conda-lock)
+
+    if "__cuda" in virtual_packages:
+        # If we already know about the __cuda version we want, we just pass it down.
+        # This allows the user to specify it using CONDA_OVERRIDE_CUDA for example or
+        # just use the one specified by their machine.
+        return {"__cuda": virtual_packages["__cuda"]}
+    if gpu_requested and is_remote:
+        # Here we have a GPU that is being requested for a remote node AND we don't
+        # have any user override of CUDA so we look at the configuration value
+
+        # We only care to add a __cuda package if:
+        #   - it is already there (ie: the machine we are running on
+        #     uses cuda)
+        #   - the user wants to run on a machine with a GPU
+        cuda_pkg_version = CONDA_REMOTE_PACKAGES.get(
+            "__cuda", None
+        )  # type: Optional[str]
+        if cuda_pkg_version:
+            return {"__cuda": cuda_pkg_version}
+    return {}
+
+
+def pypi_tags_from_arch(python_version: str, arch: str) -> List[Tag]:
     # Converts a Conda architecture to a tuple containing (implementation, platforms, abis)
     # This function will assume a CPython implementation
 
@@ -219,7 +264,7 @@ def parse_explicit_url_conda(url: str) -> ParseExplicitResult:
     )
 
 
-def parse_explicit_path_pip(path: str) -> ParseExplicitResult:
+def parse_explicit_path_pypi(path: str) -> ParseExplicitResult:
     # Takes a filename in the form file://<path> and returns:
     #  - the filename
     #  - the URL (always file://local-<uuid>/<filename> so there is no way another
@@ -230,9 +275,9 @@ def parse_explicit_path_pip(path: str) -> ParseExplicitResult:
         raise CondaException("Local path '%s' does not start with file://" % path)
     path = path[7:]
     orig_filename, url_format = correct_splitext(os.path.basename(path))
-    if url_format not in _ALL_PIP_FORMATS:
+    if url_format not in _ALL_PYPI_FORMATS:
         raise CondaException(
-            "Path '%s' is not a supported format (%s)" % (path, str(_ALL_PIP_FORMATS))
+            "Path '%s' is not a supported format (%s)" % (path, str(_ALL_PYPI_FORMATS))
         )
     return ParseExplicitResult(
         filename=unquote(orig_filename),
@@ -242,7 +287,7 @@ def parse_explicit_path_pip(path: str) -> ParseExplicitResult:
     )
 
 
-def parse_explicit_url_pip(url: str) -> ParseExplicitResult:
+def parse_explicit_url_pypi(url: str) -> ParseExplicitResult:
     # Takes a URL in the form url#hash and returns:
     #  - the filename
     #  - the URL (without the hash)
@@ -260,9 +305,9 @@ def parse_explicit_url_pip(url: str) -> ParseExplicitResult:
         url_hash = None
 
     filename, url_format = correct_splitext(os.path.split(urlparse(url_clean).path)[1])
-    if url_format not in _ALL_PIP_FORMATS:
+    if url_format not in _ALL_PYPI_FORMATS:
         raise CondaException(
-            "URL '%s' is not a supported format (%s)" % (url, str(_ALL_PIP_FORMATS))
+            "URL '%s' is not a supported format (%s)" % (url, str(_ALL_PYPI_FORMATS))
         )
     filename = unquote(filename)
     return ParseExplicitResult(
@@ -330,10 +375,26 @@ def is_alias_mutable(alias_type: AliasType, resolved_alias: str) -> bool:
     return len(splits) == 2 and splits[1] in ("latest", "candidate", "stable")
 
 
-def split_into_dict(deps: List["TStr"]) -> Dict[str, str]:
+def dict_to_tstr(deps: Dict[str, List[str]]) -> List[TStr]:
+    from .env_descr import TStr  # Avoid circular import
+
+    result = []  # type: List[TStr]
+    for category, values in deps.items():
+        result.extend([TStr(category, v) for v in values])
+    return result
+
+
+def tstr_to_dict(deps: List[TStr]) -> Dict[str, List[str]]:
+    result = {}  # type: Dict[str, List[str]]
+    for dep in deps:
+        result.setdefault(dep.category, []).append(dep.value)
+    return result
+
+
+def split_into_dict(deps: List[str]) -> Dict[str, str]:
     result = {}  # type: Dict[str, str]
     for dep in deps:
-        s = dep.value.split("==", 1)
+        s = dep.split("==", 1)
         if len(s) == 1:
             result[s[0]] = ""
         else:
@@ -371,7 +432,7 @@ def merge_dep_dicts(
     return result
 
 
-def reform_pip_filename(
+def reform_pypi_filename(
     name: str, version: Version, build: BuildTag, tags: FrozenSet[Tag]
 ) -> str:
     if build:
@@ -413,8 +474,8 @@ def correct_splitext(filename_with_ext: str) -> Tuple[str, str]:
     return "", ""
 
 
-def conda_deps_to_pip_deps(d: Dict[str, str]) -> Dict[str, str]:
-    # This is a hack for now -- real fix would be to specify get_pinned_pip_libs
+def conda_deps_to_pypi_deps(d: Dict[str, str]) -> Dict[str, str]:
+    # This is a hack for now -- real fix would be to specify get_pinned_pypi_libs
     # but at least for now this allows channels to be specified in the conda_libs
     # but still work with pip
     r = {}  # type: Dict[str, str]
@@ -439,6 +500,13 @@ def channel_from_url(url: str) -> Optional[str]:
     if up.hostname == "conda.anaconda.org":
         return up.path.split("/", 2)[1]
     return None
+
+
+def channel_or_url(url: str) -> str:
+    up = urlparse(url)
+    if up.hostname == "conda.anaconda.org":
+        return up.path.split("/", 2)[1]
+    return url
 
 
 def auth_from_urls(urls: List[str]) -> Optional[AuthBase]:
@@ -500,7 +568,9 @@ class PerHostAuth(AuthBase):
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-def change_pip_package_version(wheel_path: str, new_version_str: str) -> str:
+def change_pypi_package_version(
+    python_path: str, wheel_path: str, new_version_str: str
+) -> str:
     base_dir, wheel_name = os.path.split(wheel_path)
     with tempfile.TemporaryDirectory() as build_dir:
         old_parts = parse_wheel_filename(wheel_name)
@@ -514,7 +584,7 @@ def change_pip_package_version(wheel_path: str, new_version_str: str) -> str:
         new_slug = "%s-%s" % (distribution, new_version)
 
         subprocess.check_output(
-            [sys.executable, "-m", "wheel", "unpack", "-d", build_dir, wheel_path]
+            [python_path, "-m", "wheel", "unpack", "-d", build_dir, wheel_path]
         )
         if not os.path.isdir(os.path.join(build_dir, old_slug)) or not os.path.isdir(
             os.path.join(build_dir, old_slug, "%s.dist-info" % old_slug)
@@ -564,7 +634,7 @@ def change_pip_package_version(wheel_path: str, new_version_str: str) -> str:
         # Rewrites the RECORD file and generate the file.
         subprocess.check_output(
             [
-                sys.executable,
+                python_path,
                 "-m",
                 "wheel",
                 "pack",
@@ -576,7 +646,7 @@ def change_pip_package_version(wheel_path: str, new_version_str: str) -> str:
 
         # We check if we get the expected name
         expected_name = (
-            reform_pip_filename(distribution, new_version, old_parts[2], old_parts[3])
+            reform_pypi_filename(distribution, new_version, old_parts[2], old_parts[3])
             + ".whl"
         )
         if os.path.isfile(os.path.join(build_dir, expected_name)):
@@ -590,3 +660,16 @@ def change_pip_package_version(wheel_path: str, new_version_str: str) -> str:
             "Could not rename wheel '%s'; expected '%s' got: %s"
             % (wheel_path, expected_name, ", ".join(os.listdir(build_dir)))
         )
+
+
+class WithDir:
+    def __init__(self, new_dir: str):
+        self._current_dir = os.getcwd()
+        self._new_dir = new_dir
+
+    def __enter__(self):
+        os.chdir(self._new_dir)
+        return self._new_dir
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        os.chdir(self._current_dir)

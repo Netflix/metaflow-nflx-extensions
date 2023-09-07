@@ -1,20 +1,23 @@
 # pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
 import os
 
-from itertools import chain
 from typing import Any, Dict, List, Set, Tuple, Optional, cast
 
 from metaflow._vendor import click
 
-from metaflow.debug import debug
 from metaflow.exception import CommandException
 from metaflow.metaflow_config import CONDA_PREFERRED_FORMAT
 
 from .conda.conda import Conda
-from .conda.conda_step_decorator import get_conda_decorator
+from .conda.conda_common_decorator import StepRequirement
+from .conda.conda_environment import CondaEnvironment
 from .conda.envsresolver import EnvsResolver
-from .conda.env_descr import PackageSpecification, ResolvedEnvironment
-from .conda.utils import plural_marker
+from .conda.env_descr import (
+    AliasType,
+    EnvID,
+    ResolvedEnvironment,
+)
+from .conda.utils import dict_to_tstr, plural_marker, resolve_env_alias
 
 # Very simple functions to create some highlights without importing other packages
 _BOLD = 1
@@ -26,7 +29,7 @@ _YELLOW = 33
 _BLUE = 34
 
 # reqid->fullid->[paths]
-_all_local_instances = {}  # type: Dict[str, Dict[str, List[str]]]
+_all_local_instances = None  # type: Optional[Dict[str, Dict[str, List[str]]]]
 
 
 @click.group()
@@ -87,14 +90,37 @@ def resolve(
     resolver = EnvsResolver(conda)
     for step in obj.flow:
         if not steps_to_resolve or step.name in steps_to_resolve:
-            step_conda_dec = get_conda_decorator(obj.flow, step.name)
-            if step_conda_dec.is_enabled():
-                resolver.add_environment_for_step(
-                    step.name,
-                    step_conda_dec,
-                    force=force,
-                    archs=list(arch) if arch else None,
+            for resolve_arch in arch or [None]:
+                (
+                    env_type,
+                    step_arch,
+                    req,
+                    base_env,
+                ) = CondaEnvironment.extract_merged_reqs_for_step(
+                    conda,
+                    obj.flow,
+                    obj.flow_datastore.TYPE,
+                    step,
+                    override_arch=resolve_arch,
                 )
+                if req.is_disabled or req.is_fetch_at_exec:
+                    break  # No point resolving anything else for this step
+                base_from_full_id = False
+                if req.from_env_name:
+                    base_from_full_id = (
+                        resolve_env_alias(req.from_env_name)[0] == AliasType.FULL_ID
+                    )
+                resolver.add_environment(
+                    step_arch,
+                    req.packages_as_str,
+                    req.sources,
+                    {},
+                    step.name,
+                    base_env,
+                    base_from_full_id=base_from_full_id,
+                    force=force,
+                )
+
     per_req_id = {}  # type: Dict[str, Set[str]]
 
     if alias:
@@ -148,6 +174,7 @@ def resolve(
             conda.alias_environment(env.env_id, aliases)
 
     _compute_local_instances(conda)
+    assert _all_local_instances
     if obj.is_quiet:
         for req_id, (env, steps) in resolved_per_req_id.items():
             obj.echo_always(",".join(steps))
@@ -221,31 +248,36 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
     conda = Conda(obj.echo, obj.flow_datastore.TYPE)
     for step in obj.flow:
         if not steps_to_show or step.name in steps_to_show:
-            step_conda_dec = get_conda_decorator(obj.flow, step.name)
-            from_name = step_conda_dec.from_env_name
-            result[step.name] = {"deco": step_conda_dec}
+            (
+                _,
+                step_arch,
+                req,
+                base_env,
+            ) = CondaEnvironment.extract_merged_reqs_for_step(
+                conda, obj.flow, obj.flow_datastore.TYPE, step, local_only=local_only
+            )
+            from_name = req.from_env_name
+            result[step.name] = {"req": req}
             if from_name:
-                from_env_id = conda.env_id_from_alias(
-                    from_name, step_conda_dec.requested_arch
-                )
-                if not from_env_id:
-                    result[step.name]["error"] = (
-                        "From environment '%s' is not known" % from_name
+                if base_env is None:
+                    result[step.name][
+                        "error"
+                    ] = "Base environment '%s' was not found for architecture '%s'" % (
+                        from_name,
+                        step_arch,
                     )
                     continue
-                from_env = conda.environment(from_env_id, local_only)
-                if not from_env:
-                    result[step.name]["error"] = (
-                        "From environment '%s' is known but does not exist for architecture '%s'"
-                        % (from_name, step_conda_dec.requested_arch)
-                    )
-                    continue
-                result[step.name]["base_env"] = from_env
+                result[step.name]["base_env"] = base_env
                 result[step.name]["state"] = ["derived from %s" % from_name]
             else:
                 result[step.name]["state"] = []
-            for env_id in step_conda_dec.env_ids:
-                resolved_env = conda.environment(env_id, local_only)
+
+            step_env_id = CondaEnvironment.get_env_id(conda, step.name)
+            resolved_env = None
+            if step_env_id is None:
+                result[step.name]["state"].append("disabled")
+            elif isinstance(step_env_id, EnvID):
+                resolved_env = conda.environment(step_env_id, local_only)
                 if resolved_env:
                     result[step.name]["env"] = resolved_env
                     result[step.name]["state"].append("resolved")
@@ -254,16 +286,19 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
                         {
                             "conda": [CONDA_PREFERRED_FORMAT]
                             if CONDA_PREFERRED_FORMAT
-                            else []
+                            else ["_any"]
                         }
                     ):
                         result[step.name]["state"].append("cached")
                     if conda.created_environment(resolved_env.env_id):
                         result[step.name]["state"].append("locally present")
                 else:
-                    result[step.name].update({"state": ["unresolved"]})
+                    result[step.name]["state"].append("unresolved")
+            else:
+                result[step.name]["state"].append("fetch-at-exec of %s" % step_env_id)
 
     _compute_local_instances(conda)
+    assert _all_local_instances
     if obj.is_quiet:
         for name, info in result.items():
             obj.echo_always(name)
@@ -304,11 +339,25 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
             else:
                 obj.echo(
                     "*User-requested packages* %s"
-                    % ", ".join([str(d) for d in info["deco"].step_deps])
+                    % ", ".join(
+                        [
+                            str(d)
+                            for d in dict_to_tstr(
+                                cast(StepRequirement, info["req"]).packages_as_str
+                            )
+                        ]
+                    )
                 )
                 obj.echo(
                     "*User sources* %s"
-                    % ", ".join([str(s) for s in info["deco"].source_deps])
+                    % ", ".join(
+                        [
+                            str(s)
+                            for s in dict_to_tstr(
+                                cast(StepRequirement, info["req"]).sources
+                            )
+                        ]
+                    )
                 )
 
 

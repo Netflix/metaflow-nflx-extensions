@@ -33,6 +33,9 @@ This extension currently contains:
 
 ## Conda V2
 
+*Version 1.0.0 is considered stable. Some UX changes have occurred compared to previous
+versions. Please see the docs/ folder for more information*
+
 *Version 0.2.0 of this extension is not fully backward compatible with previous versions due to
 where packages are cached. If you are using a previous version of the extension, it is recommended
 that you change the `CONDA_MAGIC_FILE_V2`, `CONDA_PACKAGES_DIRNAME` and `CONDA_ENVS_DIRNAME` to
@@ -47,7 +50,7 @@ This decorator improves several aspects of the included Conda decorator:
   - resolving environments in parallel
   - using `micromamba` for environment creation
 - it allows the inclusion of `pypi` packages in the environment specification
-- it has a pure `@pip` decorator which is a frequently requested feature for
+- it has a pure `@pypi` decorator which is a frequently requested feature for
   metaflow
 - it is more efficient in its use of caching
 - environment descriptions are also cached allowing anyone to reuse a previously
@@ -83,7 +86,7 @@ The useful configuration values are listed below:
   same prefix as for the current Conda implementation.
 - `CONDA_DEPENDENCY_RESOLVER`: `mamba`, `conda` or `micromamba`; `mamba` is recommended as
   typically faster. `micromamba` is sometimes a bit more unstable but can be even faster
-- `CONDA_PIP_DEPENDENCY_RESOLVER`: `pip` or None; if None, you will not be able to resolve
+- `CONDA_PYPI_DEPENDENCY_RESOLVER`: `pip` or None; if None, you will not be able to resolve
   environments specifying only pip dependencies.
 - `CONDA_MIXED_DEPENDENCY_RESOLVER`:  `conda-lock` or None; if None, you will not be able
   to resolve environments specifying a mix of pip and conda dependencies.
@@ -107,7 +110,7 @@ The useful configuration values are listed below:
 - `CONDA_PREFERRED_FORMAT`: `.tar.bz2` or `.conda`. Prefer `.conda` for speed gains; any
   package not available in the preferred format will be transmuted to it automatically.
   If left empty, whatever package is found will be used (ie: there is no preference)
-- `CONDA_DEFAULT_PIP_SOURCE`: mirror to use for PIP.
+- `CONDA_DEFAULT_PYPI_SOURCE`: mirror to use for PYPI.
 - `CONDA_USE_REMOTE_LATEST`: by default, it is set to `:none:` which means that if a new
   environment is not locally known (for example first time resolving it on the machine), it
   will be re-resolved. You can also set it to `:username:`, `:any:` or a comma separated
@@ -130,11 +133,11 @@ needs to satisfy the following requirements:
 - (optional but recommended) `mamba>=1.4.0`
 - (strongly recommended) `micromamba>=1.4.0`
 
-##### Pure pip package support
+##### Pure pypi package support
 If you want support for environments containing only pip packages, you will also need:
 - `pip>=23.0`
 
-##### Mixed (pip + conda)  package support
+##### Mixed (pypi + conda)  package support
 If you want support for environments containing both pip and conda packages, you will also need:
 - `conda-lock>=2.1.0`
 
@@ -166,9 +169,6 @@ constantly improved and there are a few outstanding issues that we are aware of:
   transmutes due to https://github.com/mamba-org/mamba/issues/2328. It also does
   not work properly when transmuting from `.conda` packages to `.tar.bz2` packages.
   Install `conda-package-handling` as well to support this.
-- Newer mamba has issues with newer conda. Specifically, removing environments will cause
-  an error. The fix is out but has not been released yet:
-  https://github.com/mamba-org/mamba/commit/ff161149251a79c86f65f6977a2c2e84f3aea08b
 
 ### Uninstallation
 Uninstalling this package will revert the behavior of the conda decorator to the one
@@ -189,7 +189,7 @@ for example, be passed to `metaflow environment resolve` using the `-r` or `-f` 
 respectively. They highlight some of the functionalities present. Note that the same
 environments can also be specified directly using the `@conda` or `@pip` decorators.
 
-##### Pure "pip" environment with non-python Conda packages
+##### Pure "pypi" environment with non-python Conda packages
 ```
 --conda-pkg ffmpeg
 ffmpeg-python
@@ -199,7 +199,7 @@ The `requirements.txt` file above will create an environment with the Pip packag
 a pure pip environment (and therefore use the underlying `pip` ecosystem without
 `conda-lock` but still have other non Python packages installed.
 
-##### Pure "pip" environment with non wheel files
+##### Pure "pypi" environment with non wheel files
 ```
 --conda-pkg git-lfs
 # Needs LFS to build
@@ -215,7 +215,7 @@ The above `requirements.txt` shows that it is possible to specify repositories d
 Note that this does not work cross platform. Behind the scenes, Metaflow will build wheel
 packages and cache them.
 
-##### Pip + Conda packages
+##### Pypi + Conda packages
 ```
 dependencies:
   - pandas = >=1.0.0
@@ -226,125 +226,23 @@ dependencies:
 The above `environment.yml` shows that it is possible to mix and match pip and conda
 packages. You can specify packages using "extras" but you cannot, in this form,
 specify pip packages that come from git repositories or from your local file-system.
-Pip packages that are available as wheels or source tar balls are acceptable.
+Pypi packages that are available as wheels or source tar balls are acceptable.
 
 #### General environment restrictions
 In general, the following restrictions are applicable:
-  - while you can specify Conda channels in the package name (like `comet_ml::comet_ml`), you cannot,
-    at this time, use this environment as a base for other environments. This restriction will
-    be fixed.
   - you cannot specify packages that need to be built from a repository or a directory
-    in mixed conda+pip mode. This is a restriction of the underlying tool (conda-lock) and will not
+    in mixed conda+pypi mode. This is a restriction of the underlying tool (conda-lock) and will not
     be fixed until supported by conda-lock.
   - you cannot specify editable packages. This restriction will not be lifted at this time.
   - you cannot specify packages that need to be built from a repository or a directory in
-    pip only mode across platforms (ie: resolving for `osx-arm64` from a `linux-64` machine). This
+    pypi only mode across platforms (ie: resolving for `osx-arm64` from a `linux-64` machine). This
     restriction will not be removed as this would potentially require cross-platform build which
     can be tricky and error-prone.
   - in specifying packages, environment markers are not supported.
 
-#### Additional decorator options
-The `conda` and `conda_base` decorators take the following additional options:
-- `name` and `pathspec`: An environment name or a pathspec to a previously executed
-  step. If specified, no other arguments are allowed. These options allow you to
-  refer to previously resolved environments, either by name or by referencing a
-  step that executed in that environment.
-- `channels`: A list of additional Conda channels to search. This is useful if the
-  channel is not on `anaconda.org` and cannot be referred to as using the `::` notation.
-- `pip_packages`: A dictionary using the same format as the `libraries` option to
-  specify packages present in `pypi`.
-- `pip_sources`: A list of additional `pypi` repositories.
-
-
-#### Additional `pip` decorator
-Additional decorators `pip` and `pip_base` allow you to specify pure pip-based
-environments. The arguments to these decorators are `python`, `disabled`, 
-`sources` and `packages` with the obvious meanings.
-
-You may wonder why the presence of a separate `pip` decorator when the `pip`
-dependencies could be just as easily specified in the `conda` decorator using the
-new `pip_packages` option. There is actually a major difference in how the
-environments are resolved. There are three cases:
-- a pure Conda environment with no pip decorator or packages: in this case, the
-  environment uses conda/mamba to resolve the set of dependencies
-- a pure Pip environment with only pip dependencies specified via the `pip` or
-  `pip_base` decorators: in this case, a base Python environment is resolved with
-  Conda (containing only `python`) and `pip` is then used to resolve all other
-  dependencies.
-- a mixed environment with a mixture of pip and conda packages (specified via
-  the `conda` decorator): in this case, `conda-lock` is used to resolve the
-  entire environment. `conda-lock` uses a two phased approach to resolving, first
-  resolving the conda environment and then using `poetry` to resolve the additional
-  `pip` packages within the confines of the defined `conda` environment.
-
-Note that to support a bit more flexibility, you can have a pure Pip environment
-as well as non-Python conda packages. This is similar to the mixed environment
-but, in some cases, pip is more flexible than conda-lock in requirement specification
-(for example, pip supports GIT repositories) so it makes it possible to gain the
-flexibility of installing non python packages in your environment and still use
-pip to resolve your python dependencies.
-
-#### Additional command-line tool
-An additional `environment` command-line tool is available invoked as follows:
-`python myflow.py --environment=conda environment --help`.
-It provides the following two sub-commands:
-- `resolve`: will resolve one or more steps without executing the flow.
-- `show`: will show information about the environments for the flow (whether they exist,
-  need to be resolved, etc.)
-
-Finally, the `metaflow` command is also augmented with an `environment` subcommand which
-has the following sub-commands:
-- `create`: locally creates/instantiates an environment
-- `resolve`: resolves an environment using either a requirements.txt file (for pip only
-  environments) or an environment.yml file (for conda or mixed environments)
-- `show`: shows information about an environment (packages, etc)
-- `alias`: aliases an environment giving it a name so it can be used later
-- `get`: fetches an environment from the remote environment store locally
-
-#### Supported format for requirements.txt
-
-The requirements.txt file, which can be used to specify a pip only environment, supports
-the following syntax (a subset of the full syntax supported by pip):
-- Comment lines starting with '#'
-- `--extra-index-url`: to spcify an additional repository to look at. Note that to
-  specify the `--index-url`, set it with the `METAFLOW_CONDA_DEFAULT_PIP_SOURCE
-  environment variable.
-- `-f`, `--find-links` and `--trusted-host`: passed directly to pip with the
-  corresponding argument
-- `--pre`, `--no-index`: passed directly to pip
-- `--conda-pkg`: extension allowing you to specify a conda package that does not
-  need Python
-- a requirement specification. This can include GIT repositories or local directories
-  as well as more classic package specification. Constraints and environment
-  markers are not supported.
-
-Note that GIT repositories, local directories and non wheel packages are not
-compatible with cross-architecture resolution. Metaflow will build the wheel on the fly
-when resolving the environment and this is only possible if the same architecture is used.
-
-If possible, it is best to specify pre-built packages.
-
-#### Supported format for environment.yml
-
-The environment.yml format is the same as the one for conda-lock.
-
-#### Named environments
-Environments can optionally be given aliases.
-
-Implicitly, the pathspec to a step that executed with a given Conda environment is
-an alias for that environment and you can refer to it using that pathspec. For
-example, if step `start` in run 456 of `MyFlow` executed within a certain
-environment, that environment can be referred to as `MyFlow/456/start`.
-
-You can also give more generic aliases to environments. A generic alias is simply
-a string but to simplify naming, we use the Docker tag convention:
-- the "name" part of the alias is a "/" separated alphanumerical string
-- the "tag" part of the alias is separated from the name with a ":" and
-  consists of an alphanumerical string as well. The "tag" is optional
-  and defaults to "latest" if not specified.
-
-Unlike in Docker, aliases are immutable except for the ones with the tags
-"latest", "candidate" or "stable".
+### Additional documentation
+For additional documentation, please refer to the docs/ folder which contains more
+detailed documentation.
 
 ### Technical details
 This section dives a bit more in the technical aspects of this implementation.

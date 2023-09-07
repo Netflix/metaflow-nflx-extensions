@@ -15,9 +15,9 @@ from metaflow.debug import debug
 from metaflow.plugins.env_escape import generate_trampolines, ENV_ESCAPE_PY
 
 from .conda import Conda
-from .conda_step_decorator import CondaStepDecorator
+from .conda_environment import CondaEnvironment
 from .env_descr import EnvID
-from .utils import arch_id
+from .utils import arch_id, plural_marker
 
 
 def my_echo_always(*args: Any, **kwargs: Any) -> Callable[..., None]:
@@ -32,11 +32,14 @@ def bootstrap_environment(
     my_echo_always("    Setting up Conda ...", nl=False)
     setup_conda_manifest()
     my_conda = Conda(my_echo_always, datastore_type, mode="remote")
-    my_echo_always(" done in %d seconds." % int(time.time() - start))
+    # Access a binary to force the downloading of the remote conda
+    my_conda.binary("micromamba")
+    delta_time = int(time.time() - start)
+    my_echo_always(" done in %d second%s." % (delta_time, plural_marker(delta_time)))
 
     # Resolve a late environment if full_id is a special string _fetch_exec
     if full_id == "_fetch_exec":
-        alias_to_fetch = CondaStepDecorator.sub_envvars_in_envname(req_id)
+        alias_to_fetch = CondaEnvironment.sub_envvars_in_envname(req_id)
         env_id = my_conda.env_id_from_alias(alias_to_fetch)
         if env_id is None:
             raise RuntimeError(
@@ -53,8 +56,11 @@ def bootstrap_environment(
             "Cannot find cached environment for hash %s:%s" % (req_id, full_id)
         )
     # Install the environment; this will fetch packages as well.
-    my_conda.create_for_step(step_name, resolved_env, do_symlink=True)
-
+    python_bin = os.path.join(
+        my_conda.create_for_step(step_name, resolved_env, do_symlink=True),
+        "bin",
+        "python",
+    )
     # Setup anything needed by the escape hatch
     if ENV_ESCAPE_PY is not None:
         cwd = os.getcwd()
@@ -65,10 +71,15 @@ def bootstrap_environment(
     else:
         pass
         # print("Could not find a environment escape interpreter")
-
     # We write out the env_id to _env_id so it can be read by the outer bash script
     with open("_env_id", mode="w", encoding="utf-8") as f:
         json.dump(EnvID(req_id, full_id, arch_id()), f)
+
+    # Same thing for lib path
+    with open("_lib_path", mode="w", encoding="utf-8") as f:
+        if python_bin is None:
+            raise RuntimeError("Environment was not created properly")
+        json.dump(os.path.join(os.path.dirname(os.path.dirname(python_bin)), "lib"), f)
 
 
 def setup_conda_manifest():
