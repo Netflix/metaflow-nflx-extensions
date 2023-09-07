@@ -1064,6 +1064,10 @@ class ResolvedEnvironment:
         d: Mapping[str, Any],
     ):
         all_packages = [PackageSpecification.from_dict(pd) for pd in d["packages"]]
+        env_type = EnvType(d.get("env_type", EnvType.MIXED.value))
+        # Backward compatible aliasing
+        if env_type == EnvType.PIP_ONLY:
+            env_type = EnvType.PYPI_ONLY
         return cls(
             user_dependencies=tstr_to_dict([TStr.from_str(x) for x in d["deps"]]),
             user_sources=tstr_to_dict([TStr.from_str(x) for x in d["sources"]]),
@@ -1075,7 +1079,7 @@ class ResolvedEnvironment:
             resolved_on=datetime.fromisoformat(d["resolved_on"]),
             resolved_by=d["resolved_by"],
             co_resolved=d["resolved_archs"],
-            env_type=EnvType(d.get("env_type", EnvType.MIXED.value)),
+            env_type=env_type,
             accurate_source=d.get("accurate_source", True),
         )
 
