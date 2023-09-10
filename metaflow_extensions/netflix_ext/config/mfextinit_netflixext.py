@@ -102,6 +102,11 @@ CONDA_SRCS_AUTH_INFO = from_conf("CONDA_SRCS_AUTH_INFO", {})
 
 CONDA_REMOTE_COMMANDS = ("batch", "kubernetes")
 
+# Allows you to specify the virtual packages to install when running on a remote node
+# Currently only used to specify the __cuda dependency for GPU remote nodes
+# As an example {"__cuda": "11.8=0"}
+CONDA_REMOTE_PACKAGES = {}
+
 def _validate_remote_latest(name, value):
     if not value:
         raise MetaflowException("%s must not be empty." % name)
