@@ -3,6 +3,7 @@ from metaflow.metaflow_config import (
     DATASTORE_SYSROOT_S3,
     DATASTORE_SYSROOT_AZURE,
     DATASTORE_SYSROOT_GS,
+    DATASTORE_SYSROOT_LOCAL,
 )
 from metaflow.metaflow_config_funcs import from_conf, get_validate_choice_fn
 
@@ -22,6 +23,13 @@ CONDA_AZUREROOT = from_conf(
 CONDA_GSROOT = from_conf(
     "CONDA_GSROOT",
     os.path.join(DATASTORE_SYSROOT_GS, "conda_env") if DATASTORE_SYSROOT_GS else None,
+)
+
+CONDA_LOCALROOT = from_conf(
+    "CONDA_LOCALROOT",
+    os.path.join(DATASTORE_SYSROOT_LOCAL, "conda_env")
+    if DATASTORE_SYSROOT_LOCAL
+    else None,
 )
 
 CONDA_MAGIC_FILE_V2 = "conda_v2.cnd"
@@ -106,6 +114,7 @@ CONDA_REMOTE_COMMANDS = ("batch", "kubernetes")
 # Currently only used to specify the __cuda dependency for GPU remote nodes
 # As an example {"__cuda": "11.8=0"}
 CONDA_REMOTE_PACKAGES = {}
+
 
 def _validate_remote_latest(name, value):
     if not value:

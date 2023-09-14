@@ -213,7 +213,7 @@ class Conda(object):
                     if have_index:
                         continue
                     have_index = True
-                sources.extend(value.splitlines())
+                sources.extend(map(lambda x: x.strip("'\""), value.splitlines()))
         if not have_index:
             sources = ["https://pypi.org/simple"] + sources[1:]
         return sources
@@ -1754,7 +1754,7 @@ class Conda(object):
                 "pip": which("pip"),
             }
             self._bins["conda"] = self._bins[self._conda_executable_type]
-            err = self._validate_conda_installation():
+            err = self._validate_conda_installation()
             if err:
                 raise err
 
