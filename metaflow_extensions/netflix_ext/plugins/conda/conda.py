@@ -1715,9 +1715,10 @@ class Conda(object):
             if self._mode == "local":
                 self._ensure_local_conda()
             else:
-                # Encapsulating remote conda installation and verification into a single function call,
-                # to perform retries with exponential backoffs as we are seeing some text file busy errors
-                self._download_validate_remote_conda()
+                self._ensure_remote_conda()
+                err = self._validate_conda_installation()
+                if err:
+                    raise err
             self._found_binaries = True
 
     def _ensure_local_conda(self):
@@ -1753,6 +1754,9 @@ class Conda(object):
                 "pip": which("pip"),
             }
             self._bins["conda"] = self._bins[self._conda_executable_type]
+            err = self._validate_conda_installation():
+            if err:
+                raise err
 
     def _install_local_conda(self):
         start = time.time()
