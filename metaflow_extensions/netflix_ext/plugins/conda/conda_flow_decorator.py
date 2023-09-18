@@ -25,26 +25,15 @@ class PackageRequirementFlowDecorator(FlowDecorator):
 class CondaRequirementFlowDecorator(
     CondaRequirementDecoratorMixin, PackageRequirementFlowDecorator
 ):
+    # REC: I would just have my own doc string
     """
     Specifies the Conda packages for all steps of the flow.
 
-    Use `@conda_base`, `@pypi_base` or `@named_env_base` to set common libraries
+    Use `@conda_base` or `@pypi_base` to set common libraries
     required by all steps and use `@conda` or `@pypi` to specify step-specific additions.
 
     Parameters
     ----------
-    name : Optional[str]
-        DEPRECATED -- use `@named_env(name=)` instead.
-        If specified, can refer to a named environment. The environment referred to
-        here will be the one used for this step. If specified, nothing else can be
-        specified in this decorator. In the name, you can use `@{}` values and
-        environment variables will be used to substitute.
-    pathspec : Optional[str]
-        DEPRECATED -- use `@named_env(pathspec=)` instead.
-        If specified, can refer to the pathspec of an existing step. The environment
-        of this referred step will be used here. If specified, nothing else can be
-        specified in this decorator. In the pathspec, you can use `@{}` values and
-        environment variables will be used to substitute.
     libraries : Optional[Dict[str, str]]
         Libraries to use for this step. The key is the name of the package
         and the value is the version to use (default: `{}`). Note that versions can
@@ -52,70 +41,28 @@ class CondaRequirementFlowDecorator(
         of constraints like "<2.0,>=1.5".
     channels : Optional[List[str]]
         Additional channels to search
-    pip_packages : Optional[Dict[str, str]]
-        DEPRECATED -- use `@pypi(packages=)` instead.
-        Same as libraries but for pip packages.
-    pip_sources : Optional[List[str]]
-        DEPRECATED -- use `@pypi(extra_indices=)` instead.
-        Same as channels but for pip sources.
     python : Optional[str]
         Version of Python to use, e.g. '3.7.4'. If not specified, the current version
         will be used.
-    fetch_at_exec : bool, default False
-        DEPRECATED -- use `@named_env(fetch_at_exec=)` instead.
-        If set to True, the environment will be fetched when the task is
-        executing as opposed to at the beginning of the flow (or at deploy time if
-        deploying to a scheduler). This option requires name or pathspec to be
-        specified. This is useful, for example, if you want this step to always use
-        the latest named environment when it runs as opposed to the latest when it
-        is deployed.
     disabled : bool, default False
         If set to True, uses the external environment.
     """
 
     name = "conda_base"
 
-    def flow_init(
-        self, flow, graph, environment, flow_datastore, metadata, logger, echo, options
-    ):
-        deprecated_keys = set(
-            ("pip_packages", "pip_sources", "fetch_at_exec", "name", "pathspec")
-        ).intersection((k for k, v in self.attributes.items() if v))
-
-        if deprecated_keys:
-            echo(
-                "*DEPRECATED*: Using '%s' in '@%s' is deprecated. Please use '@pypi_base' "
-                "or '@named_env_base' instead. "
-                % (", ".join(deprecated_keys), self.name)
-            )
-        super().flow_init(
-            flow, graph, environment, flow_datastore, metadata, logger, echo, options
-        )
-
 
 class PypiRequirementFlowDecorator(
     PypiRequirementDecoratorMixin, PackageRequirementFlowDecorator
 ):
+    # REC: Same thing
     """
     Specifies the Pypi packages for all steps of the flow.
 
-    Use `@conda_base`, `@pypi_base` or `@named_env_base` to set common libraries
+    Use `@conda_base` or `@pypi_base` to set common libraries
     required by all steps and use `@conda` or `@pypi` to specify step-specific additions.
 
     Parameters
     ----------
-    name : Optional[str]
-        DEPRECATED -- use `@named_env(name=)` instead.
-        If specified, can refer to a named environment. The environment referred to
-        here will be the one used for this step. If specified, nothing else can be
-        specified in this decorator. In the name, you can use `@{}` values and
-        environment variables will be used to substitute.
-    pathspec : Optional[str]
-        DEPRECATED -- use `@named_env(name=)` instead.
-        If specified, can refer to the pathspec of an existing step. The environment
-        of this referred step will be used here. If specified, nothing else can be
-        specified in this decorator. In the name, you can use `@{}` values and
-        environment variables will be used to substitute.
     packages : Optional[Dict[str, str]]
         Packages to use for this step. The key is the name of the package
         and the value is the version to use (default: `{}`).
@@ -124,117 +71,8 @@ class PypiRequirementFlowDecorator(
     python : Optional[str]
         Version of Python to use, e.g. '3.7.4'. If not specified, the current python
         version will be used.
-    fetch_at_exec : bool, default False
-        DEPRECATED -- use `@named_env(name=)` instead.
-        If set to True, the environment will be fetched when the task is
-        executing as opposed to at the beginning of the flow (or at deploy time if
-        deploying to a scheduler). This option requires name or pathspec to be
-        specified. This is useful, for example, if you want this step to always use
-        the latest named environment when it runs as opposed to the latest when it
-        is deployed.
     disabled : bool, default False
         If set to True, uses the external environment.
     """
 
     name = "pypi_base"
-
-    def flow_init(
-        self, flow, graph, environment, flow_datastore, metadata, logger, echo, options
-    ):
-        deprecated_keys = set(
-            ("sources", "fetch_at_exec", "name", "pathspec")
-        ).intersection((k for k, v in self.attributes.items() if v))
-
-        if deprecated_keys:
-            echo(
-                "*DEPRECATED*: Using '%s' in '@%s' is deprecated. Please use "
-                "'@named_env_base' instead. " % (", ".join(deprecated_keys), self.name)
-            )
-
-        return super().flow_init(
-            flow, graph, environment, flow_datastore, metadata, logger, echo, options
-        )
-
-
-class NamedEnvRequirementFlowDecorator(
-    NamedEnvRequirementDecoratorMixin, PackageRequirementFlowDecorator
-):
-    """
-    Specifies a named environment to extract the environment from
-
-    Use `@conda_base`, `@pypi_base` or `@named_env_base` to set common libraries
-    required by all steps and use `@conda` or `@pypi` to specify step-specific additions.
-
-    Parameters
-    ----------
-    name : Optional[str]
-        If specified, can refer to a named environment. The environment referred to
-        here will be the one used for this step. If specified, nothing else can be
-        specified in this decorator. In the name, you can use `@{}` values and
-        environment variables will be used to substitute.
-    pathspec : Optional[str]
-        If specified, can refer to the pathspec of an existing step. The environment
-        of this referred step will be used here. If specified, nothing else can be
-        specified in this decorator. In the name, you can use `@{}` values and
-        environment variables will be used to substitute.
-    fetch_at_exec : bool, default False
-        If set to True, the environment will be fetched when the task is
-        executing as opposed to at the beginning of the flow (or at deploy time if
-        deploying to a scheduler). This option requires name or pathspec to be
-        specified. This is useful, for example, if you want this step to always use
-        the latest named environment when it runs as opposed to the latest when it
-        is deployed.
-    disabled : bool, default False
-        If set to True, uses the external environment.
-    """
-
-    name = "named_env_base"
-
-
-class PipRequirementFlowDecorator(PypiRequirementFlowDecorator):
-    """
-    Specifies the Pypi packages for all steps of the flow.
-
-    DEPRECATED: please use `@pypi_base` instead
-
-    Parameters
-    ----------
-    name : Optional[str]
-        If specified, can refer to a named environment. The environment referred to
-        here will be the one used as a base environment for all steps.
-        If specified, nothing else can be specified in this decorator.
-    pathspec : Optional[str]
-        If specified, can refer to the pathspec of an existing step. The environment
-        of this referred step will be used as a base environment for all steps.
-        If specified, nothing else can be specified in this decorator.
-    packages : Optional[Dict[str, str]]
-        Packages to use for this step. The key is the name of the package
-        and the value is the version to use (default: `{}`). Note that versions can
-        be specified either as a specific version or as a comma separated string
-        of constraints like "<2.0,>=1.5".
-    sources : Optional[List[str]]
-        Additional channels to search for
-    python : Optional[str]
-        Version of Python to use, e.g. '3.7.4'. If not specified, the current version
-        will be used.
-    fetch_at_exec : bool, default False
-        If set to True, the environment will be fetched when the task is
-        executing as opposed to at the beginning of the flow (or at deploy time if
-        deploying to a scheduler). This option requires name or pathspec to be
-        specified. This is useful, for example, if you want this step to always use
-        the latest named environment when it runs as opposed to the latest when it
-        is deployed.
-    disabled : bool, default False
-        If set to True, uses the external environment.
-    """
-
-    name = "pip_base"
-
-    def flow_init(
-        self, flow, graph, environment, flow_datastore, metadata, logger, echo, options
-    ):
-        echo("*DEPRECATED*: Use '@pypi_base' instead of '@%s'." % self.name)
-
-        return super().flow_init(
-            flow, graph, environment, flow_datastore, metadata, logger, echo, options
-        )

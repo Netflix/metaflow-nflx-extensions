@@ -677,70 +677,8 @@ class Conda(object):
         Optional[EnvID]
             If found, returns the environment ID corresponding to the alias
         """
-        arch = arch or arch_id()
-
-        alias_type, resolved_alias = resolve_env_alias(env_alias)
-        if alias_type == AliasType.REQ_FULL_ID:
-            req_id, full_id = env_alias.split(":", 1)
-            return EnvID(req_id=req_id, full_id=full_id, arch=arch)
-
-        if alias_type == AliasType.PATHSPEC:
-            # Late import to prevent cycles
-            from metaflow.client.core import Step
-
-            env_id = None
-            req_id = ""
-            full_id = ""
-            old_metadata_value = None  # type: Optional[str]
-            try:
-                s = Step(resolved_alias, _namespace_check=False)
-                try:
-                    req_id, full_id, _ = json.loads(
-                        s.task.metadata_dict.get("conda_env_id", '["", "", ""]')
-                    )
-                except json.decoder.JSONDecodeError:
-                    # Most likely old format -- raise a nicer exception
-                    old_metadata_value = s.task.metadata_dict.get("conda_env_id")
-                if old_metadata_value is None and len(req_id) != 0:
-                    env_id = EnvID(req_id=req_id, full_id=full_id, arch=arch)
-            except MetaflowNotFound as e:
-                raise MetaflowNotFound(
-                    "Cannot locate step while looking for Conda environment"
-                ) from e
-            if old_metadata_value:
-                raise CondaException(
-                    "Step %s was created by an older Conda" % resolved_alias
-                )
-            if not env_id:
-                raise CondaException("Step %s is not a Conda step" % resolved_alias)
-
-            self._cached_environment.add_alias(
-                alias_type, resolved_alias, env_id.req_id, env_id.full_id
-            )
-            debug.conda_exec(
-                "%s (type %s) found locally (env_id: %s)"
-                % (env_alias, alias_type.value, str(env_id))
-            )
-            return env_id
-
-        env_id = self._cached_environment.env_id_for_alias(
-            alias_type, resolved_alias, arch
-        )
-
-        debug.conda_exec(
-            "%s (type %s)%sfound locally (resolved %s)"
-            % (env_alias, alias_type.value, " " if env_id else " not ", resolved_alias)
-        )
-
-        if (
-            not local_only
-            and self._storage is not None
-            and (env_id is None or is_alias_mutable(alias_type, resolved_alias))
-        ):
-            env_id_list = self._remote_fetch_alias([(alias_type, resolved_alias)], arch)
-            if env_id_list:
-                env_id = env_id_list[0]
-        return env_id
+        # REC: I would implement this
+        raise NotImplementedError()
 
     def environment_from_alias(
         self, env_alias: str, arch: Optional[str] = None, local_only: bool = False
@@ -763,10 +701,8 @@ class Conda(object):
         Optional[ResolvedEnvironment]
             If found, returns the ResolvedEnvironment for the given alias.
         """
-
-        env_id = self.env_id_from_alias(env_alias, arch, local_only)
-        if env_id:
-            return self.environment(env_id, local_only)
+        # REC: I would implement this
+        raise NotImplementedError()
 
     def aliases_for_env_id(self, env_id: EnvID) -> Tuple[List[str], List[str]]:
         """
@@ -782,7 +718,8 @@ class Conda(object):
         Tuple[List[str], List[str]]
             A tuple representing the immutable aliases and the mutable aliases
         """
-        return self._cached_environment.aliases_for_env(env_id)
+        # Ditto
+        raise NotImplementedError()
 
     def set_default_environment(self, env_id: EnvID) -> None:
         """
@@ -855,58 +792,9 @@ class Conda(object):
             The list of aliases -- note that you can only update mutable aliases or
             add new ones.
         """
-        if self._datastore_type != "local":
-            # We first fetch any aliases we have remotely because that way
-            # we will catch any non-mutable changes
-            resolved_aliases = [resolve_env_alias(a) for a in aliases]
-            aliases_to_fetch = [
-                (t, a) for t, a in resolved_aliases if t == AliasType.GENERIC
-            ]
-
-            self._remote_fetch_alias(aliases_to_fetch)
-            # We are going to write out our aliases
-            mutable_upload_files = []  # type: List[Tuple[str, str]]
-            immutable_upload_files = []  # type: List[Tuple[str, str]]
-            with tempfile.TemporaryDirectory() as aliases_dir:
-                for alias in aliases:
-                    alias_type, resolved_alias = resolve_env_alias(alias)
-
-                    if alias_type == AliasType.GENERIC:
-                        local_filepath = os.path.join(
-                            aliases_dir, resolved_alias.replace("/", "~")
-                        )
-                        cache_path = self.get_datastore_path_to_env_alias(
-                            alias_type, resolved_alias
-                        )
-                        with open(local_filepath, mode="w", encoding="utf-8") as f:
-                            json.dump([env_id.req_id, env_id.full_id], f)
-                        if is_alias_mutable(alias_type, resolved_alias):
-                            mutable_upload_files.append((cache_path, local_filepath))
-                        else:
-                            immutable_upload_files.append((cache_path, local_filepath))
-                        debug.conda_exec(
-                            "Aliasing and will upload alias %s to %s"
-                            % (str(env_id), cache_path)
-                        )
-                    else:
-                        debug.conda_exec(
-                            "Aliasing (but not uploading) %s as %s"
-                            % (str(env_id), resolved_alias)
-                        )
-
-                    self._cached_environment.add_alias(
-                        alias_type, resolved_alias, env_id.req_id, env_id.full_id
-                    )
-                if mutable_upload_files:
-                    self._upload_to_ds(mutable_upload_files, overwrite=True)
-                if immutable_upload_files:
-                    self._upload_to_ds(immutable_upload_files)
-        else:
-            for alias in aliases:
-                alias_type, resolved_alias = resolve_env_alias(alias)
-                self._cached_environment.add_alias(
-                    alias_type, resolved_alias, env_id.req_id, env_id.full_id
-                )
+        # REC: I would implement this. Note, I haven't checked but if any of these
+        # functiosn are called, they could also be no-ops instead of raising an error
+        raise NotImplementedError()
 
     def cache_environments(
         self,
@@ -1233,454 +1121,9 @@ class Conda(object):
         requested_arch: str = arch_id(),
         search_dirs: Optional[List[str]] = None,
     ):
-        # Lazily fetch all packages specified by the PackageSpecification
-        # for requested_arch.
-        #
-        # At the end of this function, all packages will either be:
-        #  - present as a local directory (pkg.local_dir() is not None)
-        #  - present as a local file (pkg.local_file(fmt) is not None for some fmt) and
-        #    points to a tarball representing the package
-        #
-        # You can optionally request formats which will force the presence of a particular
-        # local file (ie: even if a directory is present for the package, it will
-        # still fetch the tarball)
-        #
-        # Tarballs are fetched from cache if available and the web if not. Package
-        # transmutation also happens if the requested format is not found (only for
-        # conda packages))
-        #
-        # A lock needs to be held on all directories of search_dirs and dest_dir
-
-        if not self._found_binaries:
-            self._find_conda_binary()
-
-        if require_conda_format is None:
-            require_conda_format = []
-
-        cache_downloads = []  # type: List[Tuple[PackageSpecification, str, str]]
-        web_downloads = []  # type: List[Tuple[PackageSpecification, str]]
-        transmutes = []  # type: List[Tuple[PackageSpecification, str]]
-        url_adds = []  # type: List[str]
-
-        if self._mode == "remote":
-            # If we are in remote mode, no point searching for local packages -- they
-            # are not there.
-            search_dirs = []
-        else:
-            if search_dirs is None:
-                search_dirs = [dest_dir]
-
-        # Helper functions
-        def _add_to_fetch_lists(
-            pkg_spec: PackageSpecification, pkg_format: str, mode: str, dst: str
-        ):
-            if pkg_spec.TYPE != "conda":  # type: ignore
-                # We may have to create the directory
-                dir_path = os.path.split(dst)[0]
-                if not os.path.exists(dir_path):
-                    os.mkdir(dir_path)
-            if mode == "cache":
-                cache_downloads.append((pkg_spec, pkg_format, dst))
-            elif mode == "web":
-                # In some cases -- when we build packages locally, the URL is actually
-                # not a valid URL but a fake one we use as a key. In that case, we
-                # error out because we won't be able to fetch the environment. Note that
-                # this won't happen if we have a cache since we prefer cache over web
-                # download
-                if pkg_spec.is_downloadable_url():
-                    web_downloads.append((pkg_spec, dst))
-                else:
-                    raise CondaException(
-                        "No non-web source for non web-downloadable package '%s'"
-                        % pkg_spec.package_name
-                    )
-
-        def _download_web(
-            session: requests.Session, entry: Tuple[PackageSpecification, str]
-        ) -> Tuple[PackageSpecification, Optional[Exception]]:
-            pkg_spec, local_path = entry
-            base_hash = pkg_spec.base_hash()
-            debug.conda_exec(
-                "%s -> download %s to %s"
-                % (pkg_spec.filename, pkg_spec.url, local_path)
-            )
-            try:
-                with open(local_path, "wb") as f:
-                    with session.get(pkg_spec.url, stream=True, auth=auth_info) as r:
-                        r.raise_for_status()
-                        for chunk in r.iter_content(chunk_size=None):
-                            base_hash.update(chunk)
-                            f.write(chunk)
-                pkg_spec.add_local_file(
-                    pkg_spec.url_format,
-                    local_path,
-                    pkg_hash=base_hash.hexdigest(),
-                    downloaded=True,
-                )
-            except Exception as e:
-                return (pkg_spec, e)
-            return (pkg_spec, None)
-
-        def _transmute(
-            entry: Tuple[PackageSpecification, str]
-        ) -> Tuple[PackageSpecification, Optional[str], Optional[Exception]]:
-            pkg_spec, src_format = entry
-            if pkg_spec.TYPE != "conda":
-                raise CondaException("Transmutation only supported for Conda packages")
-            debug.conda_exec("%s -> transmute %s" % (pkg_spec.filename, src_format))
-
-            def _cph_transmute(src_file: str, dst_file: str, dst_format: str):
-                args = [
-                    "t",
-                    "--processes",
-                    "1",
-                    "--zstd-compression-level",
-                    "3",
-                    "--force",
-                    "--out-folder",
-                    os.path.dirname(dst_file),
-                    src_file,
-                    dst_format,
-                ]
-                self.call_binary(args, binary="cph")
-
-            def _micromamba_transmute(src_file: str, dst_file: str, dst_format: str):
-                args = ["package", "transmute", "-c", "3", src_file]
-                self.call_binary(args, binary="micromamba")
-
-            try:
-                src_file = pkg_spec.local_file(src_format)
-                if src_file is None:
-                    raise CondaException(
-                        "Need to transmute %s but %s does not have a local file in that format"
-                        % (src_format, pkg_spec.filename)
-                    )
-                dst_format = [f for f in CONDA_FORMATS if f != src_format][0]
-                dst_file = src_file[: -len(src_format)] + dst_format
-
-                # Micromamba transmute still has an issue with case insensitive
-                # OSs so force CPH use for cross-arch packages for now but use
-                # micromamba otherwise if available
-                # https://github.com/mamba-org/mamba/issues/2328
-
-                # Micromamba transmute also has issues going from .conda to .tar.bz2
-                # with filenames so we use CPH
-                if (
-                    "micromamba" in cast(Dict[str, str], self._bins)
-                    and requested_arch == arch_id()
-                    and src_format != ".conda"
-                ):
-                    _micromamba_transmute(src_file, dst_file, dst_format)
-                elif "cph" in cast(Dict[str, str], self._bins):
-                    _cph_transmute(src_file, dst_file, dst_format)
-                else:
-                    if requested_arch != arch_id() and "micromamba" not in cast(
-                        Dict[str, str], self._bins
-                    ):
-                        raise CondaException(
-                            "Transmuting a package with micromamba is not supported "
-                            "across architectures or from .conda due to "
-                            "https://github.com/mamba-org/mamba/issues/2328. "
-                            "Please install conda-package-handling."
-                        )
-                    raise CondaException(
-                        "Requesting to transmute package without conda-package-handling "
-                        " or micromamba"
-                    )
-
-                pkg_spec.add_local_file(dst_format, dst_file)
-            except CondaException as e:
-                return (pkg_spec, None, e)
-            return (pkg_spec, dst_format, None)
-
-        # Iterate over all the filenames that we want to fetch.
-        for pkg_spec in packages:
-            found_dir = False
-            for d in search_dirs:
-                extract_path = os.path.join(d, pkg_spec.filename)
-                if (
-                    pkg_spec.TYPE == "conda"
-                    and not require_conda_format
-                    and not require_url_format
-                    and os.path.isdir(extract_path)
-                ):
-                    debug.conda_exec(
-                        "%s -> using existing directory %s"
-                        % (pkg_spec.filename, extract_path)
-                    )
-                    pkg_spec.add_local_dir(extract_path)
-                    found_dir = True
-                    break
-
-                # At this point, we don't have a directory or we need specific tarballs
-                for f in pkg_spec.allowed_formats():
-                    # We may have found the file in another directory
-                    if pkg_spec.local_file(f):
-                        continue
-                    if pkg_spec.TYPE == "conda":
-                        tentative_path = os.path.join(
-                            d, "%s%s" % (pkg_spec.filename, f)
-                        )
-                    else:
-                        tentative_path = os.path.join(
-                            d, pkg_spec.TYPE, "%s%s" % (pkg_spec.filename, f)
-                        )
-                    if os.path.isfile(tentative_path):
-                        try:
-                            pkg_spec.add_local_file(f, tentative_path)
-                        except ValueError:
-                            debug.conda_exec(
-                                "%s -> rejecting %s due to hash mismatch (expected %s)"
-                                % (
-                                    pkg_spec.filename,
-                                    tentative_path,
-                                    pkg_spec.pkg_hash(f),
-                                )
-                            )
-            if found_dir:
-                # We didn't need specific tarballs and we found a directory -- happy clam
-                continue
-
-            # This code extracts the most preferred source of filename as well as a list
-            # of where we can get a given format
-            # The most_preferred_source will be:
-            #  - if it exists, a local file (among local files, prefer the first file in
-            #    the allowed_formats list)
-            #  - if no local files, if they exist, a cached version
-            #    (among cached versions, prefer the first format in the allowed_formats
-            #    list)
-            #  - if no cached version, the web download
-            most_preferred_source = None
-            most_preferred_format = None
-
-            available_formats = {}  # type: Dict[str, Tuple[str, str]]
-            if pkg_spec.TYPE != "conda":
-                dl_local_path = os.path.join(
-                    dest_dir, pkg_spec.TYPE, "%s{format}" % pkg_spec.filename
-                )
-                # Make sure the destination directory exists
-                os.makedirs(os.path.join(dest_dir, pkg_spec.TYPE), exist_ok=True)
-            else:
-                dl_local_path = os.path.join(dest_dir, "%s{format}" % pkg_spec.filename)
-            # Check for local files first
-            if self._mode != "remote":
-                for f in pkg_spec.allowed_formats():
-                    local_path = pkg_spec.local_file(f)
-                    if local_path:
-                        src = ("local", local_path)
-                        if most_preferred_source is None:
-                            most_preferred_source = src
-                            most_preferred_format = f
-                        available_formats[f] = src
-
-            # Check for cache paths next
-            for f in pkg_spec.allowed_formats():
-                cache_info = pkg_spec.cached_version(f)
-                if cache_info and cache_info.url:
-                    src = ("cache", dl_local_path.format(format=f))
-                    if most_preferred_source is None:
-                        most_preferred_source = src
-                        most_preferred_format = f
-                    if f not in available_formats:
-                        available_formats[f] = src
-
-            # And finally, fall back on the web
-            web_src = (
-                "web",
-                dl_local_path.format(format=pkg_spec.url_format),
-            )
-            if most_preferred_source is None:
-                most_preferred_source = web_src
-                most_preferred_format = pkg_spec.url_format
-            if pkg_spec.url_format not in available_formats:
-                available_formats[pkg_spec.url_format] = web_src
-
-            debug.conda_exec(
-                "%s -> preferred %s @ %s"
-                % (
-                    pkg_spec.filename,
-                    most_preferred_format,
-                    most_preferred_source[0],
-                )
-            )
-
-            assert most_preferred_format
-            fetched_formats = [most_preferred_format]
-            _add_to_fetch_lists(pkg_spec, most_preferred_format, *most_preferred_source)
-
-            # Conda packages, with their multiple formats, require a bit more handling
-            if pkg_spec.TYPE == "conda":
-                for f in [
-                    f
-                    for f in require_conda_format
-                    if f in available_formats and f != most_preferred_format
-                ]:
-                    _add_to_fetch_lists(pkg_spec, f, *available_formats[f])
-                    fetched_formats.append(f)
-                if require_url_format and pkg_spec.url_format not in fetched_formats:
-                    # Guaranteed to be in available_formats because we add the web_src
-                    # as a last resort above
-                    _add_to_fetch_lists(
-                        pkg_spec,
-                        pkg_spec.url_format,
-                        *available_formats[pkg_spec.url_format]
-                    )
-                    fetched_formats.append(pkg_spec.url_format)
-                # For anything that we need and we don't have an available source for,
-                # we transmute from our most preferred source.
-                for f in [f for f in require_conda_format if f not in fetched_formats]:
-                    transmutes.append((pkg_spec, most_preferred_format))
-        # Done going over all the files
-        start = time.time()
-        do_download = web_downloads or cache_downloads
-        if do_download:
-            self.echo(
-                "    Downloading %d(web) + %d(cache) package%s for arch %s ..."
-                % (
-                    len(web_downloads),
-                    len(cache_downloads),
-                    plural_marker(len(web_downloads) + len(cache_downloads)),
-                    requested_arch,
-                ),
-                nl=False,
-            )
-
-        pending_errors = []  # type: List[str]
-        if do_download or len(transmutes) > 0:
-            # Ensure the packages directory exists at the very least
-            if not os.path.isdir(dest_dir):
-                os.makedirs(dest_dir)
-            url_file = os.path.join(dest_dir, "urls.txt")
-            known_urls = set()  # type: Set[str]
-            if os.path.isfile(url_file):
-                with open(url_file, "rb") as f:
-                    known_urls.update([l.strip().decode("utf-8") for l in f])
-
-            if web_downloads:
-                with ThreadPoolExecutor() as executor:
-                    with requests.Session() as s:
-                        a = requests.adapters.HTTPAdapter(
-                            pool_connections=executor._max_workers,
-                            pool_maxsize=executor._max_workers,
-                            max_retries=3,
-                        )
-                        s.mount("https://", a)
-                        download_results = [
-                            executor.submit(_download_web, s, entry)
-                            for entry in web_downloads
-                        ]
-                        for f in as_completed(download_results):
-                            pkg_spec, error = f.result()
-                            if error is None:
-                                if (
-                                    pkg_spec.TYPE == "conda"
-                                    and pkg_spec.url not in known_urls
-                                ):
-                                    url_adds.append(pkg_spec.url)
-                            else:
-                                pending_errors.append(
-                                    "Error downloading package for '%s': %s"
-                                    % (pkg_spec.filename, str(error))
-                                )
-
-            if cache_downloads and self._storage:
-                keys_to_info = (
-                    {}
-                )  # type: Dict[str, Tuple[PackageSpecification, str, str, str]]
-                for pkg_spec, pkg_format, local_path in cache_downloads:
-                    cache_info = pkg_spec.cached_version(pkg_format)
-                    if cache_info:
-                        keys_to_info[cache_info.url] = (
-                            pkg_spec,
-                            pkg_format,
-                            cache_info.hash,
-                            local_path,
-                        )
-                    else:
-                        pending_errors.append(
-                            "Internal error: trying to download a non-existent cache item for %s"
-                            % pkg_spec.filename
-                        )
-                with self._storage.load_bytes(keys_to_info.keys()) as load_results:  # type: ignore
-                    for key, tmpfile, _ in load_results:  # type: ignore
-                        pkg_spec, pkg_format, pkg_hash, local_path = keys_to_info[key]  # type: ignore
-                        if not tmpfile:
-                            pending_errors.append(
-                                "Error downloading package from cache for '%s': not found at %s"
-                                % (pkg_spec.filename, key)
-                            )
-                        else:
-                            if pkg_spec.TYPE == "conda":
-                                url_to_add = self._make_urlstxt_from_cacheurl(key)  # type: ignore
-                                if url_to_add not in known_urls:
-                                    url_adds.append(url_to_add)
-                            shutil.move(tmpfile, local_path)  # type: ignore
-                            # We consider stuff in the cache to be clean in terms of hash
-                            # so we don't want to recompute it.
-                            pkg_spec.add_local_file(
-                                pkg_format, local_path, pkg_hash, downloaded=True
-                            )
-
-            if do_download:
-                delta_time = int(time.time() - start)
-                self.echo(
-                    " done in %d second%s." % (delta_time, plural_marker(delta_time)),
-                    timestamp=False,
-                )
-            if not pending_errors and transmutes:
-                start = time.time()
-                self.echo(
-                    "    Transmuting %d package%s for arch %s..."
-                    % (
-                        len(transmutes),
-                        plural_marker(len(transmutes)),
-                        requested_arch,
-                    ),
-                    nl=False,
-                )
-                with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
-                    transmut_results = [
-                        executor.submit(_transmute, entry) for entry in transmutes
-                    ]
-                    for f in as_completed(transmut_results):
-                        pkg_spec, dst_format, error = f.result()
-                        if error:
-                            pending_errors.append(
-                                "Error transmuting '%s': %s"
-                                % (pkg_spec.filename, error)
-                            )
-                        else:
-                            new_url = self._make_urlstxt_from_url(pkg_spec, dst_format)
-
-                            if new_url not in known_urls:
-                                url_adds.append(new_url)
-                delta_time = int(time.time() - start)
-                self.echo(
-                    " done in %d second%s." % (delta_time, plural_marker(delta_time)),
-                    timestamp=False,
-                )
-            if url_adds:
-                # Update the urls file in the packages directory so that Conda knows that the
-                # files are there
-                debug.conda_exec(
-                    "Adding the following URLs to %s: %s"
-                    % (os.path.join(dest_dir, "urls.txt"), str(url_adds))
-                )
-                with open(
-                    os.path.join(dest_dir, "urls.txt"),
-                    mode="a",
-                    encoding="utf-8",
-                ) as f:
-                    f.writelines(["%s\n" % l for l in url_adds])
-        if pending_errors:
-            print(
-                "Got the following errors while loading packages:\n%s"
-                % "\n".join(pending_errors),
-                file=sys.stderr,
-            )
-            raise CondaException(
-                "Could not fetch packages -- see pretty-printed errors above."
-            )
+        # REC: TODO: You could implement your own here if you don't like this implementation
+        # that does a bunch of things. 
+        pass
 
     def write_out_environments(self) -> None:
         """
@@ -1889,6 +1332,8 @@ class Conda(object):
         self._conda_executable_type = "micromamba"
 
     def _validate_conda_installation(self) -> Optional[Exception]:
+        # REC: For OSS, this could be simplified to just what you want. It can easily
+        # be over-ridden internally.
         # If this is installed in CONDA_LOCAL_PATH look for special marker
         if self._mode == "local" and CONDA_LOCAL_PATH is not None:
             if not os.path.isfile(
@@ -2046,77 +1491,14 @@ class Conda(object):
     def _remote_env_fetch(
         self, env_ids: List[EnvID], ignore_co_resolved: bool = False
     ) -> List[Optional[ResolvedEnvironment]]:
-        result = OrderedDict(
-            {self.get_datastore_path_to_env(env_id): env_id for env_id in env_ids}
-        )  # type: OrderedDict[str, Union[EnvID, ResolvedEnvironment]]
-        addl_env_ids = []  # type: List[EnvID]
-        with self._storage.load_bytes(result.keys()) as loaded:
-            for key, tmpfile, _ in loaded:
-                env_id = cast(EnvID, result[cast(str, key)])
-                if tmpfile:
-                    with open(tmpfile, mode="r", encoding="utf-8") as f:
-                        resolved_env = ResolvedEnvironment.from_dict(
-                            env_id, json.load(f)
-                        )
-                        result[cast(str, key)] = resolved_env
-                        # We need to fetch the co-resolved ones as well since they
-                        # may be requested
-                        if (
-                            not ignore_co_resolved
-                            and len(resolved_env.co_resolved_archs) > 1
-                        ):
-                            addl_env_ids.extend(
-                                [
-                                    EnvID(
-                                        req_id=resolved_env.env_id.req_id,
-                                        full_id=resolved_env.env_id.full_id,
-                                        arch=arch,
-                                    )
-                                    for arch in resolved_env.co_resolved_archs
-                                    if arch != resolved_env.env_id.arch
-                                ]
-                            )
-                        self._cached_environment.add_resolved_env(resolved_env)
-                debug.conda_exec(
-                    "%s%sfound remotely at %s"
-                    % (str(env_id), " " if tmpfile else " not ", key)
-                )
-        if addl_env_ids:
-            self._remote_env_fetch(addl_env_ids, ignore_co_resolved=True)
-        return [
-            x if isinstance(x, ResolvedEnvironment) else None for x in result.values()
-        ]
+        # REC: I would have this implemented
+        raise NotImplementedError()
 
     def _remote_fetch_alias(
         self, env_aliases: List[Tuple[AliasType, str]], arch: Optional[str] = None
     ) -> List[Optional[EnvID]]:
-        arch = arch or arch_id()
-        result = OrderedDict(
-            {
-                self.get_datastore_path_to_env_alias(alias_type, env_alias): (
-                    alias_type,
-                    env_alias,
-                )
-                for alias_type, env_alias in env_aliases
-            }
-        )  # type: OrderedDict[str, Optional[Union[Tuple[AliasType, str], EnvID]]]
-        with self._storage.load_bytes(result.keys()) as loaded:
-            for key, tmpfile, _ in loaded:
-                alias_type, env_alias = cast(
-                    Tuple[AliasType, str], result[cast(str, key)]
-                )
-                if tmpfile:
-                    with open(tmpfile, mode="r", encoding="utf-8") as f:
-                        req_id, full_id = json.load(f)
-                    self._cached_environment.add_alias(
-                        alias_type, env_alias, req_id, full_id
-                    )
-                    result[cast(str, key)] = EnvID(req_id, full_id, arch)
-                debug.conda_exec(
-                    "%s%sfound remotely at %s"
-                    % (env_alias, " " if tmpfile else " not ", key)
-                )
-        return [x if isinstance(x, EnvID) else None for x in result.values()]
+        # REC: I would have this implemented
+        raise NotImplementedError()
 
     # TODO: May not be needed
     def _remote_env_fetch_alias(
@@ -2124,30 +1506,8 @@ class Conda(object):
         env_aliases: List[Tuple[AliasType, str]],
         arch: Optional[str] = None,
     ) -> List[Optional[ResolvedEnvironment]]:
-        arch = arch or arch_id()
-        to_fetch = []  # type: List[EnvID]
-        to_fetch_idx = []  # type: List[int]
-        env_ids = self._remote_fetch_alias(env_aliases, arch)
-        result = [None] * len(env_ids)  # type: List[Optional[ResolvedEnvironment]]
-
-        # We may have the environments locally even if we didn't have the alias so
-        # look there first before going remote again
-        for idx, env_id in enumerate(env_ids):
-            if env_id:
-                e = self.environment(env_id, local_only=True)
-                if e:
-                    result[idx] = e
-                else:
-                    to_fetch_idx.append(idx)
-                    to_fetch.append(env_id)
-
-        # Now we look at all the other ones that we don't have locally but have
-        # actual EnvIDs for
-        found_envs = self._remote_env_fetch(to_fetch, ignore_co_resolved=True)
-        idx = 0
-        for idx, e in zip(to_fetch_idx, found_envs):
-            result[idx] = e
-        return result
+        # REC: I would have this implemented
+        raise NotImplementedError()
 
     @property
     def _package_dirs(self) -> List[str]:
@@ -2508,74 +1868,9 @@ class Conda(object):
             return "Unknown resolver '%s'" % resolver
 
     def _start_micromamba_server(self):
-        if not self._have_micromamba_server:
-            return
-        if self._micromamba_server_port:
-            return
-
-        def _find_port():
-            with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-                s.bind(("", 0))
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                return s.getsockname()[1]
-
-        assert self._bins
-        attempt = 1
-        while True:
-            cur_port = _find_port()
-            p = subprocess.Popen(
-                [
-                    self._bins["micromamba"],
-                    "-r",
-                    os.path.dirname(self._package_dirs[0]),
-                    "server",
-                    "-p",
-                    str(cur_port),
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            time.sleep(1)
-            # If we can't start, we try again with a new port
-            debug.conda_exec(
-                "Attempted micromamba server start on port %d (attempt %d)"
-                % (cur_port, attempt)
-            )
-            attempt += 1
-            if not p.poll():
-                break
-        self._micromamba_server_port = cur_port
-        self._micromamba_server_process = p
-        debug.conda_exec("Micromamba server started on port %d" % cur_port)
-        # We also create a script to pretend to be micromamba but still use the server
-        # This allows us to integrate with conda-lock without modifying conda-lock.
-        # This can go away if/when conda-lock integrates directly with micromamba server
-        # Conda-lock checks for the file ending in "micromamba" so we name it
-        # appropriately
-        with tempfile.NamedTemporaryFile(
-            suffix="micromamba", delete=False, mode="w", encoding="utf-8"
-        ) as f:
-            f.write(
-                glue_script.format(
-                    python_executable=sys.executable,
-                    micromamba_exec=self._bins["micromamba"],
-                    micromamba_root=os.path.dirname(self._package_dirs[0]),
-                    server_port=cur_port,
-                )
-            )
-            debug.conda_exec("Micromamba server glue script in %s" % cur_port)
-            self._bins["micromamba_server"] = f.name
-        os.chmod(
-            self._bins["micromamba_server"],
-            stat.S_IRUSR
-            | stat.S_IXUSR
-            | stat.S_IRGRP
-            | stat.S_IXGRP
-            | stat.S_IROTH
-            | stat.S_IXOTH,
-        )
-
+        # REC: I would implement this (well, I actually don't use it, it's kept here
+        # mostly so that I don't forget the code :))
+        raise NotImplementedError()
 
 class CondaLock(object):
     def __init__(

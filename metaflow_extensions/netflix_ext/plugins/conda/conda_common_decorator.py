@@ -262,29 +262,12 @@ class StepRequirement(StepRequirementIface):
 
 
 class CondaRequirementDecoratorMixin(StepRequirementMixin):
+    # REC: I would have my own version of this with my legacy values
     defaults = {
         "libraries": {},
         "channels": [],
-        # The next fields are deprecated in favor of @named_env and @pypi
-        "pip_packages": {},
-        "pip_sources": [],
-        "name": None,
-        "pathspec": None,
-        "fetch_at_exec": None,
         **StepRequirementMixin.defaults,
     }
-
-    @property
-    def from_name(self) -> Optional[str]:
-        return self.attributes["name"]
-
-    @property
-    def pathspec(self) -> Optional[str]:
-        return self.attributes["pathspec"]
-
-    @property
-    def is_fetch_at_exec(self) -> Optional[bool]:
-        return self.attributes["fetch_at_exec"]
 
     @property
     def packages(self) -> Dict[str, Dict[str, str]]:
@@ -293,45 +276,22 @@ class CondaRequirementDecoratorMixin(StepRequirementMixin):
                 k: v
                 for k, v in cast(Dict[str, str], self.attributes["libraries"]).items()
             },
-            "pypi": {
-                k: canonicalize_version(v)
-                for k, v in cast(
-                    Dict[str, str], self.attributes["pip_packages"]
-                ).items()
-            },
         }
 
     @property
     def sources(self) -> Dict[str, List[str]]:
         return {
             "conda": [k for k in cast(List[str], self.attributes["channels"])],
-            "pypi": [k for k in cast(List[str], self.attributes["pip_sources"])],
         }
 
 
 class PypiRequirementDecoratorMixin(StepRequirementMixin):
+    # REC: Ditto here
     defaults = {
         "packages": {},
         "extra_indices": [],
-        # The next fields are deprecated in favor of @named_env
-        "sources": [],
-        "name": None,
-        "pathspec": None,
-        "fetch_at_exec": None,
         **StepRequirementMixin.defaults,
     }
-
-    @property
-    def from_name(self) -> Optional[str]:
-        return self.attributes["name"]
-
-    @property
-    def pathspec(self) -> Optional[str]:
-        return self.attributes["pathspec"]
-
-    @property
-    def is_fetch_at_exec(self) -> Optional[bool]:
-        return self.attributes["fetch_at_exec"]
 
     @property
     def packages(self) -> Dict[str, Dict[str, str]]:
@@ -349,28 +309,7 @@ class PypiRequirementDecoratorMixin(StepRequirementMixin):
                 k
                 for k in cast(
                     List[str],
-                    chain(self.attributes["sources"], self.attributes["extra_indices"]),
+                    self.attributes["extra_indices"],
                 )
             ]
         }
-
-
-class NamedEnvRequirementDecoratorMixin(StepRequirementMixin):
-    defaults = {
-        "name": None,
-        "pathspec": None,
-        "fetch_at_exec": None,
-        **StepRequirementMixin.defaults,
-    }
-
-    @property
-    def from_name(self) -> Optional[str]:
-        return self.attributes["name"]
-
-    @property
-    def from_pathspec(self) -> Optional[str]:
-        return self.attributes["pathspec"]
-
-    @property
-    def is_fetch_at_exec(self) -> Optional[bool]:
-        return self.attributes["fetch_at_exec"]
