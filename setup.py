@@ -5,7 +5,7 @@ version = "1.0.4"
 setup(
     name="metaflow-netflixext",
     version=version,
-    description="EXPERIMENTAL Metaflow extensions from Netflix",
+    description="Metaflow extensions from Netflix",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     license="Apache Software License",
