@@ -1064,7 +1064,7 @@ class BuildInEnvExample(FlowSpec):
                     "environment",
                     "resolve",
                     "--alias",
-                    "mlp/metaflow/test/build_in_step_example/id_%s_%s_%s"
+                    "mlp/metaflow/test/build_in_step_example/id_%s_%s_%s" % (full_run_id, base_run_id, self.my_var)
                     "-r",
                     req_file.name,
                     "--python",
@@ -1072,7 +1072,7 @@ class BuildInEnvExample(FlowSpec):
                 ]
             )
         print(
-            "Build environment and aliased using mlp/metaflow/test/build_in_step_example/id_%s_%s_%s"
+            "Build environment and aliased using mlp/metaflow/test/build_in_step_example/id_%s_%s_%s" % (full_run_id, base_run_id, self.my_var)
         )
         self.next(self.end)
 
