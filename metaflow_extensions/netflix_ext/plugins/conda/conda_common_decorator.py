@@ -5,6 +5,7 @@ from itertools import chain
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from metaflow.metaflow_environment import InvalidEnvironmentException
+from metaflow.unbounded_foreach import UBF_CONTROL, UBF_TASK
 
 from metaflow_extensions.netflix_ext.vendor.packaging.utils import canonicalize_version
 
@@ -40,31 +41,14 @@ class StepRequirementIface:
     def sources(self) -> Dict[str, List[str]]:
         return {}
 
+    def default_disabled(self, ubf_context: str) -> Optional[bool]:
+        return None
+
 
 class StepRequirementMixin(StepRequirementIface):
     defaults = {
-        "python": None,
         "disabled": None,
     }  # type: Dict[str, Any]
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        if (self.attributes["name"] or self.attributes["pathspec"]) and any(
-            [
-                True
-                for k, v in self.attributes.items()
-                if v and k not in ("name", "pathspec", "fetch_at_exec")
-            ]
-        ):
-            raise InvalidEnvironmentException(
-                "You cannot specify `name` or `pathspec` along with other attributes in @%s"
-                % self.name
-            )
-
-    @property
-    def python(self) -> Optional[str]:
-        return self.attributes["python"]
 
     @property
     def is_disabled(self) -> Optional[bool]:
@@ -90,6 +74,10 @@ class StepRequirement(StepRequirementIface):
         self._disabled = None  # type: Optional[bool]
         self._packages = {}  # type: Dict[str, Dict[str, str]]
         self._sources = {}  # type: Dict[str, List[str]]
+        self._default_disabled = {
+            UBF_CONTROL: None,
+            UBF_TASK: None,
+        }  # type: Dict[str, Optional[bool]]
 
     def copy(self) -> "StepRequirement":
         n = StepRequirement()
@@ -100,6 +88,7 @@ class StepRequirement(StepRequirementIface):
         n._disabled = self._disabled
         n._packages = copy.deepcopy(self._packages)
         n._sources = copy.deepcopy(self._sources)
+        n._default_disabled = copy.deepcopy(self._default_disabled)
         return n
 
     @property
@@ -168,6 +157,9 @@ class StepRequirement(StepRequirementIface):
     def sources(self, value: Dict[str, List[str]]):
         self._sources = value
 
+    def default_disabled(self, ubf_context: str) -> Optional[bool]:
+        return self._default_disabled[ubf_context]
+
     def __repr__(self) -> str:
         disabled_part = (
             "disabled=%s" % self.is_disabled if self.is_disabled is not None else ""
@@ -201,7 +193,7 @@ class StepRequirement(StepRequirementIface):
     def merge_update(self, other: StepRequirementIface):
         def _check_and_return(f: str, v1: Any, v2: Any) -> Any:
             if v1 is not None:
-                if v1 == v2:
+                if v2 is None or v1 == v2:
                     return v1
                 raise InvalidEnvironmentException(
                     "%s is specified with incompatible values: %s and %s" % (f, v1, v2)
@@ -236,6 +228,12 @@ class StepRequirement(StepRequirementIface):
             "fetch_at_exec", self.is_fetch_at_exec, other.is_fetch_at_exec
         )
         self._disabled = check_func("disabled", self.is_disabled, other.is_disabled)
+        for ubf_context in (UBF_CONTROL, UBF_TASK):
+            self._default_disabled[ubf_context] = check_func(
+                "default_disabled",
+                self.default_disabled(ubf_context),
+                other.default_disabled(ubf_context),
+            )
 
         other_packages = other.packages
 
@@ -263,6 +261,7 @@ class StepRequirement(StepRequirementIface):
 
 class CondaRequirementDecoratorMixin(StepRequirementMixin):
     defaults = {
+        "python": None,
         "libraries": {},
         "channels": [],
         # The next fields are deprecated in favor of @named_env and @pypi
@@ -273,6 +272,10 @@ class CondaRequirementDecoratorMixin(StepRequirementMixin):
         "fetch_at_exec": None,
         **StepRequirementMixin.defaults,
     }
+
+    @property
+    def python(self) -> Optional[str]:
+        return self.attributes["python"]
 
     @property
     def from_name(self) -> Optional[str]:
@@ -311,6 +314,7 @@ class CondaRequirementDecoratorMixin(StepRequirementMixin):
 
 class PypiRequirementDecoratorMixin(StepRequirementMixin):
     defaults = {
+        "python": None,
         "packages": {},
         "extra_indices": [],
         # The next fields are deprecated in favor of @named_env
@@ -320,6 +324,10 @@ class PypiRequirementDecoratorMixin(StepRequirementMixin):
         "fetch_at_exec": None,
         **StepRequirementMixin.defaults,
     }
+
+    @property
+    def python(self) -> Optional[str]:
+        return self.attributes["python"]
 
     @property
     def from_name(self) -> Optional[str]:

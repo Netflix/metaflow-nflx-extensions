@@ -114,6 +114,32 @@ directory of your flow file or in any of the sub-directories will automatically 
 when executing remotely. For example, if you place a `mymodule.py` file next to your flow file, you can then
 do `import mymodule`.
 
+## Configuration
+
+There are many documented configuration options for this extension. The default value should
+work in most cases but if you want to change them, you can set them in your usual metaflow configuration
+file (all configuration options are given
+[here](https://github.com/Netflix/metaflow-nflx-extensions/blob/main/metaflow_extensions/netflix_ext/config/mfextinit_netflixext.py)
+(remember to prefix all configuration variable names with `METAFLOW_` when setting them in your profile).
+
+This section lists some useful configuration options
+
+### Resolvers
+By default, this extension will not resolve mixed pypi and conda packages. To do so, you need to set
+`METAFLOW_CONDA_MIXED_DEPENDENCY_RESOLVER` to `conda-lock`.
+
+We also use `mamba` by default to resolve environments. You can change this to `micromamba` or
+`conda` using `METAFLOW_CONDA_DEPENDENCY_RESOLVER`.
+
+### Performance
+You can get a significant performance gain if you use only `.conda` packages and not `.tar.bz2` packages
+for Conda packages. To do so, set `METAFLOW_CONDA_PREFERRED_FORMAT` to `.conda`. Note that you need
+either `micromamba` or `conda-package-handling` installed for this to work.
+
+## Troubleshooting
+If you run into issues, you can run with `METAFLOW_DEBUG_CONDA=1` to get a more detailed output of
+what is happening. This output can help the Metaflow community figure out the problem.
+
 ## Environment management with Metaflow
 
 As previously mentioned, there are a few distinct steps in environment management:
@@ -474,7 +500,7 @@ Metaflow 2.9.12+netflix-ext(1.0.0) executing CondaTestFlow for user:romain
 It is important to note that in both cases, the environment is resolved on your local machine (the one launching
 the run or deploying to Argo/Airflow/StepFunctions) and never on a remote node.
 
-When an environment is resolved, it is also cached to S3 for faster retrieval which may increase the initial
+When an environment is resolved, it is also cached to S3/GS/Azure for faster retrieval which may increase the initial
 resolution process (but it will speed it up later).
 We cache both the packages that form your environment as well as the definition of the environment itself
 allowing you to share it (more in [named environments](#named-environments)).

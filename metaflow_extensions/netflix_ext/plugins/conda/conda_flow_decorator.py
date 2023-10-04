@@ -33,32 +33,32 @@ class CondaRequirementFlowDecorator(
 
     Parameters
     ----------
-    name : Optional[str]
+    name : str, optional, default None
         DEPRECATED -- use `@named_env(name=)` instead.
         If specified, can refer to a named environment. The environment referred to
         here will be the one used for this step. If specified, nothing else can be
         specified in this decorator. In the name, you can use `@{}` values and
         environment variables will be used to substitute.
-    pathspec : Optional[str]
+    pathspec : str, optional, default None
         DEPRECATED -- use `@named_env(pathspec=)` instead.
         If specified, can refer to the pathspec of an existing step. The environment
         of this referred step will be used here. If specified, nothing else can be
         specified in this decorator. In the pathspec, you can use `@{}` values and
         environment variables will be used to substitute.
-    libraries : Optional[Dict[str, str]]
+    libraries : Dict[str, str], default {}
         Libraries to use for this step. The key is the name of the package
-        and the value is the version to use (default: `{}`). Note that versions can
+        and the value is the version to use. Note that versions can
         be specified either as a specific version or as a comma separated string
         of constraints like "<2.0,>=1.5".
-    channels : Optional[List[str]]
+    channels : List[str], default []
         Additional channels to search
-    pip_packages : Optional[Dict[str, str]]
+    pip_packages : Dict[str, str], default {}
         DEPRECATED -- use `@pypi(packages=)` instead.
         Same as libraries but for pip packages.
-    pip_sources : Optional[List[str]]
+    pip_sources : List[str], default []
         DEPRECATED -- use `@pypi(extra_indices=)` instead.
         Same as channels but for pip sources.
-    python : Optional[str]
+    python : str, optional, default None
         Version of Python to use, e.g. '3.7.4'. If not specified, the current version
         will be used.
     fetch_at_exec : bool, default False
@@ -104,24 +104,24 @@ class PypiRequirementFlowDecorator(
 
     Parameters
     ----------
-    name : Optional[str]
+    name : str, optional, default None
         DEPRECATED -- use `@named_env(name=)` instead.
         If specified, can refer to a named environment. The environment referred to
         here will be the one used for this step. If specified, nothing else can be
         specified in this decorator. In the name, you can use `@{}` values and
         environment variables will be used to substitute.
-    pathspec : Optional[str]
+    pathspec : str, optional, default None
         DEPRECATED -- use `@named_env(name=)` instead.
         If specified, can refer to the pathspec of an existing step. The environment
         of this referred step will be used here. If specified, nothing else can be
         specified in this decorator. In the name, you can use `@{}` values and
         environment variables will be used to substitute.
-    packages : Optional[Dict[str, str]]
+    packages : Dict[str, str], default {}
         Packages to use for this step. The key is the name of the package
-        and the value is the version to use (default: `{}`).
-    extra_indices : Optional[List[str]]
+        and the value is the version to use (default `{}`).
+    extra_indices : List[str], default []
         Additional sources to search for
-    python : Optional[str]
+    python : str, optional, default None
         Version of Python to use, e.g. '3.7.4'. If not specified, the current python
         version will be used.
     fetch_at_exec : bool, default False
@@ -167,12 +167,12 @@ class NamedEnvRequirementFlowDecorator(
 
     Parameters
     ----------
-    name : Optional[str]
+    name : str, optional, default None
         If specified, can refer to a named environment. The environment referred to
         here will be the one used for this step. If specified, nothing else can be
         specified in this decorator. In the name, you can use `@{}` values and
         environment variables will be used to substitute.
-    pathspec : Optional[str]
+    pathspec : str, optional, default None
         If specified, can refer to the pathspec of an existing step. The environment
         of this referred step will be used here. If specified, nothing else can be
         specified in this decorator. In the name, you can use `@{}` values and
@@ -199,25 +199,28 @@ class PipRequirementFlowDecorator(PypiRequirementFlowDecorator):
 
     Parameters
     ----------
-    name : Optional[str]
+    name : str, optional, default None
+        DEPRECATED -- use `@named_env(name=)` instead.
         If specified, can refer to a named environment. The environment referred to
-        here will be the one used as a base environment for all steps.
-        If specified, nothing else can be specified in this decorator.
-    pathspec : Optional[str]
+        here will be the one used for this step. If specified, nothing else can be
+        specified in this decorator. In the name, you can use `@{}` values and
+        environment variables will be used to substitute.
+    pathspec : str, optional, default None
+        DEPRECATED -- use `@named_env(name=)` instead.
         If specified, can refer to the pathspec of an existing step. The environment
-        of this referred step will be used as a base environment for all steps.
-        If specified, nothing else can be specified in this decorator.
-    packages : Optional[Dict[str, str]]
+        of this referred step will be used here. If specified, nothing else can be
+        specified in this decorator. In the name, you can use `@{}` values and
+        environment variables will be used to substitute.
+    packages : Dict[str, str], default {}
         Packages to use for this step. The key is the name of the package
-        and the value is the version to use (default: `{}`). Note that versions can
-        be specified either as a specific version or as a comma separated string
-        of constraints like "<2.0,>=1.5".
-    sources : Optional[List[str]]
-        Additional channels to search for
-    python : Optional[str]
-        Version of Python to use, e.g. '3.7.4'. If not specified, the current version
-        will be used.
+        and the value is the version to use (default `{}`).
+    extra_indices : List[str], default []
+        Additional sources to search for
+    python : str, optional, default None
+        Version of Python to use, e.g. '3.7.4'. If not specified, the current python
+        version will be used.
     fetch_at_exec : bool, default False
+        DEPRECATED -- use `@named_env(name=)` instead.
         If set to True, the environment will be fetched when the task is
         executing as opposed to at the beginning of the flow (or at deploy time if
         deploying to a scheduler). This option requires name or pathspec to be

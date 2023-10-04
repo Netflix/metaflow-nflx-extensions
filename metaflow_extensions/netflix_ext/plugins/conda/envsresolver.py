@@ -28,6 +28,7 @@ from metaflow.metaflow_config import (
 )
 from metaflow.metaflow_environment import InvalidEnvironmentException
 
+from metaflow_extensions.netflix_ext.vendor.packaging.version import parse as parse_version
 from .env_descr import (
     EnvID,
     EnvType,
@@ -797,20 +798,20 @@ class EnvsResolver(object):
         if base_sys_deps or incoming_sys_deps:
             v1 = base_sys_deps.get("__cuda", "9999")
             v2 = incoming_sys_deps.get("__cuda", "9999")
-            v1_parts = v1.split(".")
-            v2_parts = v2.split(".")
-            vmin = None  # type: Optional[str]
-            for v1p, v2p in zip(v1_parts, v2_parts):
-                if int(v1p) == int(v2p):
-                    continue
-                if int(v1p) < int(v2p):
-                    vmin = v1
-                else:
-                    vmin = v2
-                break
-            if vmin is None:
-                vmin = v1 if len(v1_parts) < len(v2_parts) else v2
-            user_sys_deps = {"__cuda": vmin}
+            if "=" in v1:
+                v1, v1_build = v1.split("=", 1)
+            else:
+                v1_build = None
+            if "=" in v2:
+                v2, v2_build = v2.split("=", 1)
+            else:
+                v2_build = None
+            v_min, v_min_build = v1, v1_build
+            if parse_version(v2) < parse_version(v1):
+                v_min, v_min_build = v2, v2_build
+            user_sys_deps = {
+                "__cuda": "%s=%s" % (v_min, v_min_build) if v_min_build else v_min
+            }
         else:
             user_sys_deps = {}
 
