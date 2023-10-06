@@ -38,6 +38,8 @@ from metaflow.metaflow_environment import (
     MetaflowEnvironment,
 )
 
+from metaflow.unbounded_foreach import UBF_TASK
+
 from metaflow_extensions.netflix_ext.vendor.packaging.utils import canonicalize_version
 
 from .envsresolver import EnvsResolver
@@ -202,8 +204,10 @@ class CondaEnvironment(MetaflowEnvironment):
                 ),
                 "export _METAFLOW_CONDA_ENV=$(cat _env_id)",
                 "export PYTHONPATH=$(pwd)/_escape_trampolines:$(printenv PYTHONPATH)",
-                # NOTE: Assumes here that remote notes are Linux
-                "export LD_LIBRARY_PATH=$(cat _lib_path):$(printenv LD_LIBRARY_PATH)",
+                # NOTE: Assumes here that remote nodes are Linux
+                "if [[ -n $(printenv LD_LIBRARY_PATH) ]]; then "
+                "export MF_ORIG_LD_LIBRARY_PATH=$(printenv LD_LIBRARY_PATH); "
+                "export LD_LIBRARY_PATH=$(cat _lib_path):$(printenv LD_LIBRARY_PATH); fi",
                 "echo 'Environment bootstrapped.'",
                 "export CONDA_END=$(date +%s)",
             ]
@@ -359,11 +363,13 @@ class CondaEnvironment(MetaflowEnvironment):
             )
 
     @classmethod
-    def enabled_for_step(cls, step_name: str) -> bool:
+    def enabled_for_step(cls, step_name: str, ubf_context: str) -> bool:
         step_info = cls._result_for_step.get(step_name)
         if step_info:
             if step_info[1].is_disabled is None:
-                return False
+                if step_info[1].default_disabled(ubf_context) is None:
+                    return ubf_context == UBF_TASK
+                return not step_info[1].default_disabled(ubf_context)
             return not step_info[1].is_disabled
         return os.environ.get("_METAFLOW_CONDA_ENV") is not None
 
@@ -474,9 +480,13 @@ class CondaEnvironment(MetaflowEnvironment):
                     "In step '%s', a 'fetch-at-exec' environment needs to have an "
                     "environment specified with '@named_env'" % step.name
                 )
-            if final_req.sources or final_req.packages or final_req.python:
+            if (
+                any([v for v in final_req.sources.values()])
+                or any([v for v in final_req.packages.values()])
+                or final_req.python
+            ):
                 raise InvalidEnvironmentException(
-                    "In step '%s', a 'fetch_at_exec' environment cannot have"
+                    "In step '%s', a 'fetch_at_exec' environment cannot have "
                     "any additional requirements (packages, sources, or python)"
                     % step.name
                 )

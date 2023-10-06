@@ -1,9 +1,11 @@
-# Metaflow Experimental Extensions from Netflix
-This repository contains *non-supported* extensions for Metaflow.
-- If you are within Netflix and are looking for the Netflix version of Metaflow,
-  this is *not* it.
-- If you are looking for the community supported Metaflow package, this is also *not*
-  it, please see [here](https://github.com/Netflix/metaflow) for that package.
+# Metaflow Extensions from Netflix
+This repository contains extensions for Metaflow that are in use at Netflix (or being tested
+at Netflix) and that are more cutting edge than what is included in the OSS Metaflow package.
+
+You can find support for this extension on the usual Metaflow [Slack](http://slack.outerbounds.co).
+
+NOTE: of you are within Netflix and are looking for the Netflix version of Metaflow,
+  this is *not* it (this only contains a part of the Netflix internal extensions).
 
 Netflix released Metaflow as OSS in 2019. Since then, development of Metaflow internally
 to Netflix has continued primarily around extensions to better support Netflix's
@@ -11,9 +13,8 @@ infrastructure and provide a more seamless integration with the compute and orch
 platforms specific to Netflix. Netflix continues to collaboratively improve Metaflow's
 OSS capabilities in collaboration with [OuterBounds](https://outerbounds.co) and,
 as such, sometimes develops functionality that is not yet fully ready for inclusion in
-the community supported Metaflow, either because it is not fully fleshed out or interest
-in this functionality is not clear. Typically, functionality present here is either
-deployed actively at Netflix or being tested for deployment at Netflix.
+the community supported Metaflow as interest in the functionality may not be clear or
+there is not time in the community to properly integrate and fully test the functionality.
 
 This repository will contain such functionality. While we do our best to ensure that
 the functionality present works, it does not have the same levels of support and
@@ -29,12 +30,12 @@ If you have any question, feel free to open an issue here or contact us on the u
 Metaflow slack channels.
 
 This extension currently contains:
-- refactored [Conda decorator](#conda-v2)
+- refactored and improved [Conda decorator](#conda-v2)
 
 ## Conda V2
 
 *Version 1.0.0 is considered stable. Some UX changes have occurred compared to previous
-versions. Please see the docs/ folder for more information*
+versions. Please see the [docs](https://github.com/Netflix/metaflow-nflx-extensions/blob/main/docs/conda.md) for more information*
 
 *Version 0.2.0 of this extension is not fully backward compatible with previous versions due to
 where packages are cached. If you are using a previous version of the extension, it is recommended
@@ -44,22 +45,19 @@ new values to be able to have both versions active at the same time.*
 It is likely to evolve primarily in its implementation as we do further testing. Feedback
 on what is working and what is not is most welcome.
 
-### Improvements over the included Conda decorator
+### Main improvements over the standard Conda decorator in Metaflow
 This decorator improves several aspects of the included Conda decorator:
-- it has significant performance gains:
-  - resolving environments in parallel
-  - using `micromamba` for environment creation
-- it allows the inclusion of `pypi` packages in the environment specification
-- it has a pure `@pypi` decorator which is a frequently requested feature for
-  metaflow
-- it is more efficient in its use of caching
-- environment descriptions are also cached allowing anyone to reuse a previously
-  resolved environment
-- it provides more visibility into the environments created
-- it allows you to recreate the environment used for a step locally to aid in
-  accessing the artifacts produced and/or debug the execution of a step.
-- it adds support for named environments allowing you to name environments and share
-  them across your flows and amongst users.
+- it allows you to mix and match Conda packages and Pypi packages.
+- it supports a wider range of Pypi package sources (repositories, source tarballs, etc)
+- it supports a command line tool allowing you to:
+  - retrieve and re-hydrate any environment used by any previously executed step thereby enabling
+    an easy way to inspect artifacts created in that environment
+  - resolve environments using standard `requirements.txt` of `environment.yml` files
+  - inspect packages present in any environment previously resolved
+- it supports "named environments" which enables easy environment sharing and saving.
+- it is generally more performant and efficient in terms of parallel resolution and
+  downloading of packages
+- it supports conda, mamba and micromamba
 
 ### Installation
 To use, simply install this package alongside the `metaflow` package. This package
@@ -68,16 +66,10 @@ requires Metaflow v2.8.3 or later.
 #### Configuration
 You have several configuration options that can be set in
 `metaflow_extensions/netflix_ext/config/mfextinit_netflixext.py`. Due to limitations in
-the OSS implementation of decorators such as `batch` and `kubernetes`, you should
-set these values directly in the `mfextinit_netflixext.py` configuration file and
-not in an external configuration
-or through environment variables. If you do not want to modify the `mfextinit_netflixext.py`
-file, you should annotate all your steps using:
-```
-@environment(vars={"METAFLOW_CONDA_S3ROOT": "..."})
-```
-for any variables that you modify (`CONDA_S3ROOT` is shown as an example above but
-you should list any and all variables below that you wish to modify).
+the OSS implementation of decorators such as `batch` and `kubernetes`, prior to Metaflow v2.10,
+you should set these values directly in the `mfextinit_netflixext.py` configuration file and
+not in an external configuration or through environment variables. This limitation is
+removed in Metaflow v2.10.
 
 The useful configuration values are listed below:
 - `CONDA_S3ROOT`/`CONDA_AZUREROOT`/`CONDA_GSROOT`: directory in S3/azure/gs containing
@@ -87,9 +79,9 @@ The useful configuration values are listed below:
 - `CONDA_DEPENDENCY_RESOLVER`: `mamba`, `conda` or `micromamba`; `mamba` is recommended as
   typically faster. `micromamba` is sometimes a bit more unstable but can be even faster
 - `CONDA_PYPI_DEPENDENCY_RESOLVER`: `pip` or None; if None, you will not be able to resolve
-  environments specifying only pip dependencies.
+  environments specifying only pypi dependencies.
 - `CONDA_MIXED_DEPENDENCY_RESOLVER`:  `conda-lock` or None; if None, you will not be able
-  to resolve environments specifying a mix of pip and conda dependencies.
+  to resolve environments specifying a mix of pypi and conda dependencies.
 - `CONDA_REMOTE_INSTALLER_DIRNAME`: if set contains a prefix within
   `CONDA_S3ROOT`/`CONDA_AZUREROOT`/`CONDA_GSROOT`
   under which `micromamba` (or other similar executable) are cached. If not specified,
@@ -241,8 +233,8 @@ In general, the following restrictions are applicable:
   - in specifying packages, environment markers are not supported.
 
 ### Additional documentation
-For additional documentation, please refer to the docs/ folder which contains more
-detailed documentation.
+For additional documentation, please refer to the [documentation](https://github.com/Netflix/metaflow-nflx-extensions/blob/main/docs/conda.md)
+which contains more detailed documentation.
 
 ### Technical details
 This section dives a bit more in the technical aspects of this implementation.
