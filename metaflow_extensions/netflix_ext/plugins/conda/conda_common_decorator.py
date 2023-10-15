@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 from metaflow.metaflow_environment import InvalidEnvironmentException
 from metaflow.unbounded_foreach import UBF_CONTROL, UBF_TASK
 
-from metaflow_extensions.netflix_ext.vendor.packaging.utils import canonicalize_version
+from metaflow._vendor.packaging.utils import canonicalize_version
 
 from .utils import merge_dep_dicts
 

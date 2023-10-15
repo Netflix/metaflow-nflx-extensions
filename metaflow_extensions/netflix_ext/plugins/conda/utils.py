@@ -32,7 +32,7 @@ from urllib.parse import urlparse, unquote
 from requests import PreparedRequest
 from requests.auth import AuthBase, HTTPBasicAuth
 
-from metaflow_extensions.netflix_ext.vendor.packaging.tags import (
+from metaflow._vendor.packaging.tags import (
     compatible_tags,
     _cpython_abis,
     cpython_tags,
@@ -40,11 +40,9 @@ from metaflow_extensions.netflix_ext.vendor.packaging.tags import (
     Tag,
 )
 
-from metaflow_extensions.netflix_ext.vendor.packaging.utils import (
-    BuildTag,
-    parse_wheel_filename,
-)
-from metaflow_extensions.netflix_ext.vendor.packaging.version import Version
+from metaflow._vendor.packaging.utils import BuildTag, parse_wheel_filename
+
+from metaflow._vendor.packaging.version import Version
 
 from metaflow.debug import debug
 from metaflow.exception import MetaflowException

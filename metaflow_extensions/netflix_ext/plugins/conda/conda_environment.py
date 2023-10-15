@@ -40,7 +40,7 @@ from metaflow.metaflow_environment import (
 
 from metaflow.unbounded_foreach import UBF_TASK
 
-from metaflow_extensions.netflix_ext.vendor.packaging.utils import canonicalize_version
+from metaflow._vendor.packaging.utils import canonicalize_version
 
 from .envsresolver import EnvsResolver
 from .utils import (

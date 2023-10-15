@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple, cast
 from metaflow.debug import debug
 from metaflow.metaflow_config import CONDA_LOCAL_PATH
 
-from metaflow_extensions.netflix_ext.vendor.packaging.requirements import Requirement
+from metaflow._vendor.packaging.requirements import Requirement
 
 from ..env_descr import (
     CondaPackageSpecification,
@@ -155,7 +155,7 @@ class CondaLockResolver(Resolver):
             toml_lines.append("\n")
             # TODO: Maybe we can make this better and only relax if :: is for channels
             # that don't exist in the list
-            if any(["::" in conda_deps]) or have_extra_channels:
+            if any(["::" in d for d in conda_deps]) or have_extra_channels:
                 addl_env = {"CONDA_CHANNEL_PRIORITY": "flexible"}
             else:
                 addl_env = {}

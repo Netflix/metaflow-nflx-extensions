@@ -47,13 +47,9 @@ from metaflow_extensions.netflix_ext.plugins.conda.utils import (
     merge_dep_dicts,
 )
 
-from metaflow_extensions.netflix_ext.vendor.packaging.requirements import (
-    InvalidRequirement,
-    Requirement,
-)
-from metaflow_extensions.netflix_ext.vendor.packaging.utils import (
-    canonicalize_version,
-)
+from metaflow._vendor.packaging.requirements import InvalidRequirement, Requirement
+from metaflow._vendor.packaging.specifiers import SpecifierSet
+from metaflow._vendor.packaging.utils import canonicalize_version
 
 from .utils import download_mf_version
 
@@ -568,15 +564,33 @@ def resolve(
             )
 
     # Parse yaml first to put conda sources first to be consistent with step decorator
+    parsed_python_version = None
     if yml_file:
-        _parse_yml_file(
+        parsed_python_version = _parse_yml_file(
             yml_file, new_extras, new_sources, new_conda_deps, new_pypi_deps
         )
     if req_file:
-        _parse_req_file(
+        parsed_python_version = _parse_req_file(
             req_file, new_extras, new_sources, new_pypi_deps, new_np_conda_deps
         )
 
+    if base_env_python:
+        if parsed_python_version:
+            if using_pathspec is not None or using is not None:
+                # Check if the python version matches properly
+                if not SpecifierSet(parsed_python_version).contains(base_env_python):
+                    raise InvalidEnvironmentException(
+                        "The base environment's Python version (%s) does not match the "
+                        "one specified in the requirements file (%s)"
+                        % (base_env_python, parsed_python_version)
+                    )
+            else:
+                raise InvalidEnvironmentException(
+                    "Cannot specify --python if the python dependency is already set "
+                    "in the requirements file"
+                )
+    else:
+        base_env_python = parsed_python_version
     if base_env_python is None:
         base_env_python = platform.python_version()
 
@@ -905,7 +919,8 @@ def _parse_req_file(
     sources: Dict[str, List[str]],
     deps: Dict[str, str],
     np_deps: Dict[str, str],
-):
+) -> Optional[str]:
+    python_version = None
     with open(file_name, mode="r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -963,7 +978,12 @@ def _parse_req_file(
                 if parsed_req.url:
                     dep_name += "@%s" % parsed_req.url
                 specifier = str(parsed_req.specifier).lstrip(" =")
-                deps[dep_name] = str(specifier)
+                if dep_name == "python":
+                    if specifier:
+                        python_version = specifier
+                else:
+                    deps[dep_name] = specifier
+    return python_version
 
 
 def _parse_yml_file(
@@ -972,7 +992,8 @@ def _parse_yml_file(
     sources: Dict[str, List[str]],
     conda_deps: Dict[str, str],
     pypi_deps: Dict[str, str],
-):
+) -> Optional[str]:
+    python_version = None  # type: Optional[str]
     with open(file_name, mode="r", encoding="utf-8") as f:
         # Very poor man's yaml parsing
         mode = None
@@ -998,9 +1019,23 @@ def _parse_yml_file(
                     to_update = conda_deps if mode == "deps" else pypi_deps
                     splits = line.split("=", 1)
                     if len(splits) == 1:
-                        to_update[line] = ""
+                        if line != "python":
+                            to_update[line] = ""
                     else:
-                        to_update[splits[0].strip()] = splits[1].lstrip(" =")
+                        dep_name = splits[0].strip()
+                        dep_version = splits[1].lstrip(" =").rstrip()
+                        if dep_name == "python":
+                            if dep_version:
+                                if python_version:
+                                    raise InvalidEnvironmentException(
+                                        "Python versions specified multiple times in "
+                                        "the YAML file."
+                                    )
+                                python_version = dep_version
+                        else:
+                            to_update[dep_name] = dep_version
+
+    return python_version
 
 
 # @environment.command(help="List resolved environments for a set of dependencies")

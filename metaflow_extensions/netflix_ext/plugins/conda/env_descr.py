@@ -8,7 +8,7 @@ from enum import Enum
 from hashlib import md5, sha1, sha256
 from itertools import chain
 
-from metaflow_extensions.netflix_ext.vendor.packaging.utils import (
+from metaflow._vendor.packaging.utils import (
     parse_sdist_filename,
     parse_wheel_filename,
 )
