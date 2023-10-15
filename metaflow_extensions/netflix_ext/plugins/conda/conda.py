@@ -17,8 +17,6 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
 from datetime import datetime
-from distutils.version import LooseVersion
-from itertools import chain
 from typing import (
     Any,
     Callable,
@@ -60,6 +58,7 @@ from metaflow.metaflow_config import (
 from metaflow.metaflow_environment import InvalidEnvironmentException
 from metaflow.util import get_username
 
+from metaflow._vendor.packaging.version import parse as parse_version
 
 from .utils import (
     CONDA_FORMATS,
@@ -1900,10 +1899,7 @@ class Conda(object):
             # We consider that locally installed environments are OK
             return None
 
-        # Check if the dependency solver exists.
-        if self._bins is None:
-            return InvalidEnvironmentException("No binaries configured for Conda")
-        # Check for other binaries
+        # Remove anything that has an invalid path
         to_remove = [
             k for k, v in self._bins.items() if v is None or not os.path.isfile(v)
         ]  # type: List[str]
@@ -1911,6 +1907,10 @@ class Conda(object):
             for k in to_remove:
                 del self._bins[k]
 
+        if "conda" not in self._bins:
+            return InvalidEnvironmentException(
+                "No %s binary found" % self._conda_executable_type
+            )
         # Check version requirements
         if "cph" in self._bins:
             cph_version = (
@@ -1918,7 +1918,7 @@ class Conda(object):
                 .decode("utf-8")
                 .split()[-1]
             )
-            if LooseVersion(cph_version) < LooseVersion("1.9.0"):
+            if parse_version(cph_version) < parse_version("1.9.0"):
                 self.echo(
                     "cph is installed but not recent enough (1.9.0 or later is required) "
                     "-- ignoring"
@@ -1931,7 +1931,7 @@ class Conda(object):
                 .decode("utf-8")
                 .split()[-1]
             )
-            if LooseVersion(conda_lock_version) < LooseVersion("2.0.0"):
+            if parse_version(conda_lock_version) < parse_version("2.0.0"):
                 self.echo(
                     "conda-lock is installed but not recent enough (2.0.0 or later "
                     "is required) --ignoring"
@@ -1942,7 +1942,7 @@ class Conda(object):
                 1
             ]
             # 22.3 has PEP 658 support which can be a big performance boost
-            if LooseVersion(pip_version.decode("utf-8")) < LooseVersion("22.3"):
+            if parse_version(pip_version.decode("utf-8")) < parse_version("22.3"):
                 self.echo(
                     "pip is installed but not recent enough (22.3 or later is required) "
                     "-- ignoring"
@@ -1950,14 +1950,14 @@ class Conda(object):
                 del self._bins["pip"]
 
         if "micromamba version" in self._info_no_lock:
-            if LooseVersion(self._info_no_lock["micromamba version"]) < LooseVersion(
+            if parse_version(self._info_no_lock["micromamba version"]) < parse_version(
                 "1.4.0"
             ):
                 return InvalidEnvironmentException(
                     self._install_message_for_resolver("micromamba")
                 )
         else:
-            if LooseVersion(self._info_no_lock["conda_version"]) < LooseVersion(
+            if parse_version(self._info_no_lock["conda_version"]) < parse_version(
                 "4.14.0"
             ):
                 return InvalidEnvironmentException(

@@ -1,6 +1,9 @@
 from setuptools import setup, find_namespace_packages
 
-version = "1.0.4"
+with open(
+    "metaflow_extensions/netflix_ext/toplevel/netflixext_version.py", mode="r"
+) as f:
+    version = f.read().splitlines()[0].split("=")[1].strip(" \"'")
 
 setup(
     name="metaflow-netflixext",
@@ -10,7 +13,7 @@ setup(
     long_description_content_type="text/markdown",
     license="Apache Software License",
     classifiers=[
-        "Development Status :: 4 - Beta",
+        "Development Status :: 5 - Production/Stable",
         "License :: OSI Approved :: Apache Software License",
         "Operating System :: MacOS :: MacOS X",
         "Operating System :: POSIX :: Linux",
@@ -20,6 +23,7 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
     ],
     project_urls={
         "Source": "https://github.com/Netflix/metaflow-nflx-extensions",
@@ -35,5 +39,5 @@ setup(
         "metaflow_extensions.netflix_ext.plugins.conda.resources": ["*.png", "*.svg"]
     },
     python_requires=">=3.7.2",
-    install_requires=["metaflow>=2.8.3"],
+    install_requires=["metaflow>=2.10.0"],
 )

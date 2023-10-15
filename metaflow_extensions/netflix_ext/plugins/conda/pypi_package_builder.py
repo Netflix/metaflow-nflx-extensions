@@ -13,8 +13,8 @@ if TYPE_CHECKING:
 
 from metaflow.debug import debug
 
-from metaflow_extensions.netflix_ext.vendor.packaging.tags import Tag
-from metaflow_extensions.netflix_ext.vendor.packaging.utils import parse_wheel_filename
+from metaflow._vendor.packaging.tags import Tag
+from metaflow._vendor.packaging.utils import parse_wheel_filename
 
 from .env_descr import (
     EnvType,

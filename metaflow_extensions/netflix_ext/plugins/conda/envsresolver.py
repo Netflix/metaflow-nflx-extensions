@@ -28,7 +28,7 @@ from metaflow.metaflow_config import (
 )
 from metaflow.metaflow_environment import InvalidEnvironmentException
 
-from metaflow_extensions.netflix_ext.vendor.packaging.version import parse as parse_version
+from metaflow._vendor.packaging.version import parse as parse_version
 from .env_descr import (
     EnvID,
     EnvType,
