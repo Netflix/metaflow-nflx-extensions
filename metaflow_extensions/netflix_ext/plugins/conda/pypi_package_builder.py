@@ -272,7 +272,7 @@ def build_pypi_packages(
             pkg_spec = cast(PypiPackageSpecification, to_build_pkg_info[key].spec)
             wheel_file = os.path.join(build_dir, wheel_files[0])
             # Move the built wheel to a less temporary location
-            wheel_file = shutil.copy(wheel_file, os.path.join(target_directory, "pypi"))
+            wheel_file = shutil.copy(wheel_file, target_directory)
 
             parse_result = parse_explicit_path_pypi("file://%s" % wheel_file)
             # If the source is not an actual URL, we are going to change the name
