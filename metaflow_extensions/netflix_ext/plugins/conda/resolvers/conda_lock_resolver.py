@@ -188,7 +188,9 @@ class CondaLockResolver(Resolver):
 
             # Add deps
             toml_lines.append("[tool.conda-lock.dependencies]\n")
-            for d in conda_deps:
+
+            # We make the conda_deps a set because toml doesn't tolerate duplicates
+            for d in set(conda_deps):
                 splits = d.split("==", 1)
                 if len(splits) == 2:
                     toml_lines.append('"%s" = "%s"\n' % (splits[0], splits[1]))
