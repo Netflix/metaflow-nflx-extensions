@@ -45,6 +45,7 @@ from metaflow_extensions.netflix_ext.plugins.conda.utils import (
     resolve_env_alias,
     plural_marker,
     merge_dep_dicts,
+    split_conda_yaml_pin,
 )
 
 from metaflow._vendor.packaging.requirements import InvalidRequirement, Requirement
@@ -1017,7 +1018,7 @@ def _parse_yml_file(
                     mode = "pypi_deps"
                 else:
                     to_update = conda_deps if mode == "deps" else pypi_deps
-                    splits = line.split("=", 1)
+                    splits = split_conda_yaml_pin(line)
                     if len(splits) == 1:
                         if line != "python":
                             to_update[line] = ""

@@ -671,3 +671,7 @@ class WithDir:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         os.chdir(self._current_dir)
+
+
+def split_conda_yaml_pin(conda_str):
+    return re.split("<|>|<=|>=|=>|=<|~=|=", conda_str.replace(" ", ""))

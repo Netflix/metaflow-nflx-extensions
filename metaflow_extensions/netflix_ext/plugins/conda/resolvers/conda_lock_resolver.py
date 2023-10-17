@@ -33,6 +33,7 @@ from ..utils import (
     parse_explicit_url_conda,
     parse_explicit_url_pypi,
     pypi_tags_from_arch,
+    split_conda_yaml_pin,
 )
 from . import Resolver
 
@@ -120,13 +121,19 @@ class CondaLockResolver(Resolver):
             # to write it out. We use TOML so that we can disable pypi if needed
 
             pypi_deps = deps.get("pypi", [])
+
             conda_deps = list(chain(deps.get("conda", []), deps.get("npconda", [])))
 
             sys_overrides = {
                 k: v for d in deps.get("sys", []) for k, v in [d.split("==")]
             }
             # We only add pip if not present
-            if not any([(d == "pip" or d.startswith("pip==")) for d in conda_deps]):
+            if not any(
+                [
+                    (d == "pip" or split_conda_yaml_pin(d)[0] == "pip")
+                    for d in conda_deps
+                ]
+            ):
                 conda_deps.append("pip")
             toml_lines = [
                 "[build-system]\n",
@@ -190,7 +197,7 @@ class CondaLockResolver(Resolver):
             toml_lines.append("[tool.conda-lock.dependencies]\n")
             seen = set()  # type: Set[str]
             for d in conda_deps:
-                splits = d.split("==", 1)
+                splits = split_conda_yaml_pin(d)
                 if len(splits) == 2:
                     if splits[0] in seen:
                         raise CondaException(
@@ -209,7 +216,7 @@ class CondaLockResolver(Resolver):
             # dependency multiple times. We keep just the URL one in this case
             pypi_dep_lines = {}  # type: Dict[str, Dict[str, str]]
             for d in pypi_deps:
-                splits = d.split("==", 1)
+                splits = split_conda_yaml_pin(d)
                 # Here we re-parse the requirement. It will be one of the four options:
                 #  - <package_name>
                 #  - <package_name>[extras]
