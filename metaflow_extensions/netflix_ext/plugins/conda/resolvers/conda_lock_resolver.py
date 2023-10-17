@@ -7,7 +7,7 @@ import tempfile
 import uuid
 
 from itertools import chain
-from typing import Dict, List, Optional, Tuple, cast
+from typing import Dict, List, Optional, Set, Tuple, cast
 
 from metaflow.debug import debug
 from metaflow.metaflow_config import CONDA_LOCAL_PATH
@@ -126,7 +126,7 @@ class CondaLockResolver(Resolver):
                 k: v for d in deps.get("sys", []) for k, v in [d.split("==")]
             }
             # We only add pip if not present
-            if not any([d.startswith("pip==") for d in conda_deps]):
+            if not any([(d == "pip" or d.startswith("pip==")) for d in conda_deps]):
                 conda_deps.append("pip")
             toml_lines = [
                 "[build-system]\n",
@@ -188,12 +188,21 @@ class CondaLockResolver(Resolver):
 
             # Add deps
             toml_lines.append("[tool.conda-lock.dependencies]\n")
+            seen = set()  # type: Set[str]
             for d in conda_deps:
                 splits = d.split("==", 1)
                 if len(splits) == 2:
+                    if splits[0] in seen:
+                        raise CondaException(
+                            "Duplicate conda dependency %s" % splits[0]
+                        )
                     toml_lines.append('"%s" = "%s"\n' % (splits[0], splits[1]))
+                    seen.add(splits[0])
                 else:
+                    if d in seen:
+                        raise CondaException("Duplicate conda dependency %s" % d)
                     toml_lines.append('"%s" = "*"\n' % d)
+                    seen.add(d)
             toml_lines.append("\n")
             toml_lines.append("[tool.poetry.dependencies]\n")
             # In some cases (when we build packages), we may actually have the same
