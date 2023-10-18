@@ -55,6 +55,7 @@ from .utils import download_mf_version
 
 
 REQ_SPLIT_LINE = re.compile(r"([^~<=>]*)([~<=>]+.*)?")
+YML_SPLIT_LINE = re.compile(r"(<|>|<=|>=|=>|=<|~=|=)")
 
 
 class CommandObj:
@@ -1017,13 +1018,14 @@ def _parse_yml_file(
                     mode = "pypi_deps"
                 else:
                     to_update = conda_deps if mode == "deps" else pypi_deps
-                    splits = line.split("=", 1)
+                    splits = YML_SPLIT_LINE.split(line.replace(" ", ""), maxsplit=1)
                     if len(splits) == 1:
                         if line != "python":
                             to_update[line] = ""
                     else:
-                        dep_name = splits[0].strip()
-                        dep_version = splits[1].lstrip(" =").rstrip()
+                        dep_name, dep_operator, dep_version = splits
+                        if dep_operator != "=":
+                            dep_version = dep_operator + dep_version
                         if dep_name == "python":
                             if dep_version:
                                 if python_version:
