@@ -51,7 +51,6 @@ class CondaLockResolver(Resolver):
         base_env: Optional[ResolvedEnvironment] = None,
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
         outfile_name = None
-        my_arch = arch_id()
         if base_env:
             local_packages = [
                 p for p in base_env.packages if not p.is_downloadable_url()
@@ -68,42 +67,6 @@ class CondaLockResolver(Resolver):
 
         # self._start_micromamba_server()
 
-        def _poetry_exec(cmd: str, *args: str):
-            # Execute where conda-lock is installed since we are using that
-            # anyways
-            if CONDA_LOCAL_PATH:
-                python_exec = os.path.join(CONDA_LOCAL_PATH, "bin", "python")
-            else:
-                python_exec = sys.executable
-            try:
-                arg_list = [
-                    python_exec,
-                    "-c",
-                    cmd,
-                    *args,
-                ]
-                debug.conda_exec("Poetry repo management call: %s" % " ".join(arg_list))
-                subprocess.check_output(arg_list, stderr=subprocess.STDOUT)
-            except subprocess.CalledProcessError as e:
-                print(
-                    "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
-                    if e.output
-                    else "<None>",
-                    file=sys.stderr,
-                )
-                print(
-                    "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
-                    if e.stderr
-                    else "<None>",
-                    file=sys.stderr,
-                )
-                raise CondaException(
-                    "Could not manage poetry's dependency using '{cmd}' -- got error"
-                    "code {code}'; see pretty-printed error above".format(
-                        cmd=e.cmd, code=e.returncode
-                    )
-                ) from None
-
         index_url = self._conda.default_pypi_sources[0]
         # pypi_channels contains everything EXCEPT the pypi default because we don't
         # need to add that to poetry
@@ -112,7 +75,6 @@ class CondaLockResolver(Resolver):
         )
         debug.conda_exec("Will add pypi channels: %s" % ", ".join(pypi_channels))
 
-        salt = str(uuid.uuid4())[:8]
         try:
             # We resolve the environment using conda-lock
 
@@ -132,7 +94,8 @@ class CondaLockResolver(Resolver):
                 "[build-system]\n",
                 'requires = ["poetry>=0.12"]\n',
                 'build-backend = "poetry.masonry.api"\n',
-                "\n" "[tool.conda-lock]\n",
+                "\n",
+                "[tool.conda-lock]\n",
             ]
             # Add channels
             have_extra_channels = (
@@ -149,6 +112,10 @@ class CondaLockResolver(Resolver):
                 % ", ".join(["'%s'" % c for c in sources.get("conda", [])])
             )
 
+            toml_lines.append(
+                "pip-repositories = [%s]\n"
+                % ", ".join(["'%s'" % c for c in pypi_channels])
+            )
             if index_url != "https://pypi.org/simple":
                 toml_lines.append("allow-pypi-requests = false\n")
 
@@ -159,32 +126,6 @@ class CondaLockResolver(Resolver):
                 addl_env = {"CONDA_CHANNEL_PRIORITY": "flexible"}
             else:
                 addl_env = {}
-            # For poetry unfortunately, conda-lock does not support setting the
-            # sources manually so we need to actually update the config.
-            # We do this using the vendored version of poetry in conda_lock because
-            # poetry may not be installed and, more importantly, there has been
-            # some change in where the config file lives on mac so if there is
-            # a version mismatch, if we set with poetry, conda-lock may not be able
-            # to read it.
-
-            # This works with 1.1.15 which is what is bundled in conda-lock.
-            # In newer versions, there is a Config.create() directly
-            # TODO: Check what to do based on version of conda-lock if conda-lock
-            # changes the bundled version.
-            python_cmd = (
-                "import json; import sys; "
-                "from pathlib import Path; "
-                "from conda_lock._vendor.poetry.factory import Factory; "
-                "translation_table = str.maketrans(':/.', '___'); "
-                "poetry_config = Factory.create_config(); "
-                "Path(poetry_config.config_source.name).parent.mkdir(parents=True, exist_ok=True); "
-                "channels = json.loads(sys.argv[1]); "
-                "[poetry_config.config_source.add_property("
-                "'repositories.metaflow_inserted%s_%%s.url' %% "
-                "c.translate(translation_table), c) "
-                "for c in channels]" % salt
-            )
-            _poetry_exec(python_cmd, json.dumps(pypi_channels))
 
             # Add deps
             toml_lines.append("[tool.conda-lock.dependencies]\n")
@@ -422,15 +363,3 @@ class CondaLockResolver(Resolver):
         finally:
             if outfile_name and os.path.isfile(outfile_name):
                 os.unlink(outfile_name)
-            if pypi_channels:
-                # Clean things up in poetry
-                python_cmd = (
-                    "from pathlib import Path; "
-                    "from conda_lock._vendor.poetry.factory import Factory; "
-                    "poetry_config = Factory.create_config(); "
-                    "Path(poetry_config.config_source.name).parent.mkdir(parents=True, exist_ok=True); "
-                    "[poetry_config.config_source.remove_property('repositories.%%s' %% p) for p in "
-                    "poetry_config.all().get('repositories', {}) "
-                    "if p.startswith('metaflow_inserted%s_')]; " % salt
-                )
-                _poetry_exec(python_cmd)

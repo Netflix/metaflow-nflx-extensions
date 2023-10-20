@@ -55,7 +55,7 @@ from .utils import download_mf_version
 
 
 REQ_SPLIT_LINE = re.compile(r"([^~<=>]*)([~<=>]+.*)?")
-YML_SPLIT_LINE = re.compile(r"(<|>|<=|>=|=>|=<|~=|=)")
+YML_SPLIT_LINE = re.compile(r"(<=|>=|=>|=<|~=|==|<|>|=)")
 
 
 class CommandObj:
@@ -1024,7 +1024,7 @@ def _parse_yml_file(
                             to_update[line] = ""
                     else:
                         dep_name, dep_operator, dep_version = splits
-                        if dep_operator != "=":
+                        if dep_operator not in ("=", "=="):
                             dep_version = dep_operator + dep_version
                         if dep_name == "python":
                             if dep_version:
