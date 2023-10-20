@@ -2331,11 +2331,9 @@ class Conda(object):
                 "WARNING: conda/mamba do not properly handle installing .conda "
                 "packages in offline mode (See https://github.com/conda/conda/issues/11775)."
             )
-            self.echo(
-                "Going to install micromamba at %s to create environment."
-                % self._bins["micromamba"]
-            )
+            self.echo("Going to install micromamba to create environment ...", nl=False)
             self._bins["micromamba"] = self._ensure_micromamba()
+            self.echo(" installed at %s" % self._bins["micromamba"])
 
         self.echo("    Extracting and linking Conda environment ...", nl=False)
 
