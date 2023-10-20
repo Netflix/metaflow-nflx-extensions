@@ -207,7 +207,7 @@ class CondaEnvironment(MetaflowEnvironment):
                 # NOTE: Assumes here that remote nodes are Linux
                 "if [[ -n $(printenv LD_LIBRARY_PATH) ]]; then "
                 "export MF_ORIG_LD_LIBRARY_PATH=$(printenv LD_LIBRARY_PATH); "
-                "export LD_LIBRARY_PATH=$(cat _lib_path):$(printenv LD_LIBRARY_PATH); fi",
+                "export LD_LIBRARY_PATH=$(cat _env_path)/lib:$(printenv LD_LIBRARY_PATH); fi",
                 "echo 'Environment bootstrapped.'",
                 "export CONDA_END=$(date +%s)",
             ]

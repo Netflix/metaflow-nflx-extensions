@@ -956,7 +956,9 @@ class Conda(object):
         my_arch_id = arch_id()
         cache_formats = cache_formats or {
             "pypi": ["_any"],
-            "conda": [CONDA_PREFERRED_FORMAT] if CONDA_PREFERRED_FORMAT else ["_any"],
+            "conda": [CONDA_PREFERRED_FORMAT]
+            if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none"
+            else ["_any"],
         }
 
         # key: URL
@@ -1748,7 +1750,16 @@ class Conda(object):
             self._bins = {
                 self._conda_executable_type: which(self._conda_executable_type),
                 "conda-lock": which("conda-lock"),
-                "micromamba": which("micromamba"),
+                # We can install micromamba in $HOME/.local/bin so we look there too
+                "micromamba": which(
+                    "micromamba",
+                    path=":".join(
+                        [
+                            os.environ.get("PATH", ""),
+                            "%s/.local/bin" % os.environ.get("HOME", ""),
+                        ]
+                    ),
+                ),
                 "cph": which("cph"),
                 "pip": which("pip"),
             }
@@ -1756,6 +1767,21 @@ class Conda(object):
             err = self._validate_conda_installation()
             if err:
                 raise err
+
+    def _ensure_micromamba(self) -> str:
+        args = [
+            "/bin/bash",
+            "-c",
+            "if ! type micromamba  >/dev/null 2>&1; then "
+            "mkdir -p ~/.local/bin >/dev/null 2>&1; "
+            'python -c "import requests, bz2, sys; '
+            "data = requests.get('https://micro.mamba.pm/api/micromamba/%s/latest').content; "
+            'sys.stdout.buffer.write(bz2.decompress(data))" | '
+            "tar -xv -C ~/.local/bin/ --strip-components=1 bin/micromamba > /dev/null 2>&1; "
+            "echo $HOME/.local/bin/micromamba; "
+            "else which micromamba; fi" % arch_id(),
+        ]
+        return subprocess.check_output(args).decode("utf-8").strip()
 
     def _install_local_conda(self):
         start = time.time()
@@ -1821,19 +1847,7 @@ class Conda(object):
             self._install_remote_conda()
         else:
             # If we don't have a REMOTE_INSTALLER, we check if we need to install one
-            args = [
-                "/bin/bash",
-                "-c",
-                "if ! type micromamba  >/dev/null 2>&1; then "
-                "mkdir -p ~/.local/bin >/dev/null 2>&1; "
-                "curl -Ls https://micro.mamba.pm/api/micromamba/%s/latest | "
-                "tar -xvj -C ~/.local/bin/ --strip-components=1 bin/micromamba >/dev/null 2>&1; "
-                "echo $HOME/.local/bin/micromamba; "
-                "else which micromamba; fi" % arch_id(),
-            ]
-            self._bins = {
-                "conda": subprocess.check_output(args).decode("utf-8").strip()
-            }
+            self._bins = {"conda": self._ensure_micromamba()}
             self._bins["micromamba"] = self._bins["conda"]
             self._conda_executable_type = "micromamba"
 
@@ -1911,6 +1925,7 @@ class Conda(object):
             return InvalidEnvironmentException(
                 "No %s binary found" % self._conda_executable_type
             )
+
         # Check version requirements
         if "cph" in self._bins:
             cph_version = (
@@ -2314,10 +2329,14 @@ class Conda(object):
         if "micromamba" not in self._bins:
             self.echo(
                 "WARNING: conda/mamba do not properly handle installing .conda "
-                "packages in offline mode. Creating environments may fail -- if so, "
-                "please install `micromamba`. "
-                "See https://github.com/conda/conda/issues/11775."
+                "packages in offline mode (See https://github.com/conda/conda/issues/11775)."
             )
+            self.echo(
+                "Going to install micromamba at %s to create environment."
+                % self._bins["micromamba"]
+            )
+            self._bins["micromamba"] = self._ensure_micromamba()
+
         self.echo("    Extracting and linking Conda environment ...", nl=False)
 
         if pypi_paths:

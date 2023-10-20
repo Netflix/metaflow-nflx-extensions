@@ -80,7 +80,7 @@ The useful configuration values are listed below:
   typically faster. `micromamba` is sometimes a bit more unstable but can be even faster
 - `CONDA_PYPI_DEPENDENCY_RESOLVER`: `pip` or None; if None, you will not be able to resolve
   environments specifying only pypi dependencies.
-- `CONDA_MIXED_DEPENDENCY_RESOLVER`:  `conda-lock` or None; if None, you will not be able
+- `CONDA_MIXED_DEPENDENCY_RESOLVER`:  `conda-lock` or `none`; if `none`, you will not be able
   to resolve environments specifying a mix of pypi and conda dependencies.
 - `CONDA_REMOTE_INSTALLER_DIRNAME`: if set contains a prefix within
   `CONDA_S3ROOT`/`CONDA_AZUREROOT`/`CONDA_GSROOT`
@@ -99,7 +99,8 @@ The useful configuration values are listed below:
   (defaults to `envs`)
 - `CONDA_LOCAL_DIST`: if set architecture specific tar ball in `CONDA_LOCAL_DIST_DIRNAME`.
 - `CONDA_LOCAL_PATH`: if set, installs the tarball in `CONDA_LOCAL_DIST` in this path.
-- `CONDA_PREFERRED_FORMAT`: `.tar.bz2` or `.conda`. Prefer `.conda` for speed gains; any
+- `CONDA_PREFERRED_FORMAT`: `.tar.bz2` or `.conda` or `none` (default).
+  Prefer `.conda` for speed gains; any
   package not available in the preferred format will be transmuted to it automatically.
   If left empty, whatever package is found will be used (ie: there is no preference)
 - `CONDA_DEFAULT_PYPI_SOURCE`: mirror to use for PYPI.

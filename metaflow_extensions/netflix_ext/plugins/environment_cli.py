@@ -286,6 +286,7 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
                         {
                             "conda": [CONDA_PREFERRED_FORMAT]
                             if CONDA_PREFERRED_FORMAT
+                            and CONDA_PREFERRED_FORMAT != "none"
                             else ["_any"]
                         }
                     ):
