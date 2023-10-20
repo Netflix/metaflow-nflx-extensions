@@ -75,11 +75,11 @@ def bootstrap_environment(
     with open("_env_id", mode="w", encoding="utf-8") as f:
         json.dump(EnvID(req_id, full_id, arch_id()), f)
 
-    # Same thing for lib path
-    with open("_lib_path", mode="w", encoding="utf-8") as f:
+    # Same thing for env path (used to set lib for example)
+    with open("_env_path", mode="w", encoding="utf-8") as f:
         if python_bin is None:
             raise RuntimeError("Environment was not created properly")
-        json.dump(os.path.join(os.path.dirname(os.path.dirname(python_bin)), "lib"), f)
+        json.dump(os.path.dirname(os.path.dirname(python_bin)), f)
 
 
 def setup_conda_manifest():

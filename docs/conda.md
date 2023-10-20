@@ -125,8 +125,8 @@ file (all configuration options are given
 This section lists some useful configuration options
 
 ### Resolvers
-By default, this extension will not resolve mixed pypi and conda packages. To do so, you need to set
-`METAFLOW_CONDA_MIXED_DEPENDENCY_RESOLVER` to `conda-lock`.
+By default, this extension will resolve mixed pypi and conda packages. To disable this,
+you need to set `METAFLOW_CONDA_MIXED_DEPENDENCY_RESOLVER` to `none` (the string).
 
 We also use `mamba` by default to resolve environments. You can change this to `micromamba` or
 `conda` using `METAFLOW_CONDA_DEPENDENCY_RESOLVER`.

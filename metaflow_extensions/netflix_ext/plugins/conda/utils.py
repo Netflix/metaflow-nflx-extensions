@@ -79,7 +79,7 @@ class AliasType(Enum):
 # List of formats that guarantees the preferred format is first. This is important as
 # functions that rely on selecting the "preferred" source of a package rely on the
 # preferred format being first.
-if CONDA_PREFERRED_FORMAT:
+if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none":
     CONDA_FORMATS = (
         CONDA_PREFERRED_FORMAT,
         *[x for x in _ALL_CONDA_FORMATS if x != CONDA_PREFERRED_FORMAT],

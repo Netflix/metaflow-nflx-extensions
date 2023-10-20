@@ -43,16 +43,18 @@ CONDA_DEPENDENCY_RESOLVER = from_conf(
     get_validate_choice_fn(["mamba", "conda", "micromamba"]),
 )
 
-# For pure PYPI environments, if you want to support those, set to the pypi resolver
+# For pure PYPI environments, if you want to support those, set to the pypi resolver.
+# Set to "none" if you do not want to support this functionality.
 CONDA_PYPI_DEPENDENCY_RESOLVER = from_conf(
-    "CONDA_PYPI_DEPENDENCY_RESOLVER", "pip", get_validate_choice_fn(["pip"])
+    "CONDA_PYPI_DEPENDENCY_RESOLVER", "pip", get_validate_choice_fn(["pip", "none"])
 )
 
 # For mixed conda/pypi environments, if you want to support those, set this to 'conda-lock'
+# Set to "none" if you want to disable this functionality.
 CONDA_MIXED_DEPENDENCY_RESOLVER = from_conf(
     "CONDA_MIXED_DEPENDENCY_RESOLVER",
-    None,
-    get_validate_choice_fn(["conda-lock"]),
+    "conda-lock",
+    get_validate_choice_fn(["conda-lock", "none"]),
 )
 
 # Timeout trying to acquire the lock to create environments
@@ -93,8 +95,8 @@ CONDA_LOCAL_PATH = from_conf("CONDA_LOCAL_PATH")
 # Preferred Format for Conda packages
 CONDA_PREFERRED_FORMAT = from_conf(
     "CONDA_PREFERRED_FORMAT",
-    None,
-    get_validate_choice_fn([".tar.bz2", ".conda"]),
+    "none",
+    get_validate_choice_fn([".tar.bz2", ".conda", "none"]),
 )
 
 CONDA_DEFAULT_PYPI_SOURCE = from_conf("CONDA_DEFAULT_PYPI_SOURCE", None)

@@ -178,7 +178,7 @@ class EnvsResolver(object):
                 "sources": user_sources,
                 "extras": extras,
                 "conda_format": [CONDA_PREFERRED_FORMAT]
-                if CONDA_PREFERRED_FORMAT
+                if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none"
                 else ["_any"],
                 "base": base_env,
                 "base_accurate": base_env
@@ -909,7 +909,7 @@ class EnvsResolver(object):
             resolver_name = CONDA_MIXED_DEPENDENCY_RESOLVER
         else:
             raise CondaException("Unhandled environment type %s" % env_type.value)
-        if resolver_name is None:
+        if resolver_name is None or resolver_name == "none":
             raise CondaException(
                 "Cannot resolve environments in %s mode because no resolver is configured"
                 % env_type.value
