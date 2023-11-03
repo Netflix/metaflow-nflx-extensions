@@ -1946,9 +1946,9 @@ class Conda(object):
                 .decode("utf-8")
                 .split()[-1]
             )
-            if parse_version(conda_lock_version) < parse_version("2.0.0"):
+            if parse_version(conda_lock_version) < parse_version("2.4.0"):
                 self.echo(
-                    "conda-lock is installed but not recent enough (2.0.0 or later "
+                    "conda-lock is installed but not recent enough (2.4.0 or later "
                     "is required) --ignoring"
                 )
                 del self._bins["conda-lock"]
