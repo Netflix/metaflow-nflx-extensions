@@ -243,20 +243,19 @@ class CondaLockResolver(Resolver):
                         virtual_yml.writelines(lines)
                     args.extend(["--virtual-package-spec", "virtual_yml.spec"])
 
-                with WithDir(conda_lock_dir):
-                    debug.conda_exec("Build directory: %s" % conda_lock_dir)
-                    # conda-lock will only consider a `pyproject.toml` as a TOML file which
-                    # is somewhat annoying.
-                    with open(
-                        "pyproject.toml", mode="w", encoding="ascii"
-                    ) as input_toml:
-                        input_toml.writelines(toml_lines)
-                        debug.conda_exec(
-                            "TOML configuration:\n%s" % "".join(toml_lines)
-                        )
-                    self._conda.call_binary(
-                        args, binary="conda-lock", addl_env=addl_env
-                    )
+                debug.conda_exec("Build directory: %s" % conda_lock_dir)
+                # conda-lock will only consider a `pyproject.toml` as a TOML file which
+                # is somewhat annoying.
+                with open(
+                    os.path.join(conda_lock_dir, "pyproject.toml"),
+                    mode="w",
+                    encoding="ascii",
+                ) as input_toml:
+                    input_toml.writelines(toml_lines)
+                    debug.conda_exec("TOML configuration:\n%s" % "".join(toml_lines))
+                self._conda.call_binary(
+                    args, binary="conda-lock", addl_env=addl_env, cwd=conda_lock_dir
+                )
             # At this point, we need to read the explicit dependencies in the file created
             emit = False
             packages = []  # type: List[PackageSpecification]

@@ -314,6 +314,7 @@ class Conda(object):
         args: List[str],
         binary: str,
         addl_env: Optional[Mapping[str, str]] = None,
+        cwd: Optional[str] = None,
         pretty_print_exception: bool = True,
     ) -> bytes:
         if binary in _CONDA_DEP_RESOLVERS:
@@ -330,6 +331,7 @@ class Conda(object):
                 [binary] + args,
                 stderr=subprocess.PIPE,
                 env=dict(os.environ, **addl_env),
+                cwd=cwd,
             ).strip()
         except subprocess.CalledProcessError as e:
             print(

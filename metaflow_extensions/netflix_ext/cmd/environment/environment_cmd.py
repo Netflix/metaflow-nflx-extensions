@@ -55,7 +55,14 @@ from .utils import download_mf_version
 
 
 REQ_SPLIT_LINE = re.compile(r"([^~<=>]*)([~<=>]+.*)?")
-YML_SPLIT_LINE = re.compile(r"(<=|>=|=>|=<|~=|==|<|>|=)")
+
+# Allows things like:
+# pkg = <= version
+# pkg <= version
+# pkg = version
+# pkg = ==version or pkg = =version
+# In other words, the = is optional but possible
+YML_SPLIT_LINE = re.compile(r"(?:=\s)?(<=|>=|~=|==|<|>|=)")
 
 
 class CommandObj:
@@ -152,6 +159,13 @@ def cli(ctx):
     help="Root path for Conda cached information. If not set, "
     "looks for METAFLOW_CONDA_S3ROOT (for S3)",
 )
+@click.option(
+    "--quiet-file-output",
+    default=None,
+    hidden=True,
+    type=str,
+    help="Output the quiet output to this file; used for scripting",
+)
 @click.pass_context
 def environment(
     ctx: Any,
@@ -160,6 +174,7 @@ def environment(
     datastore: str,
     environment: str,
     conda_root: Optional[str],
+    quiet_file_output: Optional[str],
 ):
     if quiet:
         echo = echo_dev_null
@@ -171,6 +186,7 @@ def environment(
     obj.echo = echo
     obj.echo_always = echo_always
     obj.datastore_type = datastore
+    obj.quiet_file_output = quiet_file_output
 
     if conda_root:
         if obj.datastore_type == "s3":
@@ -453,6 +469,10 @@ def create(
 
     if obj.quiet:
         obj.echo_always(python_bin)
+        if obj.quiet_file_output:
+            with open(obj.quiet_file_output, "w") as f:
+                f.write(python_bin)
+                f.write("\n")
     else:
         obj.echo(
             "Created environment '%s' locally, activate with `%s activate %s`"
@@ -724,6 +744,12 @@ def resolve(
         if obj.quiet:
             obj.echo_always(env_id.arch)
             obj.echo_always(env.quiet_print(existing_envs.get(env.env_id)))
+            if obj.quiet_file_output:
+                with open(obj.quiet_file_output, "w") as f:
+                    f.write(env_id.arch)
+                    f.write("\n")
+                    f.write(env.quiet_print(existing_envs.get(env.env_id)))
+                    f.write("\n")
         else:
             obj.echo("### Environment for architecture %s" % env_id.arch)
             obj.echo(env.pretty_print(existing_envs.get(env.env_id)))
@@ -809,6 +835,10 @@ def show(obj, local_only: bool, arch: str, pathspec: bool, envs: Tuple[str]):
             if obj.quiet:
                 obj.echo_always("%s@%s" % (env_name, arch))
                 obj.echo_always("NOT_FOUND")
+                if obj.quiet_file_output:
+                    with open(obj.quiet_file_output, "w") as f:
+                        f.write("%s@%s\n" % (env_name, arch))
+                        f.write("NOT_FOUND\n")
             else:
                 obj.echo(
                     "### Environment for '%s' (arch '%s') was not found"
@@ -825,6 +855,17 @@ def show(obj, local_only: bool, arch: str, pathspec: bool, envs: Tuple[str]):
                         )
                     )
                 )
+                if obj.quiet_file_output:
+                    with open(obj.quiet_file_output, "w") as f:
+                        f.write("%s@%s\n" % (env_name, arch))
+                        f.write(
+                            resolved_env.quiet_print(
+                                all_envs.get(resolved_env.env_id.req_id, {}).get(
+                                    resolved_env.env_id.full_id
+                                )
+                            )
+                        )
+                        f.write("\n")
             else:
                 obj.echo("### Environment for '%s' (arch '%s'):" % (env_name, arch))
                 obj.echo(
@@ -909,6 +950,10 @@ def get(obj, default: bool, arch: Optional[str], pathspec: bool, source_env: str
         existing_envs = []
     if obj.quiet:
         obj.echo_always(env.quiet_print(existing_envs))
+        if obj.quiet_file_output:
+            with open(obj.quiet_file_output, "w") as f:
+                f.write(env.quiet_print(existing_envs))
+                f.write("\n")
     else:
         obj.echo(env.pretty_print(existing_envs))
     cast(Conda, obj.conda).write_out_environments()
@@ -1007,11 +1052,15 @@ def _parse_yml_file(
                     mode = "sources"
                 elif line == "dependencies:":
                     mode = "deps"
+                elif line == "pypi-indices:":
+                    mode = "pypi_sources"
                 else:
                     mode = "ignore"
-            elif mode == "sources":
+            elif mode == "sources" or mode == "pypi_sources":
                 line = line.lstrip(" -").rstrip()
-                sources.setdefault("conda", []).append(line)
+                sources.setdefault("conda" if mode == "sources" else "pypi", []).append(
+                    line
+                )
             elif mode == "deps" or mode == "pypi_deps":
                 line = line.lstrip(" -").rstrip()
                 if line == "pip:":
