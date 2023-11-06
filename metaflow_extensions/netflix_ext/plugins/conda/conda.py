@@ -3,6 +3,7 @@
 import errno
 import json
 import os
+import re
 import requests
 import shutil
 import socket
@@ -212,7 +213,9 @@ class Conda(object):
                     if have_index:
                         continue
                     have_index = True
-                sources.extend(map(lambda x: x.strip("'\""), value.splitlines()))
+                sources.extend(
+                    map(lambda x: x.strip("'\""), re.split("\s+", value, re.M))
+                )
         if not have_index:
             sources = ["https://pypi.org/simple"] + sources[1:]
         return sources
