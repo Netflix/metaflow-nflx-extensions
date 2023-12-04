@@ -661,6 +661,8 @@ def change_pypi_package_version(
 
 
 class WithDir:
+    # WARNING: os.chdir is not compatible with thread processing so do not use in
+    # a context where multiple threads can exist.
     def __init__(self, new_dir: str):
         self._current_dir = os.getcwd()
         self._new_dir = new_dir
