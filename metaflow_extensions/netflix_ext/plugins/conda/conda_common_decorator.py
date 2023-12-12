@@ -382,3 +382,19 @@ class NamedEnvRequirementDecoratorMixin(StepRequirementMixin):
     @property
     def is_fetch_at_exec(self) -> Optional[bool]:
         return self.attributes["fetch_at_exec"]
+
+
+class SysPackagesRequirementDecoratorMixin(StepRequirementMixin):
+    defaults = {
+        "packages": None,
+        **StepRequirementMixin.defaults,
+    }
+
+    @property
+    def packages(self) -> Dict[str, Dict[str, str]]:
+        return {
+            "sys": {
+                k: v
+                for k, v in cast(Dict[str, str], self.attributes["packages"]).items()
+            }
+        }

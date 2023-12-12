@@ -326,7 +326,27 @@ class CondaLockResolver(Resolver):
                         raise CondaException(
                             "Could not determine version of Python from conda packages"
                         )
-                    supported_tags = pypi_tags_from_arch(python_version, architecture)
+                    if architecture == "linux-64":
+                        # Get the latest supported GLIBC version so we can generate
+                        # the proper tags (only matters on linux)
+                        glibc_version = [
+                            d for d in deps.get("sys", []) if d.startswith("__glibc")
+                        ]
+                        if len(glibc_version) != 1:
+                            raise CondaException(
+                                "Could not determine maximum GLIBC version"
+                            )
+                        # Get version looking like 2.27=0
+                        glibc_version = glibc_version[0][len("__glibc==") :]
+                        # Strip =0
+                        glibc_version = glibc_version.split("=", 1)[0]
+                        # Replace . with _
+                        glibc_version = glibc_version.replace(".", "_")
+                    else:
+                        glibc_version = ""
+                    supported_tags = pypi_tags_from_arch(
+                        python_version, architecture, glibc_version
+                    )
                     if self._conda.storage:
                         built_pypi_packages, builder_envs = build_pypi_packages(
                             self._conda,

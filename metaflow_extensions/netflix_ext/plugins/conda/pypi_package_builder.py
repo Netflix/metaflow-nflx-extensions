@@ -151,30 +151,9 @@ def build_pypi_packages(
             PypiCachePackage(os.path.join(cache_path, cache_filename_with_ext)),
         )
 
-    if arch_id() != architecture:
-        # We can't build here so we make sure we have at least something for each
-        # pypi package; either we have something in cache (a source or wheel or both)
-        # or we have an actual URL pointing to a source tarball.
-        not_in_cache_or_local = [
-            k for k, v in to_build_pkg_info.items() if not v.have_formats
-        ]
-
-        not_downloadable = [
-            k
-            for k, v in to_build_pkg_info.items()
-            if not cast(PackageSpecification, v.spec).is_downloadable_url()
-        ]
-        no_info = set(not_in_cache_or_local).intersection(not_downloadable)
-        if no_info:
-            raise CondaException(
-                "Cannot build PYPI packages across architectures. "
-                "Requirements would have us build: %s. "
-                "This may be because you are specifying non wheel dependencies or "
-                "no wheel dependencies exist." % ", ".join(no_info)
-            )
-        return [v.spec for v in to_build_pkg_info.values() if v.spec], builder_envs
-
     # Determine what we need to build -- all non wheels
+    # We try to build even across architecture but will check if we can use it across
+    # architectures after (ie: if the package is noarch).
     keys_to_build = [
         k for k, v in to_build_pkg_info.items() if ".whl" not in v.have_formats
     ]
@@ -243,6 +222,11 @@ def build_pypi_packages(
             pkgs_to_fetch, auth_from_urls(pypi_sources), target_directory
         )
 
+    # We try to build and will check if the tags are acceptable after the fact. This
+    # may be a bit slower than the reverse but it allows us to have more packages built
+    # (for example noarch packages) across architectures so it feels like a fair tradeoff.
+    # Ideally we would be able to determine this a-priori but I haven't found a way to
+    # do that.
     with ThreadPoolExecutor() as executor:
         build_result = [
             executor.submit(
@@ -256,6 +240,8 @@ def build_pypi_packages(
             )
             for idx, key in enumerate(keys_to_build)
         ]
+
+        unsupported_wheel = []  # type: List[str]
         for f in as_completed(build_result):
             key, build_dir = f.result()
             wheel_files = [
@@ -269,8 +255,21 @@ def build_pypi_packages(
                     % (key, wheel_files)
                 )
 
-            pkg_spec = cast(PypiPackageSpecification, to_build_pkg_info[key].spec)
             wheel_file = os.path.join(build_dir, wheel_files[0])
+
+            # Technically we only need to check the tags for packages that are cross-arch
+            # built but determining what is cross-arch would also require looking at
+            # glibc version so this seems cheap enough to not complicate things.
+            wheel_tags = parse_wheel_filename(os.path.basename(wheel_file))[3]
+            if len(wheel_tags.intersection(supported_tags)) == 0:
+                debug.conda_exec(
+                    "Package '%s' was built with %s but target architecture "
+                    "supports %s" % (key, wheel_tags, supported_tags)
+                )
+                unsupported_wheel.append(key)
+                continue
+
+            pkg_spec = cast(PypiPackageSpecification, to_build_pkg_info[key].spec)
             # Move the built wheel to a less temporary location
             wheel_file = shutil.copy(wheel_file, target_directory)
 
@@ -299,6 +298,15 @@ def build_pypi_packages(
             pkg_spec = pkg_spec.clone_with_filename(parse_result.filename)
             to_build_pkg_info[key].spec = pkg_spec
             pkg_spec.add_local_file(".whl", wheel_file)
+
+        if unsupported_wheel:
+            raise CondaException(
+                "Some built pypi packages are not compatible with the target "
+                "architecture. This can happen when some dependencies do not have "
+                "an available wheel for the target architecture and you are resolving "
+                "an environment for a different architecture than the one you are on. "
+                "Requirements would have us build: %s" % ", ".join(unsupported_wheel)
+            )
 
     return [v.spec for v in to_build_pkg_info.values() if v.spec], builder_envs
 

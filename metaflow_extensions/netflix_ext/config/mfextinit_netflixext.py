@@ -112,10 +112,23 @@ CONDA_SRCS_AUTH_INFO = from_conf("CONDA_SRCS_AUTH_INFO", {})
 
 CONDA_REMOTE_COMMANDS = ("batch", "kubernetes")
 
-# Allows you to specify the virtual packages to install when running on a remote node
-# Currently only used to specify the __cuda dependency for GPU remote nodes
-# As an example {"__cuda": "11.8=0"}
-CONDA_REMOTE_PACKAGES = {}
+# List of system dependencies that are allowed to indicate the system to build on
+CONDA_SYS_DEPENDENCIES = ("__cuda", "__glibc")
+
+# Default system dependencies when not specified. Note that the `linux-64` defaults are
+# used as default when building on the remote platform.
+# As an example, you can set it to:
+# CONDA_SYS_DEFAULT_PACKAGES = {
+#     "linux-64": {"__glibc": os.environ.get("CONDA_OVERRIDE_GLIBC", "2.27")},
+# }
+CONDA_SYS_DEFAULT_PACKAGES = {}
+
+# Packages to add when building for GPU machines (ie: if there is a GPU resource
+# requirement). As an example you can set this to:
+# CONDA_SYS_GPU_PACKAGES = {
+#     "__cuda": os.environ.get("CONDA_OVERRIDE_CUDA", "11.8")
+# }
+CONDA_SYS_DEFAULT_GPU_PACKAGES = {}
 
 
 def _validate_remote_latest(name, value):

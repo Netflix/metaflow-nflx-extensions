@@ -8,7 +8,6 @@ import platform
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import uuid
 
@@ -51,7 +50,9 @@ from metaflow.metaflow_config import (
     CONDA_MAGIC_FILE_V2,  # type: ignore
     CONDA_PREFERRED_FORMAT,  # type: ignore
     CONDA_SRCS_AUTH_INFO,  # type: ignore
-    CONDA_REMOTE_PACKAGES,  # type: ignore
+    CONDA_SYS_DEPENDENCIES,  # type: ignore
+    CONDA_SYS_DEFAULT_PACKAGES,  # type: ignore
+    CONDA_SYS_DEFAULT_GPU_PACKAGES,  # type: ignore
 )
 
 from metaflow.metaflow_environment import InvalidEnvironmentException
@@ -67,6 +68,9 @@ _ALL_CONDA_FORMATS = (".tar.bz2", ".conda")
 _ALL_PYPI_FORMATS = (".whl", ".tar.gz", ".zip")
 _VALID_IMAGE_NAME = "[^-a-z0-9_/]"
 _VALID_TAG_NAME = "[^-a-z0-9_]"
+
+# Things that need to be put in any of the builder environments
+_BUILDER_ENVS_PACKAGES = ("pip", "wheel", "tomli", "setuptools")
 
 
 class AliasType(Enum):
@@ -104,6 +108,14 @@ class CondaStepException(CondaException):
             steps=steps, error=exception.message
         )
         super(CondaStepException, self).__init__(msg)
+
+
+def get_builder_envs_dep(orig_deps: List[str]) -> List[str]:
+    builder_deps = []  # type: List[str]
+    for pkg in _BUILDER_ENVS_PACKAGES:
+        dep = [d for d in orig_deps if d.startswith("%s==" % pkg)]
+        builder_deps.extend(dep or [pkg])
+    return builder_deps
 
 
 def convert_filepath(path: str, file_format: Optional[str] = None) -> Tuple[str, str]:
@@ -155,12 +167,9 @@ def arch_id() -> str:
 def get_sys_packages(
     virtual_packages: Dict[str, str],
     arch_requested: str,
-    is_remote: bool,
     gpu_requested: bool,
 ) -> Dict[str, str]:
-    # For now we handle only the __cuda virtual package. We could possibly extend this to
-    # handle differing __glibc but that has other implications (mainly that we would need
-    # to build builder environments in more cases) so we are ignoring that for now.
+    # For now we handle __cuda and __glibc.
 
     # The goal of this function is to take the list of virtual_packages and to return
     # the sys packages we need to add to the user dependencies (so packages that start with
@@ -169,29 +178,36 @@ def get_sys_packages(
     # that are installed). The sys:: packages will then be properly added when resolving
     # the environment as virtual packages (either through CONDA_OVERRIDE_XXX or directly
     # as part of a virtual_packages.yml for conda-lock)
+    if virtual_packages:
+        result = dict(virtual_packages)
+    else:
+        result = dict(CONDA_SYS_DEFAULT_PACKAGES.get(arch_requested, {}))
 
-    if "__cuda" in virtual_packages:
-        # If we already know about the __cuda version we want, we just pass it down.
-        # This allows the user to specify it using CONDA_OVERRIDE_CUDA for example or
-        # just use the one specified by their machine.
-        return {"__cuda": virtual_packages["__cuda"]}
-    if gpu_requested and is_remote:
-        # Here we have a GPU that is being requested for a remote node AND we don't
-        # have any user override of CUDA so we look at the configuration value
+    if gpu_requested:
+        result.update(CONDA_SYS_DEFAULT_GPU_PACKAGES)
 
-        # We only care to add a __cuda package if:
-        #   - it is already there (ie: the machine we are running on
-        #     uses cuda)
-        #   - the user wants to run on a machine with a GPU
-        cuda_pkg_version = CONDA_REMOTE_PACKAGES.get(
-            "__cuda", None
-        )  # type: Optional[str]
-        if cuda_pkg_version:
-            return {"__cuda": cuda_pkg_version}
-    return {}
+    # Clean up
+    result = {
+        k: v for k, v in result.items() if k in CONDA_SYS_DEPENDENCIES and v is not None
+    }
+    return result
 
 
-def pypi_tags_from_arch(python_version: str, arch: str) -> List[Tag]:
+def get_glibc_version() -> Optional[str]:
+    # Uses ldd which prints the glibc version on the system and has the version
+    # as the last element in the first line.
+    try:
+        output = subprocess.check_output("ldd --version", shell=True)
+        vers_line = output.splitlines()[0]
+        version = vers_line.split(b" ")[-1]
+        return version.decode("utf-8")
+    except Exception:
+        return None
+
+
+def pypi_tags_from_arch(
+    python_version: str, arch: str, glibc_version: str
+) -> List[Tag]:
     # Converts a Conda architecture to a tuple containing (implementation, platforms, abis)
     # This function will assume a CPython implementation
 
@@ -199,24 +215,38 @@ def pypi_tags_from_arch(python_version: str, arch: str) -> List[Tag]:
     # https://github.com/pypa/pip/blob/0442875a68f19b0118b0b88c747bdaf6b24853ba/src/pip/_internal/utils/compatibility_tags.py
     py_version = tuple(map(int, python_version.split(".")[:2]))
     if arch == "linux-64":
-        platforms = [
-            "manylinux%s_x86_64" % s
-            for s in (
-                "1",
-                "2010",
-                "2014",
-                "_2_17",
-                "_2_18",
-                "_2_19",
-                "_2_20",
-                "_2_21",
-                "_2_23",
-                "_2_24",
-                "_2_25",
-                "_2_26",
-                "_2_27",
-            )
-        ]
+        max_glibc = "_%s" % glibc_version
+        platforms = []  # type: List[str]
+        for s in (
+            "1",
+            "2010",
+            "2014",
+            "_2_17",
+            "_2_18",
+            "_2_19",
+            "_2_20",
+            "_2_21",
+            "_2_23",
+            "_2_24",
+            "_2_25",
+            "_2_26",
+            "_2_27",
+            "_2_28",
+            "_2_29",
+            "_2_30",
+            "_2_31",
+            "_2_32",
+            "_2_33",
+            "_2_34",
+            "_2_35",
+            "_2_36",
+            "_2_37",
+            "_2_38",
+        ):
+            platforms.append("manylinux%s_x86_64" % s)
+            if s == max_glibc:
+                break
+
         platforms.append("linux_x86_64")
     elif arch == "osx-64":
         platforms = mac_platforms((11, 0), "x86_64")

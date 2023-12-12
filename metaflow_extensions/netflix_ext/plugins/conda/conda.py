@@ -222,13 +222,10 @@ class Conda(object):
 
     @property
     def virtual_packages(self) -> Dict[str, str]:
-        # __glibc seems to be causing issues so don't set for now. We will see if we can
-        # re-add it later
         if "virtual_pkgs" in self._info:
             return {
                 name: "%s=%s" % (version, build)
                 for name, version, build in self._info["virtual_pkgs"]
-                if name != "__glibc"
             }
         elif "virtual packages" in self._info:
             # Micromamba outputs them differently for some reason
@@ -238,7 +235,6 @@ class Conda(object):
                     lambda x: x.split("=", 1),
                     cast(List[str], self._info["virtual packages"]),
                 )
-                if name != "__glibc"
             }
         else:
             raise CondaException("Cannot extract virtual package information")

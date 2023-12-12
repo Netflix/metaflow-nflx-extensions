@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 from metaflow.debug import debug
 
 from ..env_descr import EnvType, ResolvedEnvironment
-from ..utils import arch_id
+from ..utils import arch_id, get_builder_envs_dep
 from . import Resolver
 from .conda_resolver import CondaResolver
 
@@ -27,10 +27,8 @@ class BuilderEnvsResolver(Resolver):
         python_deps = [d for d in deps.get("conda", []) if d.startswith("python==")]
         # We add a few more packages that we need to support building wheels
         # Conda typically includes pip but no harm adding it there too
-        # All packages includes are miniscule and have no dependencies.
-        for pkg in ("pip", "wheel", "tomli", "setuptools"):
-            dep = [d for d in deps.get("conda", []) if d.startswith("%s==" % pkg)]
-            python_deps.extend(dep or [pkg])
+        # All packages included are miniscule and have no dependencies.
+        python_deps.extend(get_builder_envs_dep(deps.get("conda", [])))
 
         if arch_id() == architecture:
             conda_only_deps = {

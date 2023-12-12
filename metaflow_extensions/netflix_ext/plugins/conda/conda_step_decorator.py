@@ -44,6 +44,7 @@ from .conda_common_decorator import (
     CondaRequirementDecoratorMixin,
     NamedEnvRequirementDecoratorMixin,
     PypiRequirementDecoratorMixin,
+    SysPackagesRequirementDecoratorMixin,
 )
 from .conda import Conda
 
@@ -266,6 +267,27 @@ class NamedEnvRequirementStepDecorator(
     """
 
     name = "named_env"
+
+
+class SysPackagesRequirementStepDecorator(
+    SysPackagesRequirementDecoratorMixin, PackageRequirementStepDecorator
+):
+    """
+    Specifies system virtual packages for this step.
+
+    This is an advanced usage decorator allowing you to override the __glibc and
+    __cuda virtual packages that are used when resolving your environment.
+
+    Parameters
+    ----------
+    packages : Dict[str, str], default {}
+        System virtual packages to use for this flow. Supported keys are "__cuda" and
+        "__glibc".
+    disabled : bool, default False
+        If set to True, uses the external environment.
+    """
+
+    name = "sys_packages"
 
 
 # Here for legacy reason -- use @pypi instead
