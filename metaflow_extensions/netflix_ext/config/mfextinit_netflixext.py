@@ -125,7 +125,7 @@ CONDA_SYS_DEFAULT_PACKAGES = {}
 
 # Packages to add when building for GPU machines (ie: if there is a GPU resource
 # requirement). As an example you can set this to:
-# CONDA_SYS_GPU_PACKAGES = {
+# CONDA_SYS_DEFAULT_GPU_PACKAGES = {
 #     "__cuda": os.environ.get("CONDA_OVERRIDE_CUDA", "11.8")
 # }
 CONDA_SYS_DEFAULT_GPU_PACKAGES = {}
