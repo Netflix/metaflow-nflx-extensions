@@ -568,8 +568,6 @@ class CondaEnvironment(MetaflowEnvironment):
                 get_pinned_conda_libs(final_req.python, datastore_type),
             )
 
-        final_req.packages = all_packages
-
         # Add the system requirements and default channels.
         # The default channels go into the computation of the req ID so it is important
         # to have them at this time.
@@ -580,10 +578,12 @@ class CondaEnvironment(MetaflowEnvironment):
 
         # The user can specify whatever they want but we inject things they don't
         # specify
-        final_req_sys = final_req.packages.setdefault("sys", {})
+        final_req_sys = all_packages.setdefault("sys", {})
         for p, v in sys_pkgs.items():
             if p not in final_req_sys:
                 final_req_sys[p] = v
+
+        final_req.packages = all_packages
 
         # Update sources -- here the order is important so we explicitly set it
         # This code will put:

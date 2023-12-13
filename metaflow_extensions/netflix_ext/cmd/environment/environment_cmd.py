@@ -691,7 +691,7 @@ def resolve(
         ]
         for p, v in sys_pkgs.items():
             if p not in new_sys_deps:
-                deps["sys"].append("%s==%s" % (p, v) if p else p)
+                deps["sys"].append("%s==%s" % (p, v) if v else p)
 
         # We add the default sources as well -- those sources go last and we convert
         # to simple channels if we can
