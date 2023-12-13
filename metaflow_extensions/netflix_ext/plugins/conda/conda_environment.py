@@ -573,17 +573,17 @@ class CondaEnvironment(MetaflowEnvironment):
         # Add the system requirements and default channels.
         # The default channels go into the computation of the req ID so it is important
         # to have them at this time.
-        sys_reqs = final_req.copy()
-        sys_reqs.packages = {
-            "sys": get_sys_packages(
-                conda.virtual_packages,
-                step_arch,
-                step_is_remote,
-                step_gpu_requested,
-            )
-        }
 
-        final_req.merge_update(sys_reqs)
+        sys_pkgs = get_sys_packages(
+            conda.virtual_packages, step_arch, step_gpu_requested
+        )
+
+        # The user can specify whatever they want but we inject things they don't
+        # specify
+        final_req_sys = final_req.packages.setdefault("sys", {})
+        for p, v in sys_pkgs.items():
+            if p not in final_req_sys:
+                final_req_sys[p] = v
 
         # Update sources -- here the order is important so we explicitly set it
         # This code will put:

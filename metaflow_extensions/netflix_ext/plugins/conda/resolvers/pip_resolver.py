@@ -25,6 +25,7 @@ from ..utils import (
     CondaException,
     arch_id,
     correct_splitext,
+    get_glibc_version,
     parse_explicit_path_pypi,
     parse_explicit_url_pypi,
     pypi_tags_from_arch,
@@ -120,9 +121,42 @@ class PipResolver(Resolver):
             for c in pypi_sources[1:]:
                 args.extend(["--extra-index-url", c])
 
-            supported_tags = pypi_tags_from_arch(python_version, architecture)
+            if arch_id() == "linux-64":
+                # Glibc version only relevant on linux
+                platform_glibc = get_glibc_version()
+                if platform_glibc is None:
+                    raise CondaException("Could not determine the system GLIBC version")
+            else:
+                same_glibc = True
 
-            if architecture != arch_id():
+            if architecture == "linux-64":
+                # Get the latest supported GLIBC version so we can generate
+                # the proper tags
+                glibc_version = [
+                    d for d in deps.get("sys", []) if d.startswith("__glibc")
+                ]
+                if len(glibc_version) != 1:
+                    raise CondaException("Could not determine maximum GLIBC version")
+                # Get version looking like 2.27=0
+                glibc_version = glibc_version[0][len("__glibc==") :]
+                # Strip =0
+                glibc_version = glibc_version.split("=", 1)[0]
+
+                if arch_id() == "linux-64":
+                    same_glibc = glibc_version == platform_glibc
+
+                # Replace . with _
+                glibc_version = glibc_version.replace(".", "_")
+            else:
+                # It doesn't matter -- not used so don't compute
+                glibc_version = ""
+                same_glibc = True
+
+            supported_tags = pypi_tags_from_arch(
+                python_version, architecture, glibc_version
+            )
+
+            if architecture != arch_id() or not same_glibc:
                 implementations = []  # type: List[str]
                 abis = []  # type: List[str]
                 platforms = []  # type: List[str]
@@ -284,8 +318,9 @@ class PipResolver(Resolver):
                                     [
                                         "-c",
                                         "import tomli; f = open('%s', mode='rb'); "
-                                        "d = tomli.load(f); print(d['poetry']['name']); "
-                                        "print(d['poetry']['version'])"
+                                        "d = tomli.load(f); "
+                                        "print(d.get('poetry', d['tool']['poetry'])['name']); "
+                                        "print(d.get('poetry', d['tool']['poetry'])['version'])"
                                         % os.path.join(local_path, "pyproject.toml"),
                                     ],
                                     binary=builder_python,

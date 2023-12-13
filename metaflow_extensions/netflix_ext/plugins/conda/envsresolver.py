@@ -25,6 +25,8 @@ from metaflow.metaflow_config import (
     CONDA_PREFERRED_FORMAT,
     CONDA_MIXED_DEPENDENCY_RESOLVER,
     CONDA_PYPI_DEPENDENCY_RESOLVER,
+    CONDA_SYS_DEPENDENCIES,
+    CONDA_SYS_DEFAULT_PACKAGES,
 )
 from metaflow.metaflow_environment import InvalidEnvironmentException
 
@@ -43,6 +45,7 @@ from .utils import (
     CondaException,
     channel_or_url,
     arch_id,
+    get_builder_envs_dep,
     merge_dep_dicts,
     plural_marker,
     split_into_dict,
@@ -451,6 +454,10 @@ class EnvsResolver(object):
                 for d in to_resolve_info["user_deps"].get("conda", [])
                 if d.startswith("python==")
             ]
+            # Make sure we have everything we need in the builder environment
+            python_dep.extend(
+                get_builder_envs_dep(to_resolve_info["user_deps"].get("conda", []))
+            )
 
             # The user dependencies are everything in npconda, sys and the pythondep
             builder_user_deps = {
@@ -784,36 +791,45 @@ class EnvsResolver(object):
             incoming_npconda_deps,
         )
 
-        # Special handling of sys deps -- it should just be __cuda right now and the way
-        # that one works is that it is the max supported version so we just take the
-        # smallest
+        # Special handling of sys deps -- it specifies things like __cuda or __glibc.
+        # In both cases, it specifies the maximum allowed version so we take the
+        # smallest.
 
         base_sys_deps = split_into_dict(base_deps.get("sys", []))
-        d = set(base_sys_deps.keys()).difference(("__cuda",))
+        d = set(base_sys_deps.keys()).difference(CONDA_SYS_DEPENDENCIES)
         if d:
             raise CondaException("Unhandled sys deps: %s" % ", ".join(d))
-        d = set(incoming_sys_deps.keys()).difference(("__cuda",))
+        d = set(incoming_sys_deps.keys()).difference(CONDA_SYS_DEPENDENCIES)
         if d:
             raise CondaException("Unhandled sys deps: %s" % ", ".join(d))
+
+        user_sys_deps = cast(
+            Dict[str, str], CONDA_SYS_DEFAULT_PACKAGES.get(architecture, {})
+        )
+        debug.conda_exec(
+            "Default system deps are: %s; base env: %s; incoming: %s"
+            % (user_sys_deps, base_sys_deps, incoming_sys_deps)
+        )
         if base_sys_deps or incoming_sys_deps:
-            v1 = base_sys_deps.get("__cuda", "9999")
-            v2 = incoming_sys_deps.get("__cuda", "9999")
-            if "=" in v1:
-                v1, v1_build = v1.split("=", 1)
-            else:
-                v1_build = None
-            if "=" in v2:
-                v2, v2_build = v2.split("=", 1)
-            else:
-                v2_build = None
-            v_min, v_min_build = v1, v1_build
-            if parse_version(v2) < parse_version(v1):
-                v_min, v_min_build = v2, v2_build
-            user_sys_deps = {
-                "__cuda": "%s=%s" % (v_min, v_min_build) if v_min_build else v_min
-            }
-        else:
-            user_sys_deps = {}
+            for d in CONDA_SYS_DEPENDENCIES:
+                d = cast(str, d)
+                v1 = base_sys_deps.get(d, "9999")
+                v2 = incoming_sys_deps.get(d, "9999")
+                if "=" in v1:
+                    v1, v1_build = v1.split("=", 1)
+                else:
+                    v1_build = None
+                if "=" in v2:
+                    v2, v2_build = v2.split("=", 1)
+                else:
+                    v2_build = None
+                v_min, v_min_build = v1, v1_build
+                if parse_version(v2) < parse_version(v1):
+                    v_min, v_min_build = v2, v2_build
+                if v_min != "9999":
+                    user_sys_deps[d] = (
+                        "%s=%s" % (v_min, v_min_build) if v_min_build else v_min
+                    )
 
         for category, extra in base_extras.items():
             extras.setdefault(category, []).extend(extra)
@@ -840,7 +856,11 @@ class EnvsResolver(object):
         #  - the packages the user requested
         deps = {
             "conda": ["%s==%s" % (p, v) if v else p for p, v in conda_deps.items()],
+            "npconda": [
+                "%s==%s" % (k, v) if v else k for k, v in user_npconda_deps.items()
+            ],
             "pypi": ["%s==%s" % (p, v) if v else p for p, v in pypi_deps.items()],
+            "sys": ["%s==%s" % (k, v) if v else k for k, v in user_sys_deps.items()],
         }
 
         # The user requested dependencies are the ones that were requested for the
@@ -849,11 +869,9 @@ class EnvsResolver(object):
             "conda": [
                 "%s==%s" % (k, v) if v else k for k, v in user_conda_deps.items()
             ],
-            "npconda": [
-                "%s==%s" % (k, v) if v else k for k, v in user_npconda_deps.items()
-            ],
+            "npconda": list(deps["npconda"]),
             "pypi": ["%s==%s" % (k, v) if v else k for k, v in user_pypi_deps.items()],
-            "sys": ["%s==%s" % (k, v) if v else k for k, v in user_sys_deps.items()],
+            "sys": list(deps["sys"]),
         }
 
         if base_env.env_type == EnvType.PYPI_ONLY and len(incoming_conda_deps) == 0:

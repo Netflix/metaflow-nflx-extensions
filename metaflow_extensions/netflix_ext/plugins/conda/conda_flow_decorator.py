@@ -6,6 +6,7 @@ from metaflow.metaflow_environment import InvalidEnvironmentException
 from .conda_common_decorator import (
     CondaRequirementDecoratorMixin,
     NamedEnvRequirementDecoratorMixin,
+    SysPackagesRequirementDecoratorMixin,
     PypiRequirementDecoratorMixin,
 )
 
@@ -36,7 +37,7 @@ class CondaRequirementFlowDecorator(
     name : str, optional, default None
         DEPRECATED -- use `@named_env(name=)` instead.
         If specified, can refer to a named environment. The environment referred to
-        here will be the one used for this step. If specified, nothing else can be
+        here will be the one used for this flow. If specified, nothing else can be
         specified in this decorator. In the name, you can use `@{}` values and
         environment variables will be used to substitute.
     pathspec : str, optional, default None
@@ -46,7 +47,7 @@ class CondaRequirementFlowDecorator(
         specified in this decorator. In the pathspec, you can use `@{}` values and
         environment variables will be used to substitute.
     libraries : Dict[str, str], default {}
-        Libraries to use for this step. The key is the name of the package
+        Libraries to use for this flow. The key is the name of the package
         and the value is the version to use. Note that versions can
         be specified either as a specific version or as a comma separated string
         of constraints like "<2.0,>=1.5".
@@ -66,7 +67,7 @@ class CondaRequirementFlowDecorator(
         If set to True, the environment will be fetched when the task is
         executing as opposed to at the beginning of the flow (or at deploy time if
         deploying to a scheduler). This option requires name or pathspec to be
-        specified. This is useful, for example, if you want this step to always use
+        specified. This is useful, for example, if you want this flow to always use
         the latest named environment when it runs as opposed to the latest when it
         is deployed.
     disabled : bool, default False
@@ -107,7 +108,7 @@ class PypiRequirementFlowDecorator(
     name : str, optional, default None
         DEPRECATED -- use `@named_env(name=)` instead.
         If specified, can refer to a named environment. The environment referred to
-        here will be the one used for this step. If specified, nothing else can be
+        here will be the one used for this flow. If specified, nothing else can be
         specified in this decorator. In the name, you can use `@{}` values and
         environment variables will be used to substitute.
     pathspec : str, optional, default None
@@ -117,8 +118,8 @@ class PypiRequirementFlowDecorator(
         specified in this decorator. In the name, you can use `@{}` values and
         environment variables will be used to substitute.
     packages : Dict[str, str], default {}
-        Packages to use for this step. The key is the name of the package
-        and the value is the version to use (default `{}`).
+        Packages to use for this flow. The key is the name of the package
+        and the value is the version to use.
     extra_indices : List[str], default []
         Additional sources to search for
     python : str, optional, default None
@@ -129,7 +130,7 @@ class PypiRequirementFlowDecorator(
         If set to True, the environment will be fetched when the task is
         executing as opposed to at the beginning of the flow (or at deploy time if
         deploying to a scheduler). This option requires name or pathspec to be
-        specified. This is useful, for example, if you want this step to always use
+        specified. This is useful, for example, if you want this flow to always use
         the latest named environment when it runs as opposed to the latest when it
         is deployed.
     disabled : bool, default False
@@ -169,7 +170,7 @@ class NamedEnvRequirementFlowDecorator(
     ----------
     name : str, optional, default None
         If specified, can refer to a named environment. The environment referred to
-        here will be the one used for this step. If specified, nothing else can be
+        here will be the one used for this flow. If specified, nothing else can be
         specified in this decorator. In the name, you can use `@{}` values and
         environment variables will be used to substitute.
     pathspec : str, optional, default None
@@ -181,7 +182,7 @@ class NamedEnvRequirementFlowDecorator(
         If set to True, the environment will be fetched when the task is
         executing as opposed to at the beginning of the flow (or at deploy time if
         deploying to a scheduler). This option requires name or pathspec to be
-        specified. This is useful, for example, if you want this step to always use
+        specified. This is useful, for example, if you want this flow to always use
         the latest named environment when it runs as opposed to the latest when it
         is deployed.
     disabled : bool, default False
@@ -189,6 +190,27 @@ class NamedEnvRequirementFlowDecorator(
     """
 
     name = "named_env_base"
+
+
+class SysPackagesRequirementFlowDecorator(
+    SysPackagesRequirementDecoratorMixin, PackageRequirementFlowDecorator
+):
+    """
+    Specifies system virtual packages for this flow.
+
+    This is an advanced usage decorator allowing you to override the __glibc and
+    __cuda virtual packages that are used when resolving your environment.
+
+    Parameters
+    ----------
+    packages : Dict[str, str], default {}
+        System virtual packages to use for this flow. Supported keys are "__cuda" and
+        "__glibc".
+    disabled : bool, default False
+        If set to True, uses the external environment.
+    """
+
+    name = "sys_packages_base"
 
 
 class PipRequirementFlowDecorator(PypiRequirementFlowDecorator):
@@ -202,7 +224,7 @@ class PipRequirementFlowDecorator(PypiRequirementFlowDecorator):
     name : str, optional, default None
         DEPRECATED -- use `@named_env(name=)` instead.
         If specified, can refer to a named environment. The environment referred to
-        here will be the one used for this step. If specified, nothing else can be
+        here will be the one used for this flow. If specified, nothing else can be
         specified in this decorator. In the name, you can use `@{}` values and
         environment variables will be used to substitute.
     pathspec : str, optional, default None
@@ -212,8 +234,8 @@ class PipRequirementFlowDecorator(PypiRequirementFlowDecorator):
         specified in this decorator. In the name, you can use `@{}` values and
         environment variables will be used to substitute.
     packages : Dict[str, str], default {}
-        Packages to use for this step. The key is the name of the package
-        and the value is the version to use (default `{}`).
+        Packages to use for this flow. The key is the name of the package
+        and the value is the version to use.
     extra_indices : List[str], default []
         Additional sources to search for
     python : str, optional, default None
@@ -224,7 +246,7 @@ class PipRequirementFlowDecorator(PypiRequirementFlowDecorator):
         If set to True, the environment will be fetched when the task is
         executing as opposed to at the beginning of the flow (or at deploy time if
         deploying to a scheduler). This option requires name or pathspec to be
-        specified. This is useful, for example, if you want this step to always use
+        specified. This is useful, for example, if you want this flow to always use
         the latest named environment when it runs as opposed to the latest when it
         is deployed.
     disabled : bool, default False
