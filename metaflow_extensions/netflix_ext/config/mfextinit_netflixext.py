@@ -117,11 +117,17 @@ CONDA_SYS_DEPENDENCIES = ("__cuda", "__glibc")
 
 # Default system dependencies when not specified. Note that the `linux-64` defaults are
 # used as default when building on the remote platform.
+#
 # As an example, you can set it to:
 # CONDA_SYS_DEFAULT_PACKAGES = {
 #     "linux-64": {"__glibc": os.environ.get("CONDA_OVERRIDE_GLIBC", "2.27")},
 # }
-CONDA_SYS_DEFAULT_PACKAGES = {}
+CONDA_SYS_DEFAULT_PACKAGES = from_conf(
+    "CONDA_SYS_DEFAULT_PACKAGES",
+    {
+        "linux-64": {"__glibc": os.environ.get("CONDA_OVERRIDE_GLIBC", "2.27")},
+    },
+)
 
 # Packages to add when building for GPU machines (ie: if there is a GPU resource
 # requirement). As an example you can set this to:
