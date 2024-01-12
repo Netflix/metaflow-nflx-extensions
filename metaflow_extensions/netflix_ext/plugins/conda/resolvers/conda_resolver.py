@@ -45,6 +45,7 @@ class CondaResolver(Resolver):
         with tempfile.TemporaryDirectory() as mamba_dir:
             args = [
                 "create",
+                "--yes",
                 "--prefix",
                 os.path.join(mamba_dir, "prefix"),
                 "--dry-run",
