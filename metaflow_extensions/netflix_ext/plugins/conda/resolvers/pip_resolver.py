@@ -97,6 +97,10 @@ class PipResolver(Resolver):
         builder_python = os.path.join(
             self._conda.create_builder_env(builder_env), "bin", "python"
         )
+        # Add the path to the binary dir of the builder environment because
+        # things in there may be needed to build/resolve the environment (one that has
+        # come up is git-lfs)
+        addl_env = {"PATH": os.path.dirname(builder_python) + ":" + os.environ["PATH"]}
 
         packages = []  # type: List[PackageSpecification]
         with tempfile.TemporaryDirectory() as pypi_dir:
@@ -255,7 +259,7 @@ class PipResolver(Resolver):
                         # Something originally like pkg==ver
                         args.append(d)
 
-            self._conda.call_binary(args, binary=builder_python)
+            self._conda.call_binary(args, binary=builder_python, addl_env=addl_env)
 
             # We should now have a json blob in out.json
             with open(
@@ -287,6 +291,28 @@ class PipResolver(Resolver):
                     debug.conda_exec("Need to install %s" % str(package_desc))
                 dl_info = package_desc["download_info"]
                 url = dl_info["url"]
+                # Extract hash if we have it
+                # We have "archive_info"
+                file_hash = None
+                if "archive_info" in dl_info:
+                    if "hashes" in dl_info["archive_info"]:
+                        hashes = dl_info["archive_info"]["hashes"]
+                        for fmt, val in hashes.items():
+                            if fmt == PypiPackageSpecification.base_hash_name():
+                                file_hash = "%s=%s" % (fmt, val)
+                                break
+                        else:
+                            raise CondaException(
+                                "Cannot find hash '%s' for package at '%s'"
+                                % (
+                                    PypiPackageSpecification.base_hash_name(),
+                                    url,
+                                )
+                            )
+                    else:
+                        # Fallback on older "hash" field
+                        file_hash = dl_info["archive_info"]["hash"]
+
                 if "dir_info" in dl_info or url.startswith("file://"):
                     url = unquote(url)
                     to_build_local_pkg = None  # type: Optional[str]
@@ -308,6 +334,7 @@ class PipResolver(Resolver):
                                         "--version",
                                     ],
                                     binary=builder_python,
+                                    addl_env=addl_env,
                                 )
                                 .decode(encoding="utf-8")
                                 .splitlines()
@@ -324,6 +351,7 @@ class PipResolver(Resolver):
                                         % os.path.join(local_path, "pyproject.toml"),
                                     ],
                                     binary=builder_python,
+                                    addl_env=addl_env,
                                 )
                                 .decode(encoding="utf-8")
                                 .splitlines()
@@ -364,7 +392,12 @@ class PipResolver(Resolver):
                                 debug.conda_exec("Known package already in place")
                             packages.append(pkg_spec)
                         else:
-                            parse_result = parse_explicit_path_pypi(url)
+                            parse_result = parse_explicit_path_pypi(
+                                url,
+                                hash_value=file_hash.split("=")[1]
+                                if file_hash
+                                else None,
+                            )
                             if parse_result.url_format != ".whl":
                                 # This is a source package so we need to build it
                                 to_build_local_pkg = dl_info["url"]
@@ -377,14 +410,20 @@ class PipResolver(Resolver):
                                 )
                                 # We extract the actual local file so we can use that for now
                                 # Note that the url in PypiPackageSpecication is a fake
-                                # one that looks like file://local-file/... which is meant
+                                # one that looks like file://local-<hash>/... which is meant
                                 # to act as a key for the package.
                                 package_spec.add_local_file(
                                     parse_result.url_format, url[7:]
                                 )
                                 packages.append(package_spec)
                     if to_build_local_pkg:
-                        parse_result = parse_explicit_path_pypi(to_build_local_pkg)
+                        # Note the hash value here is the hash of the *source* tarball
+                        # This is fine as it still uniquely identifies the package
+                        # we will be building.
+                        parse_result = parse_explicit_path_pypi(
+                            to_build_local_pkg,
+                            hash_value=file_hash.split("=")[1] if file_hash else None,
+                        )
                         cache_base_url = PypiCachePackage.make_partial_cache_url(
                             parse_result.url, is_real_url=False
                         )
@@ -436,42 +475,19 @@ class PipResolver(Resolver):
                         ),
                     )
                 else:
-                    # We have "archive_info"
-                    if "hashes" in dl_info["archive_info"]:
-                        hashes = dl_info["archive_info"]["hashes"]
-                        for fmt, val in hashes.items():
-                            if fmt == PypiPackageSpecification.base_hash_name():
-                                hash = "%s=%s" % (fmt, val)
-                                break
-                        else:
-                            raise CondaException(
-                                "Cannot find hash '%s' for package at '%s'"
-                                % (
-                                    PypiPackageSpecification.base_hash_name(),
-                                    url,
-                                )
-                            )
-                    else:
-                        # Fallback on older "hash" field
-                        hash = dl_info["archive_info"]["hash"]
-
-                    parse_result = parse_explicit_url_pypi("%s#%s" % (url, hash))
+                    # Here we have archive_info
+                    parse_result = parse_explicit_url_pypi("%s#%s" % (url, file_hash))
                     if parse_result.url_format != ".whl":
                         # We need to build non wheel files.
                         url_parse_result = urlparse(cast(str, dl_info["url"]))
 
                         is_real_url = False
                         if url_parse_result.scheme == "file":
-                            # TODO: Not sure if this case happens.
-                            parse_result = parse_explicit_path_pypi(dl_info["url"])
-                            cache_base_url = PypiCachePackage.make_partial_cache_url(
-                                parse_result.url, is_real_url=False
+                            raise CondaException(
+                                "URL %s should have been identified as a local file"
+                                % dl_info["url"]
                             )
                         else:
-                            # We don't have the hash so we ignore.
-                            parse_result = parse_explicit_url_pypi(
-                                "%s#" % dl_info["url"]
-                            )
                             cache_base_url = PypiCachePackage.make_partial_cache_url(
                                 parse_result.url, is_real_url=True
                             )

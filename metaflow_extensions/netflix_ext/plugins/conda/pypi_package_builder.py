@@ -33,9 +33,10 @@ from .utils import (
     change_pypi_package_version,
     correct_splitext,
     parse_explicit_path_pypi,
+    version_to_str,
 )
 
-_DEV_TRANS = str.maketrans("abcdef", "123456")
+_DEV_TRANS = str.maketrans("abcdef", "012345")
 
 
 # This is a dataclass -- can move to that when we only support 3.7+
@@ -281,11 +282,19 @@ def build_pypi_packages(
             if not pkg_spec.is_downloadable_url():
                 pkg_version = parse_wheel_filename(parse_result.filename + ".whl")[1]
 
-                pkg_version_str = str(pkg_version)
-                if not pkg_version.dev:
+                pkg_dev = pkg_version.dev
+                pkg_local = pkg_version.local
+                if not pkg_dev:
                     wheel_hash = PypiPackageSpecification.hash_pkg(wheel_file)
-                    pkg_version_str += ".dev" + wheel_hash[:8].translate(_DEV_TRANS)
-                pkg_version_str += "+mfbuild"
+
+                    pkg_dev = int(wheel_hash[:8].translate(_DEV_TRANS))
+                if pkg_local:
+                    pkg_local += "_mfbuild"
+                else:
+                    pkg_local = "mfbuild"
+                pkg_version_str = version_to_str(
+                    pkg_version, {"dev": pkg_dev, "local": pkg_local}
+                )
                 wheel_file = change_pypi_package_version(
                     builder_python, wheel_file, pkg_version_str
                 )
@@ -297,7 +306,7 @@ def build_pypi_packages(
             # now reflects the abi, etc and all that goes in a wheel filename.
             pkg_spec = pkg_spec.clone_with_filename(parse_result.filename)
             to_build_pkg_info[key].spec = pkg_spec
-            pkg_spec.add_local_file(".whl", wheel_file)
+            pkg_spec.add_local_file(".whl", wheel_file, pkg_hash=parse_result.hash)
 
         if unsupported_wheel:
             raise CondaException(
@@ -322,6 +331,7 @@ def _build_with_pip(
     src = spec.local_file(spec.url_format) or build_url
     debug.conda_exec("%s: building from '%s' in '%s'" % (key, src, dest_path))
 
+    addl_env = {"PATH": os.path.dirname(binary) + ":" + os.environ["PATH"]}
     conda.call_binary(
         [
             "-m",
@@ -336,5 +346,6 @@ def _build_with_pip(
             src,
         ],
         binary=binary,
+        addl_env=addl_env,
     )
     return key, dest_path

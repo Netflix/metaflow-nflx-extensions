@@ -3,18 +3,19 @@ from __future__ import annotations
 
 import email.parser
 import email.policy
+import hashlib
 import os
 import platform
 import re
 import shutil
 import subprocess
 import tempfile
-import uuid
 
 from enum import Enum
 from itertools import chain
 from typing import (
     TYPE_CHECKING,
+    Any,
     Dict,
     FrozenSet,
     List,
@@ -42,11 +43,14 @@ from metaflow._vendor.packaging.tags import (
 from metaflow._vendor.packaging.utils import BuildTag, parse_wheel_filename
 
 from metaflow._vendor.packaging.version import Version
+from metaflow._vendor.packaging.requirements import Requirement
+from metaflow._vendor.packaging.specifiers import SpecifierSet
 
 from metaflow.debug import debug
 from metaflow.exception import MetaflowException
 import metaflow.metaflow_config as mf_config
 from metaflow.metaflow_config import (
+    CONDA_BUILDER_ENV_PACKAGES,  # type: ignore
     CONDA_MAGIC_FILE_V2,  # type: ignore
     CONDA_PREFERRED_FORMAT,  # type: ignore
     CONDA_SRCS_AUTH_INFO,  # type: ignore
@@ -70,7 +74,11 @@ _VALID_IMAGE_NAME = "[^-a-z0-9_/]"
 _VALID_TAG_NAME = "[^-a-z0-9_]"
 
 # Things that need to be put in any of the builder environments
-_BUILDER_ENVS_PACKAGES = ("pip", "wheel", "tomli", "setuptools")
+# HACK: Workaround bad wheel package in conda-forge
+# See: https://github.com/conda-forge/wheel-feedstock/issues/61
+# We could check the version of python but it was hard to do in all cases
+# since we don't have the full version so just pin to 0.42.0 for now
+_BUILDER_ENVS_PACKAGES = ("pip", "wheel==0.42.0", "tomli", "setuptools")
 
 
 class AliasType(Enum):
@@ -111,11 +119,23 @@ class CondaStepException(CondaException):
 
 
 def get_builder_envs_dep(orig_deps: List[str]) -> List[str]:
-    builder_deps = []  # type: List[str]
-    for pkg in _BUILDER_ENVS_PACKAGES:
-        dep = [d for d in orig_deps if d.startswith("%s==" % pkg)]
-        builder_deps.extend(dep or [pkg])
-    return builder_deps
+    builder_packages = {}  # type: Dict[str, SpecifierSet]
+    for pkg_req in chain(_BUILDER_ENVS_PACKAGES, CONDA_BUILDER_ENV_PACKAGES):
+        r = Requirement(pkg_req)
+        builder_packages[r.name] = (
+            builder_packages.setdefault(r.name, SpecifierSet()) & r.specifier
+        )
+    for d in orig_deps:
+        splits = d.split("==", 1)
+        if len(splits) == 2 and splits[0] in builder_packages:
+            # If it is just the package name, we don't care because no other specification
+            builder_packages[splits[0]] = builder_packages[splits[0]] & SpecifierSet(
+                splits[1]
+            )
+    return [
+        "%s==%s" % (k, str(v).lstrip("=")) if v else k
+        for k, v in builder_packages.items()
+    ]
 
 
 def convert_filepath(path: str, file_format: Optional[str] = None) -> Tuple[str, str]:
@@ -178,7 +198,7 @@ def get_sys_packages(
     # that are installed). The sys:: packages will then be properly added when resolving
     # the environment as virtual packages (either through CONDA_OVERRIDE_XXX or directly
     # as part of a virtual_packages.yml for conda-lock)
-    if virtual_packages:
+    if virtual_packages and arch_requested == arch_id():
         result = dict(virtual_packages)
     else:
         result = dict(CONDA_SYS_DEFAULT_PACKAGES.get(arch_requested, {}))
@@ -292,10 +312,15 @@ def parse_explicit_url_conda(url: str) -> ParseExplicitResult:
     )
 
 
-def parse_explicit_path_pypi(path: str) -> ParseExplicitResult:
+def parse_explicit_path_pypi(
+    path: str, hash_value: Optional[str] = None
+) -> ParseExplicitResult:
+    # Prevent circular import
+    from .env_descr import PypiPackageSpecification
+
     # Takes a filename in the form file://<path> and returns:
     #  - the filename
-    #  - the URL (always file://local-<uuid>/<filename> so there is no way another
+    #  - the URL (always file://local-<hash>/<filename> so there is no way another
     #    build/user conflicts. We consider them to be all distinct.
     #  - the format of the URL
     #  - the hash will be set to None
@@ -307,11 +332,24 @@ def parse_explicit_path_pypi(path: str) -> ParseExplicitResult:
         raise CondaException(
             "Path '%s' is not a supported format (%s)" % (path, str(_ALL_PYPI_FORMATS))
         )
+    if hash_value is None:
+        if not os.path.isfile(path):
+            # This is not a file so we can't get a hash. Instead, we will compute
+            # the last modified time for files within the directory containing it. This only happens
+            # when the user has a local directory and is trying to build a package
+            # from there. The modified time will act a bit like a hash to determine
+            # if the package being built has changed. If it has, the hash will be different
+            # and the "fake URL" will be different so we won't find the package
+            # in the cache. If it hasn't changed, the hash will be the same and we will
+            # avoid randomly rebuilding the package.
+            hash_value = hash_directory(os.path.dirname(path))
+        else:
+            hash_value = PypiPackageSpecification.hash_pkg(path)
     return ParseExplicitResult(
         filename=unquote(orig_filename),
-        url="file://local-%s/%s" % (str(uuid.uuid4()), orig_filename),
+        url="file://local-%s/%s" % (hash_value, orig_filename),
         url_format=url_format,
-        hash=None,
+        hash=hash_value,
     )
 
 
@@ -572,6 +610,43 @@ class PerHostAuth(AuthBase):
         return r
 
 
+def version_to_str(v: Version, overrides: Dict[str, Any]) -> str:
+    # This code copies __str__ from Version basically but allows components to be
+    # changed
+    parts = []  # type: List[str]
+
+    # Epoch
+    val = int(overrides.get("epoch", v.epoch))
+    if v != 0:
+        parts.append(f"{val}!")
+
+    # Release segment
+    val = overrides.get("release", v.release)
+    parts.append(".".join(str(x) for x in val))
+
+    # Pre-release
+    val = overrides.get("pre", v.pre)
+    if val is not None:
+        parts.append("".join(str(x) for x in val))
+
+    # Post-release
+    val = overrides.get("post", v.post)
+    if val is not None:
+        parts.append(f".post{val}")
+
+    # Development release
+    val = overrides.get("dev", v.dev)
+    if val is not None:
+        parts.append(f".dev{val}")
+
+    # Local version segment
+    val = overrides.get("local", v.local)
+    if val is not None:
+        parts.append(f"+{val}")
+
+    return "".join(parts)
+
+
 # Function heavily inspired from https://github.com/hauntsaninja/change_wheel_version
 # MIT license of that source file:
 # MIT License
@@ -688,6 +763,45 @@ def change_pypi_package_version(
             "Could not rename wheel '%s'; expected '%s' got: %s"
             % (wheel_path, expected_name, ", ".join(os.listdir(build_dir)))
         )
+
+
+def hash_directory(path: str) -> str:
+    # The "hash" of a directory will be the last modified time and last modified
+    # file. We could just use the time probably but this will hopefully inject
+    # even more safety.
+    last_modified_time = 0
+    last_modified_file = None  # type: Optional[str]
+
+    # Walk through all files and directories in the root directory
+    top_level = True
+    for directory, dirs, files in os.walk(path):
+        if top_level:
+            # Skip build and .egg-info since we don't want them to affect the
+            # last modified file (it's not source)
+            to_remove = []  # type: List[str]
+            for d in dirs:
+                if d == "build":
+                    to_remove.append(d)
+                if d.endswith(".egg-info"):
+                    to_remove.append(d)
+            for d in to_remove:
+                dirs.remove(d)
+            top_level = False
+
+        for file in files:
+            filename = os.path.join(directory, file)
+            mod_time = os.path.getmtime(filename)
+            # If this file is the most recently modified, update max_mod_time and max_file_dir
+            if mod_time > last_modified_time:
+                last_modified_time, last_modified_file = mod_time, filename
+
+    debug.conda_exec(
+        "Last modified file in '%s': '%s' at %s"
+        % (path, last_modified_file, last_modified_time)
+    )
+    return hashlib.sha256(
+        ("%s:%s" % (last_modified_time, last_modified_file)).encode()
+    ).hexdigest()
 
 
 class WithDir:
