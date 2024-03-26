@@ -15,9 +15,11 @@ CONDA_S3ROOT = from_conf(
 
 CONDA_AZUREROOT = from_conf(
     "CONDA_AZUREROOT",
-    os.path.join(DATASTORE_SYSROOT_AZURE, "conda_env")
-    if DATASTORE_SYSROOT_AZURE
-    else None,
+    (
+        os.path.join(DATASTORE_SYSROOT_AZURE, "conda_env")
+        if DATASTORE_SYSROOT_AZURE
+        else None
+    ),
 )
 
 CONDA_GSROOT = from_conf(
@@ -27,9 +29,11 @@ CONDA_GSROOT = from_conf(
 
 CONDA_LOCALROOT = from_conf(
     "CONDA_LOCALROOT",
-    os.path.join(DATASTORE_SYSROOT_LOCAL, "conda_env")
-    if DATASTORE_SYSROOT_LOCAL
-    else None,
+    (
+        os.path.join(DATASTORE_SYSROOT_LOCAL, "conda_env")
+        if DATASTORE_SYSROOT_LOCAL
+        else None
+    ),
 )
 
 CONDA_MAGIC_FILE_V2 = "conda_v2.cnd"
@@ -132,9 +136,18 @@ CONDA_SYS_DEFAULT_PACKAGES = from_conf(
 # Packages to add when building for GPU machines (ie: if there is a GPU resource
 # requirement). As an example you can set this to:
 # CONDA_SYS_DEFAULT_GPU_PACKAGES = {
-#     "__cuda": os.environ.get("CONDA_OVERRIDE_CUDA", "11.8")
+#     "__cuda": os.environ.get("CONDA_OVERRIDE_CUDA", "11.8=0")
 # }
 CONDA_SYS_DEFAULT_GPU_PACKAGES = {}
+
+# Packages that are needed when creating an intermediate conda environment to resolve
+# a pypi environment. This can be used to add packages needed for authentication for
+# example.
+builder_packages = []
+if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+    builder_packages = ["keyrings.google-artifactregistry-auth"]
+
+CONDA_BUILDER_ENV_PACKAGES = from_conf("CONDA_BUILDER_ENV_PACKAGES", builder_packages)
 
 
 def _validate_remote_latest(name, value):

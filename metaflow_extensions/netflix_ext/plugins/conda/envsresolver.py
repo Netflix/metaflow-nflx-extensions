@@ -27,6 +27,7 @@ from metaflow.metaflow_config import (
     CONDA_PYPI_DEPENDENCY_RESOLVER,
     CONDA_SYS_DEPENDENCIES,
     CONDA_SYS_DEFAULT_PACKAGES,
+    CONDA_USE_REMOTE_LATEST,
 )
 from metaflow.metaflow_environment import InvalidEnvironmentException
 
@@ -84,6 +85,7 @@ class EnvsResolver(object):
         base_env: Optional[ResolvedEnvironment] = None,
         base_from_full_id: bool = False,
         local_only: bool = False,
+        use_latest: str = CONDA_USE_REMOTE_LATEST,
         force: bool = False,
         force_co_resolve: bool = False,
     ):
@@ -115,6 +117,11 @@ class EnvsResolver(object):
         local_only : bool, optional
             True if we should only look for resolved environments locally and not
             remotely, by default False
+        use_latest : str, default METAFLOW_CONDA_USE_REMOTE_LATEST
+            For default environments, determine if we allow fetching the latest environment
+            remotely resolved. If ":none:", we don't fetch anything. If ":username:", we
+            fetch the latest environment resolved by the current user. If ":any:", we fetch
+            the latest environment resolved by any user.
         force : bool, optional
             True if we should force resolution even if this environment is known,
             by default False
@@ -155,7 +162,9 @@ class EnvsResolver(object):
             resolved_env = base_env
         else:
             resolved_env = (
-                self._conda.environment(env_id, local_only) if not force else None
+                self._conda.environment(env_id, local_only, use_latest)
+                if not force
+                else None
             )
 
         # Check if we have already requested this environment

@@ -180,7 +180,12 @@ class CondaEnvironment(MetaflowEnvironment):
     def decospecs(self) -> Tuple[str, ...]:
         return ("conda_env_internal",) + self.base_env.decospecs()
 
-    def bootstrap_commands(self, step_name: str, datastore_type: str) -> List[str]:
+    def bootstrap_commands(
+        self,
+        step_name: str,
+        datastore_type: str,
+        default_executable_path: Optional[str] = None,
+    ) -> List[str]:
         # Bootstrap conda and execution environment for step
         env_id = self.get_env_id_noconda(step_name)
         if env_id is not None:
@@ -193,8 +198,11 @@ class CondaEnvironment(MetaflowEnvironment):
             return [
                 "export CONDA_START=$(date +%s)",
                 "echo 'Bootstrapping environment ...'",
-                'python -m %s.remote_bootstrap "%s" "%s" %s %s %s'
+                '%s -m %s.remote_bootstrap "%s" "%s" %s %s %s'
                 % (
+                    "python"
+                    if default_executable_path is None
+                    else default_executable_path,
                     "metaflow_extensions.netflix_ext.plugins.conda",
                     self._flow.name,
                     step_name,
@@ -549,6 +557,27 @@ class CondaEnvironment(MetaflowEnvironment):
 
             if final_req.python is None:
                 final_req.python = platform.python_version()
+                # HACK to prevent looking for python versions that do not exist on
+                # conda-forge. Only do this for non-user specified version. If the
+                # version is user specified, the user can change it easily.
+                version_maps = {
+                    "3.7.4": "3.7.5",
+                    "3.7.7": "3.7.8",
+                    "3.7.11": "3.7.12",
+                    "3.7.13": "3.7.12",
+                    "3.7.14": "3.7.12",
+                    "3.7.15": "3.7.12",
+                    "3.7.16": "3.7.12",
+                    "3.7.17": "3.7.12",
+                    "3.8.7": "3.8.8",
+                    "3.8.9": "3.8.10",
+                    "3.8.11": "3.8.12",
+                    "3.9.3": "3.9.4",
+                    "3.9.8": "3.9.9",
+                    "3.9.11": "3.9.12",
+                    "3.10.3": "3.10.4",
+                }
+                final_req.python = version_maps.get(final_req.python, final_req.python)
             all_packages.setdefault("conda", {})["python"] = canonicalize_version(
                 final_req.python
             )

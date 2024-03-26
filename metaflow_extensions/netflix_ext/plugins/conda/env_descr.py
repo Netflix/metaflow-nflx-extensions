@@ -1403,5 +1403,9 @@ def write_to_conda_manifest(ds_root: str, info: CachedEnvironmentInfo):
             f.truncate(0)
             current_content.update(info)
             json.dump(current_content.to_dict(), f)
+
+            # Flush data from python file object to OS buffer and eventually to disk.
+            f.flush()
+            os.fsync(f.fileno())
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)

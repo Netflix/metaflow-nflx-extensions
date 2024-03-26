@@ -227,7 +227,7 @@ class CondaLockResolver(Resolver):
                 if arch_id() == architecture or sys_overrides:
                     lines = ["subdirs:\n", "  %s:\n" % architecture, "    packages:\n"]
                     lines.extend(
-                        "      %s: %s\n" % (virt_pkg, virt_build_str)
+                        '      %s: "%s"\n' % (virt_pkg, virt_build_str)
                         for virt_pkg, virt_build_str in self._conda.virtual_packages.items()
                         if virt_pkg not in sys_overrides
                     )

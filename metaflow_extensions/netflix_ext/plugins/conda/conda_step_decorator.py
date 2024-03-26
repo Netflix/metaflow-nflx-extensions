@@ -292,7 +292,6 @@ class SysPackagesRequirementStepDecorator(
 
 # Here for legacy reason -- use @pypi instead
 class PipRequirementStepDecorator(PypiRequirementStepDecorator):
-    name = "pip"
     """
     Specifies the Pypi packages for the step.
 
@@ -331,6 +330,8 @@ class PipRequirementStepDecorator(PypiRequirementStepDecorator):
     disabled : bool, default False
         If set to True, uses the external environment.
     """
+
+    name = "pip"
 
     def step_init(
         self,
