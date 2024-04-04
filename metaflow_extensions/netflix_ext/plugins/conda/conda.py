@@ -543,7 +543,10 @@ class Conda(object):
         }
 
     def environment(
-        self, env_id: EnvID, local_only: bool = False
+        self,
+        env_id: EnvID,
+        local_only: bool = False,
+        use_latest: str = CONDA_USE_REMOTE_LATEST,
     ) -> Optional[ResolvedEnvironment]:
         """
         Returns the resolved environment for a given environment ID.
@@ -559,6 +562,11 @@ class Conda(object):
         local_only : bool, optional
             If True, does not look in the remote cache for resolved environments,
             by default False
+        use_latest : str, default METAFLOW_CONDA_USE_REMOTE_LATEST
+            For default environments, determine if we allow fetching the latest environment
+            remotely resolved. If ":none:", we don't fetch anything. If ":username:", we
+            fetch the latest environment resolved by the current user. If ":any:", we fetch
+            the latest environment resolved by any user.
 
         Returns
         -------
@@ -578,21 +586,21 @@ class Conda(object):
             if env_id.full_id != "_default":
                 env = self._remote_env_fetch([env_id])
                 env = env[0] if env else None
-            elif CONDA_USE_REMOTE_LATEST != ":none:":
+            elif use_latest != ":none:":
                 # Here we fetch all the environments first and sort them so most
                 # recent (biggest date) is first
                 all_environments = self.environments(env_id.req_id, env_id.arch)
                 current_user = get_username()
-                if CONDA_USE_REMOTE_LATEST == ":username:":
+                if use_latest == ":username:":
                     current_user = cast(str, get_username())
                     filter_func = lambda x: x[1].resolved_by == current_user
-                elif CONDA_USE_REMOTE_LATEST == ":any:":
+                elif use_latest == ":any:":
                     filter_func = lambda x: True
                 else:
                     allowed_usernames = list(
                         map(
                             lambda x: x.strip(),
-                            cast(str, CONDA_USE_REMOTE_LATEST).split(","),
+                            cast(str, use_latest).split(","),
                         )
                     )
                     filter_func = lambda x: x in allowed_usernames
@@ -2347,18 +2355,31 @@ class Conda(object):
             lines = ["@EXPLICIT\n"] + explicit_urls
             explicit_list.writelines(lines)
             explicit_list.flush()
-            self.call_binary(
+            args = [
+                "create",
+                "--yes",
+                "--quiet",
+                "--offline",
+                "--no-deps",
+            ]
+            if self._conda_executable_type == "micromamba":
+                # micromamba seems to have a bug when compiling .py files. In some
+                # circumstances, it just hangs forever. We avoid this by not compiling
+                # any file and letting things get compiled lazily. This may have the
+                # added benefit of a faster environment creation.
+                # This option is only available for micromamba so we don't add it
+                # for anything else. This should cover all remote installations though.
+                args.append("--no-pyc")
+            args.extend(
                 [
-                    "create",
-                    "--yes",
-                    "--quiet",
-                    "--offline",
-                    "--no-deps",
                     "--name",
                     env_name,
                     "--file",
                     explicit_list.name,
-                ],
+                ]
+            )
+            self.call_binary(
+                args,
                 # Creating with micromamba is faster as it extracts in parallel. Prefer
                 # it if it exists.
                 binary="micromamba"
@@ -2382,9 +2403,11 @@ class Conda(object):
                         "install",
                         "--no-deps",
                         "--no-input",
-                        "-r",
-                        pypi_list.name,
                     ]
+                    if self._conda_executable_type == "micromamba":
+                        # Be consistent with what we install with micromamba
+                        arg_list.append("--no-compile")
+                    arg_list.extend(["-r", pypi_list.name])
                     debug.conda_exec("Pip call: %s" % " ".join(arg_list))
                     subprocess.check_output(arg_list, stderr=subprocess.STDOUT)
                 except subprocess.CalledProcessError as e:

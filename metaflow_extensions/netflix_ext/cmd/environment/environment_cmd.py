@@ -326,6 +326,10 @@ def create(
         resolver = EnvsResolver(obj.conda)
         # We force the env_type to be the same as the base env since we don't modify that
         # by adding these deps.
+
+        # We also force the use of use_latest because we are not really doing anything
+        # that would require a re-resolve (ie: the user doesn't really care about the
+        # version of ipykernel most likely).
         resolver.add_environment(
             arch_id(),
             user_deps={
@@ -334,6 +338,8 @@ def create(
             user_sources={},
             extras={},
             base_env=env,
+            local_only=local_only,
+            use_latest=":any:",
         )
         resolver.resolve_environments(obj.echo)
         update_envs = []  # type: List[ResolvedEnvironment]
@@ -1007,6 +1013,8 @@ def _parse_req_file(
                 extra_args.setdefault("pypi", []).append(" ".join([first_word, rem]))
             elif first_word in ("--pre", "--no-index"):
                 extra_args.setdefault("pypi", []).append(first_word)
+            elif first_word == "--conda-channel" and rem:
+                sources.setdefault("conda", []).append(rem)
             elif first_word == "--conda-pkg":
                 # Special extension to allow non-python conda package specification
                 split_res = REQ_SPLIT_LINE.match(splits[1])
