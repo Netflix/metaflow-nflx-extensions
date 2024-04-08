@@ -1,1 +1,4 @@
-CMDS_DESC = [("environment", ".environment.environment_cmd.cli")]
+CMDS_DESC = [
+    ("debug", ".debug.debug_cmd.cli"),
+    ("environment", ".environment.environment_cmd.cli")
+]
