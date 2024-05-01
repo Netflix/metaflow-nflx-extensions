@@ -31,6 +31,7 @@ Metaflow slack channels.
 
 This extension currently contains:
 - refactored and improved [Conda decorator](#conda-v2)
+- improved [debugging capability](#debug)
 
 ## Conda V2
 
@@ -371,3 +372,79 @@ There are also two levels of caching:
     implementation takes care of properly updating the `urls.txt` file to make it
     transparent to Conda (allowing it to operate in an "offline" mode effectively).
 
+## Debug
+This extension allows user's to seamlessly debug their executed steps in an isolated Jupyter notebook instance
+with appropriate dependencies by leveraging the conda extension described above (note, this extension currently only
+works with the version of Conda in this package). 
+
+### Executing the command
+Let's say you have a step called `fit_gbrt_for_given_param` in your flow, and on executing it, the pathspec for
+this step/task is `HousePricePredictionFlow/1199/fit_gbrt_for_given_param/150671013`. To debug this step, you can run the command:
+
+```bash
+metaflow debug task <HousePricePredictionFlow/1199/fit_gbrt_for_given_param/150671013> --metaflow-root-dir ~/notebooks/debug_task`
+```
+### Using the extension
+Running the above command will:
+
+- download your code package
+- download the appropriate conda/pip packages defined for that particular step (if you use the conda extension)
+- generate stubs to access the relevant artifacts for that particular run.
+
+It will additionally generate a notebook in the defined directory where you can debug the execution of your step line by line. For the given step definition:
+```python
+@step
+def fit_gbrt_for_given_param(self):
+    """
+    Fit GBRT with given parameters
+    """
+
+    from sklearn import ensemble
+    from sklearn.model_selection import cross_val_score
+    import numpy as np
+
+
+    estimator = ensemble.GradientBoostingRegressor( n_estimators = self.input['n_estimators'], learning_rate = self.input['learning_rate'],
+        max_depth = self.input['max_depth'], min_samples_split = 2, loss = 'ls')
+
+    estimator.fit(self.features, self.labels)
+
+    mses = cross_val_score(estimator, self.features, self.labels, cv = 5, scoring='neg_mean_squared_error')
+    rmse = np.sqrt(-mses).mean()
+
+
+    self.fit = dict(
+        index=int(self.index),
+        params=self.input,
+        rmse=rmse,
+        estimator=estimator
+    )
+
+    self.next(self.select_best_model)
+```
+
+You will be able to access the artifacts/inputs in your generated notebook directly:
+```python
+>>> print(self.input['n_estimators'])  # You can access objects using `self` as we imported a stub for it in the notebook
+>>> print(self.input['learning_rate'])
+```
+
+You can also execute the whole function again:
+```python
+>>> from sklearn import ensemble  # imports work seamlessly due to conda extension
+>>> from sklearn.model_selection import cross_val_score
+>>> import numpy as np
+>>> estimator = ensemble.GradientBoostingRegressor( n_estimators = self.input['n_estimators'], learning_rate = self.input['learning_rate'],
+    max_depth = self.input['max_depth'], min_samples_split = 2, loss = 'ls')
+>>> estimator.fit(self.features, self.labels)
+>>> mses = cross_val_score(estimator, self.features, self.labels, cv = 5, scoring='neg_mean_squared_error')
+>>> rmse = np.sqrt(-mses).mean()
+>>> self.fit = dict(
+    index=int(self.index),
+    params=self.input,
+    rmse=rmse,
+    estimator=estimator
+)
+```
+
+You can examine the effects of other hyper-parameters live by modifying the `min_samples_split = 3` and re-executing the steps on the same data. 
