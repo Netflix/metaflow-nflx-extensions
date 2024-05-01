@@ -3,9 +3,11 @@ import json
 import textwrap
 from typing import List, Dict, Any, Optional, Tuple, Union
 from metaflow import Step
-from metaflow_extensions.nflx.cmd.debug.constants import Constants
-from metaflow_extensions.nflx.cmd.debug.debug_utils import fetch_environment_type
-from metaflow_extensions.nflx.cmd.debug.debug_stub_generator import DebugStubGenerator
+from metaflow_extensions.netflix_ext.cmd.debug.constants import Constants
+from metaflow_extensions.netflix_ext.cmd.debug.debug_utils import fetch_environment_type
+from metaflow_extensions.netflix_ext.cmd.debug.debug_stub_generator import (
+    DebugStubGenerator,
+)
 
 
 class DebugScriptGenerator(object):
