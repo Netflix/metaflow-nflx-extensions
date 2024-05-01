@@ -74,7 +74,7 @@ class DebugScriptGenerator(object):
         )
         return script
 
-    def append_workbench_instantiation(self, script: str) -> str:
+    def append_debug_stub_instantiation(self, script: str) -> str:
         """
         Appends the debug stub generator instantiation to the script.
 
@@ -275,7 +275,7 @@ class DebugScriptGenerator(object):
         debug_script = self.append_current_stub_instantiation(debug_script)
 
         # We instantiate the debug stub generator
-        debug_script = self.append_workbench_instantiation(debug_script)
+        debug_script = self.append_debug_stub_instantiation(debug_script)
 
         # We then write out the stubs instantiation
         if self.debug_stub_generator.step_type == "start":

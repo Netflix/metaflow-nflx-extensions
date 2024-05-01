@@ -8,7 +8,7 @@ from metaflow.plugins.env_escape import generate_trampolines
 class DebugStubGenerator(object):
     def __init__(self, task_pathspec):
         """
-        Initializes the WorkbenchStubGenerator.
+        Initializes the DebugStubGenerator.
 
         Parameters
         ----------
