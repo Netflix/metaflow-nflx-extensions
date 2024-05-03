@@ -2,9 +2,9 @@ import os
 import tarfile
 import datetime
 
-from metaflow import namespace, Task
+from metaflow import namespace, Flow, Run, Step, Task
 from metaflow._vendor import click
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Union
 from metaflow.exception import CommandException
 from metaflow.cli import echo_dev_null, echo_always
 from .debug_script_generator import DebugScriptGenerator
@@ -127,24 +127,24 @@ def generate_debug_scripts(
     show_default=True,
 )
 @click.argument(
-    "task_pathspec",
+    "pathspec",
 )
 @click.pass_obj
 def task(
     obj,
-    task_pathspec: str,
+    pathspec: str,
     metaflow_root_dir: str,
     override_env: Optional[str] = None,
     override_env_from_pathspec: Optional[str] = None,
     inspect: bool = False,
 ):
     """
-    Create a new remote instance based on named_env name or pathspec.
+    Create a new debugging notebook based on named_env name or pathspec.
     """
     # Move logic to _execute_local_backend to make it reusable
     _execute_local_backend(
         obj,
-        task_pathspec,
+        pathspec,
         metaflow_root_dir,
         override_env,
         override_env_from_pathspec,
@@ -154,7 +154,7 @@ def task(
 
 def _execute_local_backend(
     obj,
-    task_pathspec: str,
+    pathspec: str,
     metaflow_root_dir: str,
     override_env: Optional[str] = None,
     override_env_from_pathspec: Optional[str] = None,
@@ -167,8 +167,9 @@ def _execute_local_backend(
     ----------
     obj : CommandObj
         The command object.
-    task_pathspec : str
-        The pathspec of the task.
+    pathspec : str
+        The pathspec to a task (can be Flow, Run or Step as well if using
+        latest_successful_run, end step or unique task in step leads to a unique task).
     metaflow_root_dir : str
         The root directory where the debug scripts should be generated.
     override_env : Optional[str], optional, default None
@@ -178,7 +179,45 @@ def _execute_local_backend(
     inspect : bool, optional, default False
         If true, allows the user to inspect the state of the task after it has finished running.
     """
-    cur_task = Task(task_pathspec, _namespace_check=False)
+    cur_task = None
+    path_components = pathspec.split("/")
+    if not path_components:
+        raise CommandException("Provide either a flow, run, step or task to debug")
+    if len(path_components) < 2:
+        # Enforce namespace here as we are getting the latest run (so we don't want
+        # to cross boundaries as that could be confusing)
+        r = Flow(path_components[0]).latest_successful_run
+        if r is None:
+            raise CommandException(
+                "Flow {} can only be specified if there is a successful run in the "
+                "current namespace. Please specify a run, step or task as this is not "
+                "the case".format(path_components[0])
+            )
+        path_components.append(r.id)
+    else:
+        r = Run("/".join(path_components[:2]), _namespace_check=False)
+
+    if len(path_components) < 3:
+        path_components.append("end")
+    if len(path_components) < 4:
+        # Enforce single task
+        cur_task = None
+        for t in r[path_components[2]]:
+            if cur_task is not None:
+                raise CommandException(
+                    "Step {} does not refer to a single task -- please specify the "
+                    "task unambiguously".format("/".join(path_components))
+                )
+            cur_task = t
+        if cur_task is None:
+            raise CommandException(
+                "Step {} does not contain any tasks".format("/".join(path_components))
+            )
+        path_components.append(cur_task.id)
+    else:
+        cur_task = r[path_components[2]][path_components[3]]
+    task_pathspec = "/".join(path_components)
+
     if "code-package" not in cur_task.metadata_dict:
         raise CommandException(
             "Task {} does not have code-package. `debug task command only supports "
@@ -211,7 +250,7 @@ def _generate_debug_scripts(
     obj,
     task_pathspec: str,
     metaflow_root_dir: str,
-    inspect: str,
+    inspect: Union[str, bool],
     generate_notebook: str,
     python_executable: Optional[str] = None,
 ):
@@ -226,8 +265,9 @@ def _generate_debug_scripts(
         The pathspec of the task.
     metaflow_root_dir : str
         The root directory where the debug scripts should be generated.
-    inspect : str
-        If 'true' or '1', generates script to inspect the state of the task after it has finished running.
+    inspect : Union[str, bool]
+        If True, 'true' or '1', generates script to inspect the state of the task after
+        it has finished running.
     generate_notebook : str
         If 'true' or '1', setup a notebook with debugging params.
     python_executable : Optional[str], optional, default None
