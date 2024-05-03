@@ -184,7 +184,6 @@ class CondaEnvironment(MetaflowEnvironment):
         self,
         step_name: str,
         datastore_type: str,
-        default_executable_path: Optional[str] = None,
     ) -> List[str]:
         # Bootstrap conda and execution environment for step
         env_id = self.get_env_id_noconda(step_name)
@@ -198,11 +197,8 @@ class CondaEnvironment(MetaflowEnvironment):
             return [
                 "export CONDA_START=$(date +%s)",
                 "echo 'Bootstrapping environment ...'",
-                '%s -m %s.remote_bootstrap "%s" "%s" %s %s %s'
+                'python -m %s.remote_bootstrap "%s" "%s" %s %s %s'
                 % (
-                    "python"
-                    if default_executable_path is None
-                    else default_executable_path,
                     "metaflow_extensions.netflix_ext.plugins.conda",
                     self._flow.name,
                     step_name,

@@ -3,9 +3,11 @@ import json
 import textwrap
 from typing import List, Dict, Any, Optional, Tuple, Union
 from metaflow import Step
-from metaflow_extensions.nflx.cmd.debug.constants import Constants
-from metaflow_extensions.nflx.cmd.debug.debug_utils import fetch_environment_type
-from metaflow_extensions.nflx.cmd.debug.debug_stub_generator import DebugStubGenerator
+from metaflow_extensions.netflix_ext.cmd.debug.constants import Constants
+from metaflow_extensions.netflix_ext.cmd.debug.debug_utils import fetch_environment_type
+from metaflow_extensions.netflix_ext.cmd.debug.debug_stub_generator import (
+    DebugStubGenerator,
+)
 
 
 class DebugScriptGenerator(object):
@@ -407,14 +409,30 @@ class DebugScriptGenerator(object):
         ) as f:
             step_started = False
             function_definition = ""
+            is_step_end = self.debug_stub_generator.task.parent.id == "end"
+            start_indentation = None
             for i, line in enumerate(f):
                 if i == self.debug_stub_generator.task_line_num:
                     step_started = True
+                    start_indentation = len(line) - len(line.lstrip())
 
                 if step_started:
-                    function_definition += line
+                    current_indentation = len(line) - len(line.lstrip())
                     if "self.next(self." in line:
+                        function_definition += line
                         return function_definition, i
+
+                    # Special case for the end step, as there is no next step and we need to
+                    # return the function definition at the end of the file or when the function ends
+                    if is_step_end:
+                        if line.strip() and current_indentation < start_indentation:
+                            return function_definition, i - 1
+
+                    function_definition += line
+
+        # If we reach here, it means that the step is the last step in the flow
+        # and there is no other user code after this step
+        return function_definition, i
 
     def generate_notebook_cells(
         self, metaflow_root_dir: str, debug_file_name: str

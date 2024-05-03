@@ -57,10 +57,17 @@ class PipResolver(Resolver):
             #     we build a package from a local directory/GIT repo, etc)
             #   - OR derived from a source package. This is the case when we build
             #     a wheel from a source package.
+            #   - OR packages that have a download URL that is not a pypi URL or belongs to
+            #     the sources we have for pypi. For instance pacakage @ github.com/..../package.wheel
             local_packages = [
                 p
                 for p in base_env.packages
-                if p.TYPE == "pypi" and (not p.is_downloadable_url() or p.is_derived())
+                if p.TYPE == "pypi"
+                and (
+                    not p.is_downloadable_url()
+                    or p.is_derived()
+                    or p.is_external_url(sources)
+                )
             ]
         else:
             local_packages = None

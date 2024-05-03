@@ -8,7 +8,7 @@ from metaflow import Task, S3
 from typing import Any, Dict, Optional, Tuple
 from metaflow.exception import CommandException
 from metaflow.plugins.env_escape import generate_trampolines
-from metaflow_extensions.nflx.cmd.debug.constants import Constants
+from metaflow_extensions.netflix_ext.cmd.debug.constants import Constants
 
 
 def get_code_package_location(task: Task) -> str:

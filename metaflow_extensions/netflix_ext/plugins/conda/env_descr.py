@@ -704,6 +704,13 @@ class PypiPackageSpecification(PackageSpecification):
                 "" if len(buildtag) == 0 else "%s-%s" % (buildtag[0], buildtag[1]),
             )
 
+    def is_external_url(self, sources: Dict[str, List[str]]) -> bool:
+        # Returns True if the URL is not in the sources
+        # This is used to determine if we should consider a package as a local package to
+        # be downloaded before resolving the environment
+        pypi_sources = sources.get("pypi", [])
+        return not any(urlparse(source).netloc in self.url for source in pypi_sources)
+
 
 class ResolvedEnvironment:
     def __init__(
