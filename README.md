@@ -384,6 +384,13 @@ this step/task is `HousePricePredictionFlow/1199/fit_gbrt_for_given_param/150671
 ```bash
 metaflow debug task <HousePricePredictionFlow/1199/fit_gbrt_for_given_param/150671013> --metaflow-root-dir ~/notebooks/debug_task`
 ```
+
+Note that you can specify a partial pathspec as long as it can be resolved to a unique task:
+
+- if you specify just a flow name, it will use the latest run in your namespace and the end step
+- if you specify just a run pathspec, it will use the end step
+- if you specify just a step pathspec, it will use the unique task for that step and error if there are more than one tasks (foreach)
+
 ### Using the extension
 Running the above command will:
 
