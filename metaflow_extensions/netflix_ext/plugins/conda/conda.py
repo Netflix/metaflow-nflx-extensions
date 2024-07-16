@@ -1784,7 +1784,7 @@ class Conda(object):
             "if ! type micromamba  >/dev/null 2>&1; then "
             "mkdir -p ~/.local/bin >/dev/null 2>&1; "
             'python -c "import requests, bz2, sys; '
-            "data = requests.get('https://micro.mamba.pm/api/micromamba/%s/latest').content; "
+            "data = requests.get('https://micro.mamba.pm/api/micromamba/%s/1.5.7').content; "
             'sys.stdout.buffer.write(bz2.decompress(data))" | '
             "tar -xv -C ~/.local/bin/ --strip-components=1 bin/micromamba > /dev/null 2>&1; "
             "echo $HOME/.local/bin/micromamba; "
