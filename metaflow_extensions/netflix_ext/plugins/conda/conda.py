@@ -1779,7 +1779,7 @@ class Conda(object):
 
     def _ensure_micromamba(self) -> str:
         args = [
-            "/bin/bash",
+            "bash",
             "-c",
             "if ! type micromamba  >/dev/null 2>&1; then "
             "mkdir -p ~/.local/bin >/dev/null 2>&1; "
