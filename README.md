@@ -210,7 +210,7 @@ Note that this does not work cross platform. Behind the scenes, Metaflow will bu
 packages and cache them.
 
 ##### Pypi + Conda packages
-```
+```yml
 dependencies:
   - pandas = >=1.0.0
   - pip:
