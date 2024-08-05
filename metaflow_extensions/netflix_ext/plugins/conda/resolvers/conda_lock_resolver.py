@@ -228,12 +228,15 @@ class CondaLockResolver(Resolver):
                 #                else:
                 conda_exec_type = self._conda.conda_executable_type
                 if conda_exec_type:
-                    args.extend(
-                        [
-                            cast(str, self._conda.binary(conda_exec_type)),
-                            "--%s" % conda_exec_type,
-                        ]
-                    )
+                    if conda_exec_type == "conda":
+                        args.append(cast(str, self._conda.binary(conda_exec_type)))
+                    else:
+                        args.extend(
+                            [
+                                cast(str, self._conda.binary(conda_exec_type)),
+                                "--%s" % conda_exec_type,
+                            ]
+                        )
                 else:
                     raise CondaException("Could not find conda binary for conda-lock")
 
@@ -249,7 +252,7 @@ class CondaLockResolver(Resolver):
                         if virt_pkg not in sys_overrides
                     )
                     lines.extend(
-                        "      %s: %s\n" % (k, v) for k, v in sys_overrides.items()
+                        '      %s: "%s"\n' % (k, v) for k, v in sys_overrides.items()
                     )
 
                     with open(
@@ -258,6 +261,9 @@ class CondaLockResolver(Resolver):
                         encoding="ascii",
                     ) as virtual_yml:
                         virtual_yml.writelines(lines)
+                        debug.conda_exec(
+                            "Virtual package configuration:\n%s" % "".join(lines)
+                        )
                     args.extend(["--virtual-package-spec", "virtual_yml.spec"])
 
                 debug.conda_exec("Build directory: %s" % conda_lock_dir)
@@ -309,11 +315,11 @@ class CondaLockResolver(Resolver):
                                         parse_result.filename,
                                         parse_result.url,
                                         url_format=parse_result.url_format,
-                                        hashes={
-                                            parse_result.url_format: parse_result.hash
-                                        }
-                                        if parse_result.hash
-                                        else None,
+                                        hashes=(
+                                            {parse_result.url_format: parse_result.hash}
+                                            if parse_result.hash
+                                            else None
+                                        ),
                                     )
                                 )
                         else:
