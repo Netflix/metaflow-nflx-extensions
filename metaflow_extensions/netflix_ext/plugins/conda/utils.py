@@ -51,7 +51,7 @@ from metaflow.metaflow_config import CONDA_SYS_DEFAULT_GPU_PACKAGES  # type: ign
 from metaflow.metaflow_config import CONDA_SYS_DEFAULT_PACKAGES  # type: ignore
 from metaflow.metaflow_config import CONDA_SYS_DEPENDENCIES  # type: ignore
 from metaflow.metaflow_environment import InvalidEnvironmentException
-from requests import PreparedRequest
+from requests import PreparedRequest, Response
 from requests.auth import AuthBase, HTTPBasicAuth
 
 if TYPE_CHECKING:
@@ -601,33 +601,142 @@ def auth_from_urls(urls: List[str]) -> Optional[AuthBase]:
         for h, (username, pwd) in CONDA_SRCS_AUTH_INFO.items()
     }
 
+    partial_auths = {}
+
     for url in urls:
         up = urlparse(url.strip("'\" \t\n"))
         if up.hostname and up.username:
-            auths_per_hostname[up.hostname] = HTTPBasicAuth(
-                up.username, up.password or ""
-            )
-    if auths_per_hostname:
-        return PerHostAuth(auths_per_hostname)
+            if up.password is not None:
+                auths_per_hostname[up.hostname] = HTTPBasicAuth(
+                    up.username, up.password
+                )
+            else:
+                partial_auths[up.hostname] = up.username
+    if auths_per_hostname or partial_auths:
+        return PerHostAuth(auths_per_hostname, partial_auths)
     return None
 
 
 class PerHostAuth(AuthBase):
-    def __init__(self, auths_per_hostname: Mapping[str, AuthBase]):
-        self._my_auths = auths_per_hostname
+    def __init__(
+        self,
+        auths_per_hostname: Mapping[str, AuthBase],
+        partial_auths: Mapping[str, str],
+    ):
+        self._static_auths = auths_per_hostname
+        self._partial_auths = partial_auths
+        self._dynamic_auths = {}  # type: Dict[str, AuthBase]
+
+        try:
+            import keyring
+
+            self._keyring = keyring
+        except ImportError:
+            self._keyring = None
 
     def __call__(self, r: PreparedRequest):
-        up = urlparse(r.url)
-        if up.hostname:
-            h = (
-                up.hostname
-                if isinstance(up.hostname, str)
-                else up.hostname.decode(encoding="utf-8")
-            )
-            auth_provider = self._my_auths.get(h or "<none>")
+        h = self._get_hostname(r.url)
+        if h:
+            # Check if we have a static auth (username and password)
+            auth_provider = self._static_auths.get(h or "<none>")
             if auth_provider:
                 return auth_provider(r)
+
+            # If we have a keyring, we can check for partial (just username) or full
+            # auth from the keyring
+            if self._keyring:
+                if h in self._dynamic_auths:
+                    r.register_hook("response", self._handle_401)
+                    return self._dynamic_auths[h](r)
+                elif h in self._partial_auths:
+                    # Here we have a username but we don't have a password, we see
+                    # if we can get it from the keyring
+                    cred = self._get_and_update_credentials(h, self._partial_auths[h])
+                    if cred is not None:
+                        r.register_hook("response", self._handle_401)
+                        return cred(r)
+                else:
+                    # We will suppose that other URLs can be looked up using keyring
+                    # so on failure we will try to get the auth settings -- this means
+                    # we only pay this cost if we fail first.
+                    r.register_hook("response", self._handle_401)
+
         return r
+
+    @staticmethod
+    def _get_hostname(url: Optional[str]) -> Optional[str]:
+        if url is None:
+            return None
+        up = urlparse(url)
+        return up.hostname
+
+    def _get_and_update_credentials(
+        self, hostname: str, username: Optional[str] = None
+    ) -> Optional[AuthBase]:
+        if self._keyring is None:
+            return None
+
+        # Support keyring's get_credential interface which supports getting
+        # credentials without a username. This is only available for
+        # keyring>=15.2.0.
+        if hasattr(self._keyring, "get_credential"):
+            logger.debug("Getting credentials from keyring for %s", url)
+            cred = self._keyring.get_credential(hostname, username)
+            if cred is not None:
+                debug.conda_exec(
+                    "Successfully got keyring credentials for %s" % hostname
+                )
+                cred = HTTPBasicAuth(cred.username, cred.password)
+                self._dynamic_auths[hostname] = cred
+                return cred
+            debug.conda_exec(
+                "Attempted to get keyring credentials for %s but got nothing" % hostname
+            )
+            return None
+
+        if username is not None:
+            password = self._keyring.get_password(hostname, username)
+            if password is not None:
+                debug.conda_exec("Successfully got keyring password for %s" % hostname)
+                cred = HTTPBasicAuth(username, password)
+                self._dynamic_auths[hostname] = cred
+                return cred
+            debug.conda_exec(
+                "Attempted to get keyring password for %s but got nothing" % hostname
+            )
+        return None
+
+    def _handle_401(self, resp: Response, **kwargs: Any) -> Response:
+        # Only care about 401
+        if resp.status_code != 401:
+            return resp
+
+        # If we are here, we know we have a keyring so we check for new credentials. We
+        # also don't have a username to use.
+        hostname = cast(str, self._get_hostname(resp.url))
+        cred = self._get_and_update_credentials(hostname)
+
+        if cred is None:
+            # We couldn't get any credentials from keyring so we return the original
+            # response (and error)
+            return resp
+
+        # Consume content and release the original connection to allow our new
+        # request to reuse the same one.
+        # The result of the assignment isn't used, it's just needed to consume
+        # the content. (taken from )
+        _ = resp.content
+        resp.raw.release_conn()
+
+        # Get a new request with the proper authentication thrown in
+        req = cred(resp.request)
+        req.deregister_hook("response", self._handle_401)
+
+        # Send our new request
+        new_resp = resp.connection.send(req, **kwargs)
+        new_resp.history.append(resp)
+
+        return new_resp
 
 
 def version_to_str(v: Version, overrides: Dict[str, Any]) -> str:
