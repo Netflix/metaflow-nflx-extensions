@@ -144,7 +144,7 @@ print an error message warning you that it is waiting for a certain lock file to
 prior to proceeding.
 
 Removing the file will typically allow Metaflow to proceed. You can also set the amount of time
-Metaflow waits before warning you by setting `METAFLOW_CONDA_LOCK_TIMEOUT` which is currently set
+Metaflow waits before giving up by setting `METAFLOW_CONDA_LOCK_TIMEOUT` which is currently set
 to 300 seconds (5 minutes).
 
 ## Troubleshooting
