@@ -51,10 +51,16 @@ class CondaLockResolver(Resolver):
         base_env: Optional[ResolvedEnvironment] = None,
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
         outfile_name = None
+        external_packages = {}
         if base_env:
             local_packages = [
                 p for p in base_env.packages if not p.is_downloadable_url()
             ]
+            external_packages = {
+                p.package_name: p.url
+                for p in base_env.packages
+                if p.TYPE == "pypi" and p.is_external_url(sources)
+            }
             if local_packages:
                 # We actually only care about things that are not online. Derived packages
                 # are OK because we can reconstruct them if needed (or they may even
@@ -156,6 +162,17 @@ class CondaLockResolver(Resolver):
                 #  - <package_name>[extras]
                 #  - <package_name>@<url>
                 #  - <package_name>[extras]@<url>
+
+                # We first check if we recorded an external URL for this package --
+                # if so, we need to indicate that to conda-lock
+                external_url = external_packages.get(splits[0], None)
+                if external_url:
+                    pypi_dep_lines.setdefault(splits[0], {}).update(
+                        {"url": external_url, "url_extras": ""}
+                    )
+                    continue
+
+                # If not external URL, parse the requirement according to cases above
                 parsed_req = Requirement(splits[0])
                 if parsed_req.extras:
                     extra_part = "extras = [%s]," % ", ".join(

@@ -552,28 +552,7 @@ class CondaEnvironment(MetaflowEnvironment):
                 env_type = EnvType.PYPI_ONLY
 
             if final_req.python is None:
-                final_req.python = platform.python_version()
-                # HACK to prevent looking for python versions that do not exist on
-                # conda-forge. Only do this for non-user specified version. If the
-                # version is user specified, the user can change it easily.
-                version_maps = {
-                    "3.7.4": "3.7.5",
-                    "3.7.7": "3.7.8",
-                    "3.7.11": "3.7.12",
-                    "3.7.13": "3.7.12",
-                    "3.7.14": "3.7.12",
-                    "3.7.15": "3.7.12",
-                    "3.7.16": "3.7.12",
-                    "3.7.17": "3.7.12",
-                    "3.8.7": "3.8.8",
-                    "3.8.9": "3.8.10",
-                    "3.8.11": "3.8.12",
-                    "3.9.3": "3.9.4",
-                    "3.9.8": "3.9.9",
-                    "3.9.11": "3.9.12",
-                    "3.10.3": "3.10.4",
-                }
-                final_req.python = version_maps.get(final_req.python, final_req.python)
+                final_req.python = sanitize_python_version(platform.python_version())
             all_packages.setdefault("conda", {})["python"] = canonicalize_version(
                 final_req.python
             )

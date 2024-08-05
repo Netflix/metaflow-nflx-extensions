@@ -149,6 +149,9 @@ if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
 
 CONDA_BUILDER_ENV_PACKAGES = from_conf("CONDA_BUILDER_ENV_PACKAGES", builder_packages)
 
+# All architectures used by Conda
+CONDA_ALL_ARCHS = from_conf("CONDA_ALL_ARCHS", ["linux-64", "osx-64", "osx-arm64"])
+
 
 def _validate_remote_latest(name, value):
     if not value:

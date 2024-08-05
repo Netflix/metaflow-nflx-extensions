@@ -20,6 +20,7 @@ from metaflow import Step, metaflow_config
 from metaflow.exception import CommandException
 from metaflow.plugins import DATASTORES
 from metaflow.metaflow_config import (
+    CONDA_ALL_ARCHS,
     CONDA_SYS_DEPENDENCIES,
     DEFAULT_DATASTORE,
     DEFAULT_METADATA,
@@ -46,6 +47,7 @@ from metaflow_extensions.netflix_ext.plugins.conda.utils import (
     resolve_env_alias,
     plural_marker,
     merge_dep_dicts,
+    tstr_to_dict,
 )
 
 from metaflow._vendor.packaging.requirements import InvalidRequirement, Requirement
@@ -77,7 +79,8 @@ def env_spec_options(func):
         default=None,
         multiple=True,
         help="Architecture to resolve for. Can be specified multiple times. "
-        "If not specified, defaults to the architecture for the step",
+        "If not specified, defaults to the architecture for the step or current machine "
+        "if there is no step.",
         required=False,
     )
     @click.option(
@@ -111,6 +114,17 @@ def env_spec_options(func):
         "--using",
         default=None,
         help="Environment created starting with the environment referenced here",
+    )
+    @click.option(
+        "--from-pathspec",
+        default=None,
+        help="Environment created cloning the requirements in the Pathspec specified",
+    )
+    @click.option(
+        "--from",
+        "from_",
+        default=None,
+        help="Environment created cloning the requirements in the environment referenced here",
     )
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -214,12 +228,14 @@ def environment(
 @click.option(
     "--local-only/--non-local",
     show_default=True,
+    is_flag=True,
     default=False,
     help="Only create if environment is known locally",
 )
 @click.option(
     "--force/--no-force",
     default=False,
+    is_flag=True,
     show_default=True,
     help="Recreate the environment if it already exists and remove the `into` directory "
     "if it exists",
@@ -533,15 +549,55 @@ def resolve(
     yml_file: Optional[str],
     using_pathspec: Optional[str],
     using: Optional[str],
+    from_pathspec: Optional[str],
+    from_: Optional[str],
 ):
     # Check combinations -- TODO: we could leverage a click add-on to do this
     if req_file is not None and yml_file is not None:
         raise click.BadOptionUsage("-r/-f", "Can only specify one of -r or -f")
-    if (using_pathspec is not None or using is not None) and python is not None:
+    if (
+        using_pathspec is not None
+        or using is not None
+        or from_pathspec is not None
+        or from_ is not None
+    ) and python is not None:
         raise click.BadOptionUsage(
             "--python",
-            "Cannot specify a Python version if using --using-pathspec or --using",
+            "Cannot specify a Python version if using --using-pathspec/--using or --from-pathspec/--from",
         )
+    if using_pathspec is not None and using is not None:
+        raise click.BadOptionUsage(
+            "--using-pathspec", "Cannot specify both --using-pathspec and --using"
+        )
+    if from_pathspec is not None and from_ is not None:
+        raise click.BadOptionUsage(
+            "--from-pathspec", "Cannot specify both --from-pathspec and --from"
+        )
+
+    using_str = None  # type: Optional[str]
+    if using:
+        using_str = using
+    elif using_pathspec:
+        using_str = "step:%s" % using_pathspec
+
+    from_str = None  # type: Optional[str]
+    if from_:
+        from_str = from_
+    elif from_pathspec:
+        from_str = "step:%s" % from_pathspec
+
+    if from_str and using_str:
+        raise click.BadOptionUsage(
+            "--using/--using-pathspec",
+            "Cannot specify both --using/--using-pathspec and --from/--from-pathspec",
+        )
+
+    if from_str and (req_file or yml_file):
+        raise click.BadOptionUsage(
+            "--from/--from-pathspec",
+            "Cannot specify --from/--from-pathspec with -r/-f",
+        )
+
     resolver = EnvsResolver(obj.conda)
     new_conda_deps = {}  # type: Dict[str, str]
     new_pypi_deps = {}  # type: Dict[str, str]
@@ -550,16 +606,40 @@ def resolve(
     new_sources = {}  # type: Dict[str, List[str]]
     new_extras = {}  # type: Dict[str, List[str]]
 
-    using_str = None  # type: Optional[str]
-    if using:
-        using_str = using
-    if using_pathspec:
-        using_str = "step:%s" % using_pathspec
-
     archs = list(arch) if arch else [arch_id()]
     base_env_id = None
     base_env = None  # type: Optional[ResolvedEnvironment]
     base_env_python = python  # type: Optional[str]
+
+    if from_str:
+        # If we have an environment to clone, we get the dependencies. This is useful
+        # to "replatform" an environment.
+        for arch in CONDA_ALL_ARCHS:
+            base_env_id = cast(Conda, obj.conda).env_id_from_alias(
+                from_str, arch, local_only
+            )
+            if base_env_id is None:
+                continue
+            base_env = cast(Conda, obj.conda).environment(
+                EnvID(
+                    req_id=base_env_id.req_id,
+                    full_id=base_env_id.full_id,
+                    arch=arch,
+                ),
+                local_only,
+            )
+            break
+        if base_env is None:
+            raise CommandException("No known environment for '%s'" % from_str)
+        for p in base_env.packages:
+            if p.package_name == "python":
+                base_env_python = p.package_version
+                break
+        if base_env_python is None:
+            raise InvalidEnvironmentException(
+                "Cannot determine python version of from-pathspec environment"
+            )
+
     if using_str:
         # We can pick any of the architecture to get the info about the base environment
         base_env_id = cast(Conda, obj.conda).env_id_from_alias(
@@ -614,11 +694,11 @@ def resolve(
 
     if base_env_python:
         if parsed_python_version:
-            if using_pathspec is not None or using is not None:
+            if from_str or using_str:
                 # Check if the python version matches properly
                 if not SpecifierSet(parsed_python_version).contains(base_env_python):
                     raise InvalidEnvironmentException(
-                        "The base environment's Python version (%s) does not match the "
+                        "The base/from environment's Python version (%s) does not match the "
                         "one specified in the requirements file (%s)"
                         % (base_env_python, parsed_python_version)
                     )
@@ -633,35 +713,41 @@ def resolve(
         base_env_python = platform.python_version()
 
     # Compute the deps
-    if len(new_conda_deps) == 0 and (
-        not base_env or base_env.env_type == EnvType.PYPI_ONLY
-    ):
-        # Assume a pypi environment for base deps
-        pypi_deps = conda_deps_to_pypi_deps(
-            get_pinned_conda_libs(base_env_python, obj.datastore_type)
-        )
-
-        conda_deps = {}
+    if from_str:
+        deps = tstr_to_dict(cast(ResolvedEnvironment, base_env).deps)
     else:
-        conda_deps = dict(get_pinned_conda_libs(base_env_python, obj.datastore_type))
-        pypi_deps = {}
+        if len(new_conda_deps) == 0 and (
+            not base_env or base_env.env_type == EnvType.PYPI_ONLY
+        ):
+            # Assume a pypi environment for base deps
+            pypi_deps = conda_deps_to_pypi_deps(
+                get_pinned_conda_libs(base_env_python, obj.datastore_type)
+            )
 
-    pypi_deps = merge_dep_dicts(pypi_deps, new_pypi_deps)
-    conda_deps = merge_dep_dicts(conda_deps, new_conda_deps)
+            conda_deps = {}
+        else:
+            conda_deps = dict(
+                get_pinned_conda_libs(base_env_python, obj.datastore_type)
+            )
+            pypi_deps = {}
 
-    deps = {
-        "conda": [
-            "%s==%s" % (name, ver) if ver else name for name, ver in conda_deps.items()
-        ],
-        "pypi": [
-            "%s==%s" % (name, canonicalize_version(ver)) if ver else name
-            for name, ver in pypi_deps.items()
-        ],
-        "npconda": [
-            "%s==%s" % (name, ver) if ver else name
-            for name, ver in new_np_conda_deps.items()
-        ],
-    }
+        pypi_deps = merge_dep_dicts(pypi_deps, new_pypi_deps)
+        conda_deps = merge_dep_dicts(conda_deps, new_conda_deps)
+
+        deps = {
+            "conda": [
+                "%s==%s" % (name, ver) if ver else name
+                for name, ver in conda_deps.items()
+            ],
+            "pypi": [
+                "%s==%s" % (name, canonicalize_version(ver)) if ver else name
+                for name, ver in pypi_deps.items()
+            ],
+            "npconda": [
+                "%s==%s" % (name, ver) if ver else name
+                for name, ver in new_np_conda_deps.items()
+            ],
+        }
 
     env_type = env_type_for_deps(deps)
     if not base_env:
@@ -672,7 +758,11 @@ def resolve(
             env_type = EnvType.PYPI_ONLY
 
     for cur_arch in archs:
-        if base_env_id:
+        if not from_str and base_env_id:
+            # If we have have_from, we don't look for the environment for the arch
+            # we are trying to resolve since it most likely doesn't exist. We keep
+            # the base env we have and will use that as a basis to resolve for new
+            # arch.
             base_env = cast(Conda, obj.conda).environment(
                 EnvID(
                     req_id=base_env_id.req_id,
@@ -701,34 +791,41 @@ def resolve(
 
         # We add the default sources as well -- those sources go last and we convert
         # to simple channels if we can
-        # Conda sources are always there since we get the base environment
-        sources = {
-            "conda": list(
-                dict.fromkeys(
-                    map(
-                        channel_or_url,
-                        chain(
-                            new_sources.get("conda", []),
-                            obj.conda.default_conda_channels,
-                        ),
+        if from_str:
+            sources = tstr_to_dict(cast(ResolvedEnvironment, base_env).sources)
+        else:
+            # Conda sources are always there since we get the base environment
+            sources = {
+                "conda": list(
+                    dict.fromkeys(
+                        map(
+                            channel_or_url,
+                            chain(
+                                new_sources.get("conda", []),
+                                obj.conda.default_conda_channels,
+                            ),
+                        )
                     )
                 )
-            )
-        }
-        if env_type != EnvType.CONDA_ONLY:
-            sources["pypi"] = list(
-                dict.fromkeys(
-                    chain(obj.conda.default_pypi_sources, new_sources.get("pypi", []))
+            }
+            if env_type != EnvType.CONDA_ONLY:
+                sources["pypi"] = list(
+                    dict.fromkeys(
+                        chain(
+                            obj.conda.default_pypi_sources, new_sources.get("pypi", [])
+                        )
+                    )
                 )
-            )
 
         resolver.add_environment(
             cur_arch,
             deps,
             sources,
             new_extras,
-            base_env=base_env,
-            base_from_full_id=base_env.is_info_accurate if base_env else False,
+            base_env=base_env if using_str else None,
+            base_from_full_id=base_env.is_info_accurate
+            if base_env and using_str
+            else False,
             local_only=local_only,
             force=force,
             force_co_resolve=len(archs) > 1,

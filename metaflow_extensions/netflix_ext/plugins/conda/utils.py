@@ -647,6 +647,31 @@ def version_to_str(v: Version, overrides: Dict[str, Any]) -> str:
     return "".join(parts)
 
 
+# HACK to prevent looking for python versions that do not exist on
+# conda-forge.
+version_maps = {
+    "3.7.4": "3.7.5",
+    "3.7.7": "3.7.8",
+    "3.7.11": "3.7.12",
+    "3.7.13": "3.7.12",
+    "3.7.14": "3.7.12",
+    "3.7.15": "3.7.12",
+    "3.7.16": "3.7.12",
+    "3.7.17": "3.7.12",
+    "3.8.7": "3.8.8",
+    "3.8.9": "3.8.10",
+    "3.8.11": "3.8.12",
+    "3.9.3": "3.9.4",
+    "3.9.8": "3.9.9",
+    "3.9.11": "3.9.12",
+    "3.10.3": "3.10.4",
+}
+
+
+def sanitize_python_version(v: str) -> str:
+    return version_maps.get(v, v)
+
+
 # Function heavily inspired from https://github.com/hauntsaninja/change_wheel_version
 # MIT license of that source file:
 # MIT License
