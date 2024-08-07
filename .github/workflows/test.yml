@@ -28,7 +28,7 @@ jobs:
             python=${{ matrix.python-version }}
 
       - name: install nflx-extension
-        shell: bash -eo pipefile -l {0}
+        shell: bash -eo pipefail -l {0}
         run: |
           which pip
           pip install -e . --force-reinstall -U
