@@ -10,5 +10,7 @@ dependencies:
   - wheel
   - mamba
   - conda
+  - conda-lock
+  - conda-package-handling
   - pip:
     - sh

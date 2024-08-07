@@ -32,6 +32,10 @@ jobs:
         run: |
           which pip
           pip install -e . --force-reinstall -U
+      
+      - name: install bash
+        if: runner.os == 'macOS'
+        run: brew install bash
 
       - name: run test
         shell: bash -eo pipefail -l {0}
