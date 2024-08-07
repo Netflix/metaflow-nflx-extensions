@@ -8,6 +8,9 @@ from metaflow.metaflow_config import (
 from metaflow.metaflow_config_funcs import from_conf, get_validate_choice_fn
 
 
+# Set to true if running the tests with a local datastore
+CONDA_TEST = from_conf("CONDA_TEST", False)
+
 CONDA_S3ROOT = from_conf(
     "CONDA_S3ROOT",
     os.path.join(DATASTORE_SYSROOT_S3, "conda_env") if DATASTORE_SYSROOT_S3 else None,

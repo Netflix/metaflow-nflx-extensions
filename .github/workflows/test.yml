@@ -16,6 +16,7 @@ jobs:
         resolver: [ mamba, conda, micromamba ]
     env:
       METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
+      METAFLOW_CONDA_TEST: 1
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 

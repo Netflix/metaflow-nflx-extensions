@@ -11,6 +11,8 @@ from urllib.parse import unquote, urlparse
 
 from metaflow.debug import debug
 
+from metaflow.metaflow_config import CONDA_TEST
+
 from ..env_descr import (
     EnvType,
     PackageSpecification,
@@ -534,7 +536,7 @@ class PipResolver(Resolver):
                             )
                         )
             if to_build_pkg_info:
-                if not self._conda.storage:
+                if not self._conda.storage and not CONDA_TEST:
                     raise CondaException(
                         "Cannot create a relocatable environment as it depends on "
                         "local files or non wheels and no storage backend is defined: %s"
