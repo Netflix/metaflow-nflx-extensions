@@ -1,0 +1,4 @@
+pandas,1,
+pip,,
+boto3,1.14,
+requests,2.21,

@@ -1,0 +1,41 @@
+name: test
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
+        python-version: [ "3.8", "3.9", "3.10", "3.11", "3.12" ]
+        resolver: [ mamba, conda, micromamba ]
+    env:
+      METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - uses: mamba-org/setup-micromamba@f8b8a1e23a26f60a44c853292711bacfd3eac822 # v1.9.0
+        with:
+          micromamba-version: latest
+          environment-file: dev-env.yml
+          init-shell: bash
+          create-args: >-
+            python=${{ matrix.python-version }}
+
+      - name: install nflx-extension
+        shell: bash -eo pipefile -l {0}
+        run: |
+          which pip
+          pip install -e . --force-reinstall -U
+
+      - name: run test
+        shell: bash -eo pipefail -l {0}
+        run: |
+          set -x
+          which pytest
+          pytest -n 16 tests

@@ -36,7 +36,7 @@ CONDA_LOCALROOT = from_conf(
     ),
 )
 
-CONDA_MAGIC_FILE_V2 = "conda_v2.cnd"
+CONDA_MAGIC_FILE_V2 = from_conf("CONDA_MAGIC_FILE_V2", "conda_v2.cnd")
 
 # Use an alternate dependency resolver for conda packages instead of conda
 # Mamba promises faster package dependency resolution times, which
