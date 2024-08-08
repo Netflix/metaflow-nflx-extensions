@@ -230,8 +230,10 @@ class Conda(object):
             }
         elif "virtual packages" in self._info:
             # Micromamba outputs them differently for some reason
+            # It also includes a -vX at the end of archspec for example which doesn't
+            # play nice with conda-lock. Strip it out.
             return {
-                name: build_str
+                name: build_str.split("-", 1)[0]
                 for name, build_str in map(
                     lambda x: x.split("=", 1),
                     cast(List[str], self._info["virtual packages"]),
