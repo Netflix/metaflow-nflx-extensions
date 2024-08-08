@@ -1,0 +1,4 @@
+# This is a comment that should be ignored
+# Checking if --pre works
+--pre
+pandas>=1.0.0

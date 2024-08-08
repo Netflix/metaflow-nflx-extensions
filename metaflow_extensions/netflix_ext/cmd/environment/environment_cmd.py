@@ -21,6 +21,7 @@ from metaflow.exception import CommandException
 from metaflow.plugins import DATASTORES
 from metaflow.metaflow_config import (
     CONDA_ALL_ARCHS,
+    CONDA_TEST,
     CONDA_SYS_DEPENDENCIES,
     DEFAULT_DATASTORE,
     DEFAULT_METADATA,
@@ -359,7 +360,7 @@ def create(
         )
         resolver.resolve_environments(obj.echo)
         update_envs = []  # type: List[ResolvedEnvironment]
-        if obj.datastore_type != "local":
+        if obj.datastore_type != "local" or CONDA_TEST:
             # We may need to update caches
             # Note that it is possible that something we needed to resolve, we don't need
             # to cache (if we resolved to something already cached).
@@ -823,9 +824,9 @@ def resolve(
             sources,
             new_extras,
             base_env=base_env if using_str else None,
-            base_from_full_id=base_env.is_info_accurate
-            if base_env and using_str
-            else False,
+            base_from_full_id=(
+                base_env.is_info_accurate if base_env and using_str else False
+            ),
             local_only=local_only,
             force=force,
             force_co_resolve=len(archs) > 1,
@@ -881,7 +882,7 @@ def resolve(
     # If this is not a dry-run, we cache the environments and write out the resolved
     # information
     update_envs = []  # type: List[ResolvedEnvironment]
-    if obj.datastore_type != "local":
+    if obj.datastore_type != "local" or CONDA_TEST:
         # We may need to update caches
         # Note that it is possible that something we needed to resolve, we don't need
         # to cache (if we resolved to something already cached).

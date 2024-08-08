@@ -53,6 +53,7 @@ from metaflow.metaflow_config import (
     CONDA_PREFERRED_FORMAT,
     CONDA_REMOTE_INSTALLER,
     CONDA_REMOTE_INSTALLER_DIRNAME,
+    CONDA_TEST,
     CONDA_DEFAULT_PYPI_SOURCE,
     CONDA_USE_REMOTE_LATEST,
 )
@@ -139,11 +140,11 @@ class Conda(object):
         self._cached_environment = read_conda_manifest(self._local_root)
 
         # Initialize storage
-        if self._datastore_type != "local":
+        if self._datastore_type != "local" or CONDA_TEST:
             # Prevent circular dep
             from metaflow.plugins import DATASTORES
 
-            # We will be able to cache things -- currently no caching for local
+            # We will be able to cache things -- currently no caching for local except in testing
             storage_impl = [d for d in DATASTORES if d.TYPE == self._datastore_type][0]
             self._storage = storage_impl(
                 get_conda_root(self._datastore_type)
@@ -229,8 +230,10 @@ class Conda(object):
             }
         elif "virtual packages" in self._info:
             # Micromamba outputs them differently for some reason
+            # It also includes a -vX at the end of archspec for example which doesn't
+            # play nice with conda-lock. Strip it out.
             return {
-                name: build_str
+                name: build_str.split("-", 1)[0]
                 for name, build_str in map(
                     lambda x: x.split("=", 1),
                     cast(List[str], self._info["virtual packages"]),
@@ -284,15 +287,19 @@ class Conda(object):
         except subprocess.CalledProcessError as e:
             if pretty_print_exception:
                 print(
-                    "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
-                    if e.output
-                    else "No STDOUT",
+                    (
+                        "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
+                        if e.output
+                        else "No STDOUT"
+                    ),
                     file=sys.stderr,
                 )
                 print(
-                    "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
-                    if e.stderr
-                    else "No STDERR",
+                    (
+                        "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
+                        if e.stderr
+                        else "No STDERR"
+                    ),
                     file=sys.stderr,
                 )
                 raise CondaException(
@@ -334,15 +341,19 @@ class Conda(object):
             ).strip()
         except subprocess.CalledProcessError as e:
             print(
-                "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
-                if e.output
-                else "No STDOUT",
+                (
+                    "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
+                    if e.output
+                    else "No STDOUT"
+                ),
                 file=sys.stderr,
             )
             print(
-                "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
-                if e.stderr
-                else "No STDERR",
+                (
+                    "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
+                    if e.stderr
+                    else "No STDERR"
+                ),
                 file=sys.stderr,
             )
             raise CondaException(
@@ -863,7 +874,7 @@ class Conda(object):
             The list of aliases -- note that you can only update mutable aliases or
             add new ones.
         """
-        if self._datastore_type != "local":
+        if self._datastore_type != "local" or CONDA_TEST:
             # We first fetch any aliases we have remotely because that way
             # we will catch any non-mutable changes
             resolved_aliases = [resolve_env_alias(a) for a in aliases]
@@ -965,9 +976,11 @@ class Conda(object):
         my_arch_id = arch_id()
         cache_formats = cache_formats or {
             "pypi": ["_any"],
-            "conda": [CONDA_PREFERRED_FORMAT]
-            if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none"
-            else ["_any"],
+            "conda": (
+                [CONDA_PREFERRED_FORMAT]
+                if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none"
+                else ["_any"]
+            ),
         }
 
         # key: URL
@@ -2382,9 +2395,11 @@ class Conda(object):
                 args,
                 # Creating with micromamba is faster as it extracts in parallel. Prefer
                 # it if it exists.
-                binary="micromamba"
-                if self._bins and "micromamba" in self._bins
-                else "conda",
+                binary=(
+                    "micromamba"
+                    if self._bins and "micromamba" in self._bins
+                    else "conda"
+                ),
             )
 
         if pypi_paths:
@@ -2412,15 +2427,19 @@ class Conda(object):
                     subprocess.check_output(arg_list, stderr=subprocess.STDOUT)
                 except subprocess.CalledProcessError as e:
                     print(
-                        "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
-                        if e.output
-                        else "No STDOUT",
+                        (
+                            "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
+                            if e.output
+                            else "No STDOUT"
+                        ),
                         file=sys.stderr,
                     )
                     print(
-                        "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
-                        if e.stderr
-                        else "No STDERR",
+                        (
+                            "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
+                            if e.stderr
+                            else "No STDERR"
+                        ),
                         file=sys.stderr,
                     )
                     raise CondaException(

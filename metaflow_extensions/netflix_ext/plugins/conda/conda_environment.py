@@ -30,6 +30,7 @@ from metaflow.exception import MetaflowException
 from metaflow.metaflow_config import (
     CONDA_MAGIC_FILE_V2,
     CONDA_REMOTE_COMMANDS,
+    CONDA_TEST,
     get_pinned_conda_libs,
 )
 
@@ -139,7 +140,7 @@ class CondaEnvironment(MetaflowEnvironment):
         resolver.resolve_environments(echo)
 
         update_envs = []  # type: List[ResolvedEnvironment]
-        if self._datastore_type != "local":
+        if self._datastore_type != "local" or CONDA_TEST:
             # We may need to update caches
             # Note that it is possible that something we needed to resolve, we don't need
             # to cache (if we resolved to something already cached).

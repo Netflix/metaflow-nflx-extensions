@@ -1,0 +1,16 @@
+name: nflxext-dev
+category: dev
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - pytest
+  - pytest-xdist
+  - pytest-timeout
+  - wheel
+  - mamba
+  - conda
+  - conda-lock
+  - conda-package-handling
+  - pip:
+    - sh
