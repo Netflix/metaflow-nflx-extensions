@@ -17,6 +17,7 @@ jobs:
     env:
       METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
       METAFLOW_CONDA_TEST: 1
+      METAFLOW_DATASTORE_SYSROOT_LOCAL: .metaflow
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
@@ -43,4 +44,5 @@ jobs:
         run: |
           set -x
           which pytest
+          mkdir .metaflow
           pytest -n 16 tests

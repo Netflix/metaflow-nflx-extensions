@@ -19,11 +19,6 @@ try:
 except FileExistsError:
     pass
 
-# Create a local `.metaflow` directory for the local storage. If this is not
-# done, there are cases where there is a race in creating it causing tests to fail.
-if not os.path.isdir(os.path.join(my_dir, ".metaflow")):
-    os.mkdir(os.path.join(my_dir, ".metaflow"))
-
 with os.scandir(os.path.join(my_dir, "environments")) as it:
     for entry in it:
         if entry.is_file() and (

@@ -144,7 +144,7 @@ class Conda(object):
             # Prevent circular dep
             from metaflow.plugins import DATASTORES
 
-            # We will be able to cache things -- currently no caching for local
+            # We will be able to cache things -- currently no caching for local except in testing
             storage_impl = [d for d in DATASTORES if d.TYPE == self._datastore_type][0]
             self._storage = storage_impl(
                 get_conda_root(self._datastore_type)
