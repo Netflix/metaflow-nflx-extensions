@@ -2,6 +2,7 @@ import os
 import sys
 import uuid
 import pytest
+import shutil
 
 import sh
 
@@ -57,6 +58,8 @@ def test_resolve_and_check_env(capsys, python_version, file_type, file_name, ali
     os.chdir(my_dir)
     try:
         env_dict = dict(os.environ)
+        env_dict["METAFLOW_CONDA_ENVS_DIRNAME"] = "testing/envs_%s" % conda_rand
+        env_dict["METAFLOW_CONDA_PACKAGES_DIRNAME"] = "testing/packages_%s" % conda_rand
         env_dict["METAFLOW_CONDA_MAGIC_FILE_V2"] = "condav2-%s.cnd" % conda_rand
         env_dict[
             "METAFLOW_CONDA_LOCK_TIMEOUT"
@@ -117,3 +120,23 @@ def test_resolve_and_check_env(capsys, python_version, file_type, file_name, ali
             )
     finally:
         os.chdir(cwd)
+        # Runners run out of space so clear out all the packages and environments we created/downloaded
+        # This does not remove the conda/mamba/micromamba environments though
+        shutil.rmtree(
+            os.path.join(
+                os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"],
+                "conda_env",
+                "testing",
+                "envs_%s" % conda_rand,
+            ),
+            ignore_errors=True,
+        )
+        shutil.rmtree(
+            os.path.join(
+                os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"],
+                "conda_env",
+                "testing",
+                "packages_%s" % conda_rand,
+            ),
+            ignore_errors=True,
+        )
