@@ -353,8 +353,8 @@ class PipResolver(Resolver):
                                         "-c",
                                         "import tomli; f = open('%s', mode='rb'); "
                                         "d = tomli.load(f); "
-                                        "print(d.get('poetry', d['tool']['poetry'])['name']); "
-                                        "print(d.get('poetry', d['tool']['poetry'])['version'])"
+                                        "print(d.get('project', d.get('poetry', d['tool']['poetry']))['name']); "
+                                        "print(d.get('project', d.get('poetry', d['tool']['poetry']))['version'])"
                                         % os.path.join(local_path, "pyproject.toml"),
                                     ],
                                     binary=builder_python,
@@ -401,9 +401,9 @@ class PipResolver(Resolver):
                         else:
                             parse_result = parse_explicit_path_pypi(
                                 url,
-                                hash_value=file_hash.split("=")[1]
-                                if file_hash
-                                else None,
+                                hash_value=(
+                                    file_hash.split("=")[1] if file_hash else None
+                                ),
                             )
                             if parse_result.url_format != ".whl":
                                 # This is a source package so we need to build it
@@ -526,9 +526,11 @@ class PipResolver(Resolver):
                                 parse_result.filename,
                                 parse_result.url,
                                 url_format=parse_result.url_format,
-                                hashes={parse_result.url_format: parse_result.hash}
-                                if parse_result.hash
-                                else None,
+                                hashes=(
+                                    {parse_result.url_format: parse_result.hash}
+                                    if parse_result.hash
+                                    else None
+                                ),
                             )
                         )
             if to_build_pkg_info:

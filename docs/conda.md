@@ -136,6 +136,17 @@ You can get a significant performance gain if you use only `.conda` packages and
 for Conda packages. To do so, set `METAFLOW_CONDA_PREFERRED_FORMAT` to `.conda`. Note that you need
 either `micromamba` or `conda-package-handling` installed for this to work.
 
+### File locking
+Conda (and associates), does not like it when multiple processes tinker with its data at the same time.
+To prevent this from happening, Metaflow uses various lock files. It does its best to clean them up but
+in some circumstances, these files stick around and prevent Metaflow from proceeding. Metaflow will
+print an error message warning you that it is waiting for a certain lock file to be removed
+prior to proceeding.
+
+Removing the file will typically allow Metaflow to proceed. You can also set the amount of time
+Metaflow waits before giving up by setting `METAFLOW_CONDA_LOCK_TIMEOUT` which is currently set
+to 300 seconds (5 minutes).
+
 ## Troubleshooting
 If you run into issues, you can run with `METAFLOW_DEBUG_CONDA=1` to get a more detailed output of
 what is happening. This output can help the Metaflow community figure out the problem.
