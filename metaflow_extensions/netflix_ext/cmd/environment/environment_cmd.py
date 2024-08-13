@@ -823,9 +823,9 @@ def resolve(
             sources,
             new_extras,
             base_env=base_env if using_str else None,
-            base_from_full_id=base_env.is_info_accurate
-            if base_env and using_str
-            else False,
+            base_from_full_id=(
+                base_env.is_info_accurate if base_env and using_str else False
+            ),
             local_only=local_only,
             force=force,
             force_co_resolve=len(archs) > 1,
@@ -1215,9 +1215,7 @@ def _parse_yml_file(
                     to_update = (
                         conda_deps
                         if mode == "deps"
-                        else pypi_deps
-                        if mode == "pypi_deps"
-                        else sys_deps
+                        else pypi_deps if mode == "pypi_deps" else sys_deps
                     )
                     splits = YML_SPLIT_LINE.split(line.replace(" ", ""), maxsplit=1)
                     if len(splits) == 1:

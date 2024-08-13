@@ -284,15 +284,19 @@ class Conda(object):
         except subprocess.CalledProcessError as e:
             if pretty_print_exception:
                 print(
-                    "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
-                    if e.output
-                    else "No STDOUT",
+                    (
+                        "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
+                        if e.output
+                        else "No STDOUT"
+                    ),
                     file=sys.stderr,
                 )
                 print(
-                    "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
-                    if e.stderr
-                    else "No STDERR",
+                    (
+                        "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
+                        if e.stderr
+                        else "No STDERR"
+                    ),
                     file=sys.stderr,
                 )
                 raise CondaException(
@@ -334,15 +338,19 @@ class Conda(object):
             ).strip()
         except subprocess.CalledProcessError as e:
             print(
-                "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
-                if e.output
-                else "No STDOUT",
+                (
+                    "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
+                    if e.output
+                    else "No STDOUT"
+                ),
                 file=sys.stderr,
             )
             print(
-                "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
-                if e.stderr
-                else "No STDERR",
+                (
+                    "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
+                    if e.stderr
+                    else "No STDERR"
+                ),
                 file=sys.stderr,
             )
             raise CondaException(
@@ -965,9 +973,11 @@ class Conda(object):
         my_arch_id = arch_id()
         cache_formats = cache_formats or {
             "pypi": ["_any"],
-            "conda": [CONDA_PREFERRED_FORMAT]
-            if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none"
-            else ["_any"],
+            "conda": (
+                [CONDA_PREFERRED_FORMAT]
+                if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none"
+                else ["_any"]
+            ),
         }
 
         # key: URL
@@ -2382,9 +2392,11 @@ class Conda(object):
                 args,
                 # Creating with micromamba is faster as it extracts in parallel. Prefer
                 # it if it exists.
-                binary="micromamba"
-                if self._bins and "micromamba" in self._bins
-                else "conda",
+                binary=(
+                    "micromamba"
+                    if self._bins and "micromamba" in self._bins
+                    else "conda"
+                ),
             )
 
         if pypi_paths:
@@ -2412,15 +2424,19 @@ class Conda(object):
                     subprocess.check_output(arg_list, stderr=subprocess.STDOUT)
                 except subprocess.CalledProcessError as e:
                     print(
-                        "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
-                        if e.output
-                        else "No STDOUT",
+                        (
+                            "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
+                            if e.output
+                            else "No STDOUT"
+                        ),
                         file=sys.stderr,
                     )
                     print(
-                        "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
-                        if e.stderr
-                        else "No STDERR",
+                        (
+                            "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
+                            if e.stderr
+                            else "No STDERR"
+                        ),
                         file=sys.stderr,
                     )
                     raise CondaException(

@@ -260,11 +260,12 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
             result[step.name] = {"req": req}
             if from_name:
                 if base_env is None:
-                    result[step.name][
-                        "error"
-                    ] = "Base environment '%s' was not found for architecture '%s'" % (
-                        from_name,
-                        step_arch,
+                    result[step.name]["error"] = (
+                        "Base environment '%s' was not found for architecture '%s'"
+                        % (
+                            from_name,
+                            step_arch,
+                        )
                     )
                     continue
                 result[step.name]["base_env"] = base_env
@@ -284,10 +285,12 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
 
                     if obj.flow_datastore.TYPE != "local" and resolved_env.is_cached(
                         {
-                            "conda": [CONDA_PREFERRED_FORMAT]
-                            if CONDA_PREFERRED_FORMAT
-                            and CONDA_PREFERRED_FORMAT != "none"
-                            else ["_any"]
+                            "conda": (
+                                [CONDA_PREFERRED_FORMAT]
+                                if CONDA_PREFERRED_FORMAT
+                                and CONDA_PREFERRED_FORMAT != "none"
+                                else ["_any"]
+                            )
                         }
                     ):
                         result[step.name]["state"].append("cached")
