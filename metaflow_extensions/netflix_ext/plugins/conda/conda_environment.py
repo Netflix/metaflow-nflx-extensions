@@ -320,30 +320,26 @@ class CondaEnvironment(MetaflowEnvironment):
 
     @classmethod
     def get_env_id(cls, conda: Conda, step_name: str) -> Optional[Union[str, EnvID]]:
-        # _METAFLOW_CONDA_ENV is set:
-        #  - by remote_bootstrap:
-        #    - if executing on a scheduler (no runtime), this will set it to
-        #      the fully resolved ID even in the case of fetch_at_exec
-        #    - if executing on a remote node with the runtime, it will also set it but
-        #      it is unused
-        #  - in runtime_step_cli:
-        #    - if executing locally, we can use this in our actual execution to create
-        #      the environment in runtime_step_cli
-        #    - if executing remotely, we use this to determine the executable and
-        #      it is used in bootstrap_commands to build the command line
+        # We either look in _result_for_step for the env id (this only works for the
+        # initial process that launched Metaflow ie: the first CLI process). This is what
+        # happens when deploying to argo/airflow or any other scheduler. For everything
+        # else, we look at _METAFLOW_CONDA_ENV:
+        #  - when deploying to a scheduler: use _result_for_step to build the command line
+        #  - when executing for scheduler, _METAFLOW_CONDA_ENV is set by remote_bootstrap
+        #    and will also fully resolve fetch_at_exec and used in task_pre_step. Note that
+        #    it relies on the value that was hardcoded in the command line when deploying
+        #    to the scheduler. The value may still not be the same due to fetch_at_exec
+        #  - when using the runtime:
+        #    - if executing locally, the environment is created in runtime_step_cli
+        #      and sets _METAFLOW_CONDA_ENV which is then read in task_pre_step (in the
+        #      next process)
+        #    - if executing remotely, _METAFLOW_CONDA_ENV is set by runtime_step_cli. It
+        #      is then used by bootstrap_commands (in conda_environment.py) to build the
+        #      command line. The command line will then call remote_bootstrap which will
+        #      set again _METAFLOW_CONDA_ENV to the fully resolved environment which is
+        #      then used in task_pre_step.
         step_info = cls._result_for_step.get(step_name)
         if step_info is None:
-            # _METAFLOW_CONDA_ENV is set:
-            #  - by remote_bootstrap:
-            #    - if executing on a scheduler (no runtime), this will set it to
-            #      the fully resolved ID even in the case of fetch_at_exec
-            #    - if executing on a remote node with the runtime, it will also set it but
-            #      it is unused
-            #  - in runtime_step_cli:
-            #    - if executing locally, we can use this in our actual execution to create
-            #      the environment in runtime_step_cli
-            #    - if executing remotely, we use this to determine the executable and
-            #      it is used in bootstrap_commands to build the command line
             resolved_env_id = None
             t = os.environ.get("_METAFLOW_CONDA_ENV")
             if t:
