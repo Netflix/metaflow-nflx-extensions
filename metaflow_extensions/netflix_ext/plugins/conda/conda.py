@@ -274,7 +274,7 @@ class Conda(object):
                     or binary == "micromamba"
                 )
             ):
-                args.extend(["-r", self._info["root_prefix"], "--json"])
+                args.extend(["-r", self.root_prefix, "--json"])
             debug.conda_exec("Conda call: %s" % str([self._bins[binary]] + args))
             return cast(
                 bytes,
@@ -2060,9 +2060,13 @@ class Conda(object):
             return None
 
         if self._conda_executable_type == "micromamba" or CONDA_LOCAL_PATH is not None:
+            # Micromamba does not record created environments so we look around for them
+            # in the root env directory. We also do this if had a local installation
+            # because we don't want to look around at other environments created outside
+            # of that local installation
             # For micromamba OR if we are using a specific conda installation
             # (so with CONDA_LOCAL_PATH), only search there
-            env_dir = os.path.join(self._info["root_prefix"], "envs")
+            env_dir = self._root_env_dir
             with CondaLock(self.echo, self._env_lock_file(os.path.join(env_dir, "_"))):
                 # Grab a lock *once* on the parent directory so we pick anyname for
                 # the "directory".
@@ -2072,6 +2076,7 @@ class Conda(object):
                         if possible_env_id:
                             ret.setdefault(possible_env_id, []).append(entry.path)
         else:
+            # Else we iterate over all the environments that the installation know about
             envs = self._info["envs"]  # type: List[str]
             for env in envs:
                 with CondaLock(self.echo, self._env_lock_file(env)):
@@ -2189,19 +2194,20 @@ class Conda(object):
     @property
     def _package_dirs(self) -> List[str]:
         info = self._info
-        if self._conda_executable_type == "micromamba":
-            pkg_dir = os.path.join(info["root_prefix"], "pkgs")
-            if not os.path.exists(pkg_dir):
-                os.makedirs(pkg_dir)
-            return [pkg_dir]
+        # We rely on the first directory existing. This should be a fairly
+        # easy check.
+        if not os.path.exists(info["pkgs_dirs"][0]):
+            os.makedirs(info["pkgs_dirs"][0])
         return info["pkgs_dirs"]
 
     @property
     def _root_env_dir(self) -> str:
         info = self._info
-        if self._conda_executable_type == "micromamba":
-            return os.path.join(info["root_prefix"], "envs")
-        return info["envs_dirs"][0]
+        # We rely on the first directory existing. This should be a fairly
+        # easy check.
+        if not os.path.exists(info["envs_dirs"][0]):
+            os.makedirs(info["envs_dirs"][0])
+        return info["envs_dirs"]
 
     @property
     def _info(self) -> Dict[str, Any]:
@@ -2213,22 +2219,10 @@ class Conda(object):
     def _info_no_lock(self) -> Dict[str, Any]:
         if self._cached_info is None:
             self._cached_info = json.loads(self.call_conda(["info", "--json"]))
-            # Micromamba is annoying because if there are multiple installations of it
-            # executing the binary doesn't necessarily point us to the root directory
-            # we are in so we kind of look for it heuristically
             if self._conda_executable_type == "micromamba":
-                # Best info if we don't have something else
                 self._cached_info["root_prefix"] = self._cached_info["base environment"]
-                cur_dir = os.path.dirname(self._bins[self._conda_executable_type])
-                while True:
-                    if os.path.isdir(os.path.join(cur_dir, "pkgs")) and os.path.isdir(
-                        os.path.join(cur_dir, "envs")
-                    ):
-                        self._cached_info["root_prefix"] = cur_dir
-                        break
-                    if cur_dir == "/":
-                        break
-                    cur_dir = os.path.dirname(cur_dir)
+                self._cached_info["envs_dirs"] = self._cached_info["envs directories"]
+                self._cached_info["pkgs_dirs"] = self._cached_info["package cache"]
 
         return self._cached_info
 

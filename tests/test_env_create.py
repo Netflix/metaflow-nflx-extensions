@@ -61,10 +61,12 @@ def test_resolve_and_check_env(capsys, python_version, file_type, file_name, ali
         env_dict["METAFLOW_CONDA_ENVS_DIRNAME"] = "testing/envs_%s" % conda_rand
         env_dict["METAFLOW_CONDA_PACKAGES_DIRNAME"] = "testing/packages_%s" % conda_rand
         env_dict["METAFLOW_CONDA_MAGIC_FILE_V2"] = "condav2-%s.cnd" % conda_rand
-        env_dict[
-            "METAFLOW_CONDA_LOCK_TIMEOUT"
-        ] = "7200"  # Increase to make sure we resolve everything
+        env_dict["METAFLOW_CONDA_LOCK_TIMEOUT"] = (
+            "7200"  # Increase to make sure we resolve everything
+        )
         env_dict["METAFLOW_DEBUG_CONDA"] = "1"
+        env_dict["CONDA_ENVS_DIRS"] = "/tmp/mfcondaenvs-%s" % conda_rand
+        env_dict["CONDA_PKGS_DIRS"] = "/tmp/mfcondapkgs-%s" % conda_rand
         check_command = sh.Command("./check_env.sh").bake(["-e", sys.executable])
         metaflow_command = sh.Command(sys.executable).bake(
             ["-m", "metaflow.cmd.main_cli"]
@@ -121,7 +123,6 @@ def test_resolve_and_check_env(capsys, python_version, file_type, file_name, ali
     finally:
         os.chdir(cwd)
         # Runners run out of space so clear out all the packages and environments we created/downloaded
-        # This does not remove the conda/mamba/micromamba environments though
         shutil.rmtree(
             os.path.join(
                 os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"],
@@ -140,3 +141,5 @@ def test_resolve_and_check_env(capsys, python_version, file_type, file_name, ali
             ),
             ignore_errors=True,
         )
+        shutil.rmtree(env_dict["CONDA_ENVS_DIRS"], ignore_errors=True)
+        shutil.rmtree(env_dict["CONDA_PKGS_DIRS"], ignore_errors=True)

@@ -63,7 +63,8 @@ class CondaResolver(Resolver):
 
             addl_env = {
                 "CONDA_SUBDIR": architecture,
-                "CONDA_PKGS_DIRS": mamba_dir,
+                "CONDA_PKGS_DIRS": os.path.join(mamba_dir, "pkgs"),
+                "CONDA_ENVS_DIRS": os.path.join(mamba_dir, "envs"),
                 "CONDA_ROOT": self._conda.root_prefix,
                 "CONDA_UNSATISFIABLE_HINTS_CHECK_DEPTH": "0",
             }
