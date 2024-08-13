@@ -174,7 +174,7 @@ def resolve(
             conda.alias_environment(env.env_id, aliases)
 
     _compute_local_instances(conda)
-    assert _all_local_instances
+    assert _all_local_instances is not None
     if obj.is_quiet:
         for req_id, (env, steps) in resolved_per_req_id.items():
             obj.echo_always(",".join(steps))
@@ -260,11 +260,12 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
             result[step.name] = {"req": req}
             if from_name:
                 if base_env is None:
-                    result[step.name][
-                        "error"
-                    ] = "Base environment '%s' was not found for architecture '%s'" % (
-                        from_name,
-                        step_arch,
+                    result[step.name]["error"] = (
+                        "Base environment '%s' was not found for architecture '%s'"
+                        % (
+                            from_name,
+                            step_arch,
+                        )
                     )
                     continue
                 result[step.name]["base_env"] = base_env
@@ -284,10 +285,12 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
 
                     if obj.flow_datastore.TYPE != "local" and resolved_env.is_cached(
                         {
-                            "conda": [CONDA_PREFERRED_FORMAT]
-                            if CONDA_PREFERRED_FORMAT
-                            and CONDA_PREFERRED_FORMAT != "none"
-                            else ["_any"]
+                            "conda": (
+                                [CONDA_PREFERRED_FORMAT]
+                                if CONDA_PREFERRED_FORMAT
+                                and CONDA_PREFERRED_FORMAT != "none"
+                                else ["_any"]
+                            )
                         }
                     ):
                         result[step.name]["state"].append("cached")
@@ -299,7 +302,7 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
                 result[step.name]["state"].append("fetch-at-exec of %s" % step_env_id)
 
     _compute_local_instances(conda)
-    assert _all_local_instances
+    assert _all_local_instances is not None
     if obj.is_quiet:
         for name, info in result.items():
             obj.echo_always(name)
