@@ -2207,7 +2207,7 @@ class Conda(object):
         # easy check.
         if not os.path.exists(info["envs_dirs"][0]):
             os.makedirs(info["envs_dirs"][0])
-        return info["envs_dirs"]
+        return info["envs_dirs"][0]
 
     @property
     def _info(self) -> Dict[str, Any]:
