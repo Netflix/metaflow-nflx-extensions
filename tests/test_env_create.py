@@ -7,8 +7,6 @@ import shutil
 import sh
 
 
-conda_rand = str(uuid.uuid4())
-
 my_dir = os.path.dirname(os.path.abspath(__file__))
 
 all_tests = []
@@ -57,6 +55,8 @@ def test_resolve_and_check_env(capsys, python_version, file_type, file_name, ali
     cwd = os.getcwd()
     os.chdir(my_dir)
     try:
+        conda_rand = str(uuid.uuid4())
+
         env_dict = dict(os.environ)
         env_dict["METAFLOW_CONDA_ENVS_DIRNAME"] = "testing/envs_%s" % conda_rand
         env_dict["METAFLOW_CONDA_PACKAGES_DIRNAME"] = "testing/packages_%s" % conda_rand
