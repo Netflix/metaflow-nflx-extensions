@@ -1,0 +1,15 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.1.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+  - repo: https://github.com/ambv/black
+    rev: 24.4.2
+    hooks:
+      - id: black
+        language_version: python3
+        exclude: "^/metaflow_extensions/netflix_ext/vendor/"
+        args: [-t, py34, -t, py35, -t, py36, -t, py37, -t, py38, -t, py39, -t, py310, -t, py311, -t, py312]
+
+

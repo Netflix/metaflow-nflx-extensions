@@ -53,6 +53,7 @@ from metaflow.metaflow_config import (
     CONDA_PREFERRED_FORMAT,
     CONDA_REMOTE_INSTALLER,
     CONDA_REMOTE_INSTALLER_DIRNAME,
+    CONDA_TEST,
     CONDA_DEFAULT_PYPI_SOURCE,
     CONDA_USE_REMOTE_LATEST,
 )
@@ -139,11 +140,11 @@ class Conda(object):
         self._cached_environment = read_conda_manifest(self._local_root)
 
         # Initialize storage
-        if self._datastore_type != "local":
+        if self._datastore_type != "local" or CONDA_TEST:
             # Prevent circular dep
             from metaflow.plugins import DATASTORES
 
-            # We will be able to cache things -- currently no caching for local
+            # We will be able to cache things -- currently no caching for local except in testing
             storage_impl = [d for d in DATASTORES if d.TYPE == self._datastore_type][0]
             self._storage = storage_impl(
                 get_conda_root(self._datastore_type)
@@ -229,8 +230,10 @@ class Conda(object):
             }
         elif "virtual packages" in self._info:
             # Micromamba outputs them differently for some reason
+            # It also includes a -vX at the end of archspec for example which doesn't
+            # play nice with conda-lock. Strip it out.
             return {
-                name: build_str
+                name: build_str.split("-", 1)[0]
                 for name, build_str in map(
                     lambda x: x.split("=", 1),
                     cast(List[str], self._info["virtual packages"]),
@@ -271,7 +274,7 @@ class Conda(object):
                     or binary == "micromamba"
                 )
             ):
-                args.extend(["-r", self._info["root_prefix"], "--json"])
+                args.extend(["-r", self.root_prefix, "--json"])
             debug.conda_exec("Conda call: %s" % str([self._bins[binary]] + args))
             return cast(
                 bytes,
@@ -284,15 +287,19 @@ class Conda(object):
         except subprocess.CalledProcessError as e:
             if pretty_print_exception:
                 print(
-                    "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
-                    if e.output
-                    else "No STDOUT",
+                    (
+                        "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
+                        if e.output
+                        else "No STDOUT"
+                    ),
                     file=sys.stderr,
                 )
                 print(
-                    "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
-                    if e.stderr
-                    else "No STDERR",
+                    (
+                        "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
+                        if e.stderr
+                        else "No STDERR"
+                    ),
                     file=sys.stderr,
                 )
                 raise CondaException(
@@ -334,15 +341,19 @@ class Conda(object):
             ).strip()
         except subprocess.CalledProcessError as e:
             print(
-                "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
-                if e.output
-                else "No STDOUT",
+                (
+                    "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
+                    if e.output
+                    else "No STDOUT"
+                ),
                 file=sys.stderr,
             )
             print(
-                "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
-                if e.stderr
-                else "No STDERR",
+                (
+                    "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
+                    if e.stderr
+                    else "No STDERR"
+                ),
                 file=sys.stderr,
             )
             raise CondaException(
@@ -863,7 +874,7 @@ class Conda(object):
             The list of aliases -- note that you can only update mutable aliases or
             add new ones.
         """
-        if self._datastore_type != "local":
+        if self._datastore_type != "local" or CONDA_TEST:
             # We first fetch any aliases we have remotely because that way
             # we will catch any non-mutable changes
             resolved_aliases = [resolve_env_alias(a) for a in aliases]
@@ -965,9 +976,11 @@ class Conda(object):
         my_arch_id = arch_id()
         cache_formats = cache_formats or {
             "pypi": ["_any"],
-            "conda": [CONDA_PREFERRED_FORMAT]
-            if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none"
-            else ["_any"],
+            "conda": (
+                [CONDA_PREFERRED_FORMAT]
+                if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none"
+                else ["_any"]
+            ),
         }
 
         # key: URL
@@ -2046,10 +2059,19 @@ class Conda(object):
                     self._remove(os.path.basename(dir_name))
             return None
 
-        if self._conda_executable_type == "micromamba" or CONDA_LOCAL_PATH is not None:
+        if (
+            self._conda_executable_type == "micromamba"
+            or CONDA_LOCAL_PATH is not None
+            or CONDA_TEST
+        ):
+            # Micromamba does not record created environments so we look around for them
+            # in the root env directory. We also do this if had a local installation
+            # because we don't want to look around at other environments created outside
+            # of that local installation. Finally, we also do this in test mode for
+            # similar reasons -- we only want to search the ones we created.
             # For micromamba OR if we are using a specific conda installation
             # (so with CONDA_LOCAL_PATH), only search there
-            env_dir = os.path.join(self._info["root_prefix"], "envs")
+            env_dir = self._root_env_dir
             with CondaLock(self.echo, self._env_lock_file(os.path.join(env_dir, "_"))):
                 # Grab a lock *once* on the parent directory so we pick anyname for
                 # the "directory".
@@ -2059,6 +2081,7 @@ class Conda(object):
                         if possible_env_id:
                             ret.setdefault(possible_env_id, []).append(entry.path)
         else:
+            # Else we iterate over all the environments that the installation know about
             envs = self._info["envs"]  # type: List[str]
             for env in envs:
                 with CondaLock(self.echo, self._env_lock_file(env)):
@@ -2176,18 +2199,19 @@ class Conda(object):
     @property
     def _package_dirs(self) -> List[str]:
         info = self._info
-        if self._conda_executable_type == "micromamba":
-            pkg_dir = os.path.join(info["root_prefix"], "pkgs")
-            if not os.path.exists(pkg_dir):
-                os.makedirs(pkg_dir)
-            return [pkg_dir]
+        # We rely on the first directory existing. This should be a fairly
+        # easy check.
+        if not os.path.exists(info["pkgs_dirs"][0]):
+            os.makedirs(info["pkgs_dirs"][0])
         return info["pkgs_dirs"]
 
     @property
     def _root_env_dir(self) -> str:
         info = self._info
-        if self._conda_executable_type == "micromamba":
-            return os.path.join(info["root_prefix"], "envs")
+        # We rely on the first directory existing. This should be a fairly
+        # easy check.
+        if not os.path.exists(info["envs_dirs"][0]):
+            os.makedirs(info["envs_dirs"][0])
         return info["envs_dirs"][0]
 
     @property
@@ -2200,22 +2224,10 @@ class Conda(object):
     def _info_no_lock(self) -> Dict[str, Any]:
         if self._cached_info is None:
             self._cached_info = json.loads(self.call_conda(["info", "--json"]))
-            # Micromamba is annoying because if there are multiple installations of it
-            # executing the binary doesn't necessarily point us to the root directory
-            # we are in so we kind of look for it heuristically
             if self._conda_executable_type == "micromamba":
-                # Best info if we don't have something else
                 self._cached_info["root_prefix"] = self._cached_info["base environment"]
-                cur_dir = os.path.dirname(self._bins[self._conda_executable_type])
-                while True:
-                    if os.path.isdir(os.path.join(cur_dir, "pkgs")) and os.path.isdir(
-                        os.path.join(cur_dir, "envs")
-                    ):
-                        self._cached_info["root_prefix"] = cur_dir
-                        break
-                    if cur_dir == "/":
-                        break
-                    cur_dir = os.path.dirname(cur_dir)
+                self._cached_info["envs_dirs"] = self._cached_info["envs directories"]
+                self._cached_info["pkgs_dirs"] = self._cached_info["package cache"]
 
         return self._cached_info
 
@@ -2382,9 +2394,11 @@ class Conda(object):
                 args,
                 # Creating with micromamba is faster as it extracts in parallel. Prefer
                 # it if it exists.
-                binary="micromamba"
-                if self._bins and "micromamba" in self._bins
-                else "conda",
+                binary=(
+                    "micromamba"
+                    if self._bins and "micromamba" in self._bins
+                    else "conda"
+                ),
             )
 
         if pypi_paths:
@@ -2412,15 +2426,19 @@ class Conda(object):
                     subprocess.check_output(arg_list, stderr=subprocess.STDOUT)
                 except subprocess.CalledProcessError as e:
                     print(
-                        "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
-                        if e.output
-                        else "No STDOUT",
+                        (
+                            "Pretty-printed STDOUT:\n%s" % e.output.decode("utf-8")
+                            if e.output
+                            else "No STDOUT"
+                        ),
                         file=sys.stderr,
                     )
                     print(
-                        "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
-                        if e.stderr
-                        else "No STDERR",
+                        (
+                            "Pretty-printed STDERR:\n%s" % e.stderr.decode("utf-8")
+                            if e.stderr
+                            else "No STDERR"
+                        ),
                         file=sys.stderr,
                     )
                     raise CondaException(

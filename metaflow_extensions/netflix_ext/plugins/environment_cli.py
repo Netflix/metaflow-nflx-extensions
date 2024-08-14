@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Set, Tuple, Optional, cast
 from metaflow._vendor import click
 
 from metaflow.exception import CommandException
-from metaflow.metaflow_config import CONDA_PREFERRED_FORMAT
+from metaflow.metaflow_config import CONDA_PREFERRED_FORMAT, CONDA_TEST
 
 from .conda.conda import Conda
 from .conda.conda_common_decorator import StepRequirement
@@ -203,7 +203,7 @@ def resolve(
     # If this is not a dry-run, we cache the environments and write out the resolved
     # information
     update_envs = []  # type: List[ResolvedEnvironment]
-    if obj.flow_datastore.TYPE != "local":
+    if obj.flow_datastore.TYPE != "local" or CONDA_TEST:
         # We may need to update caches
         # Note that it is possible that something we needed to resolve, we don't need
         # to cache (if we resolved to something already cached).
@@ -283,7 +283,9 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
                     result[step.name]["env"] = resolved_env
                     result[step.name]["state"].append("resolved")
 
-                    if obj.flow_datastore.TYPE != "local" and resolved_env.is_cached(
+                    if (
+                        obj.flow_datastore.TYPE != "local" or CONDA_TEST
+                    ) and resolved_env.is_cached(
                         {
                             "conda": (
                                 [CONDA_PREFERRED_FORMAT]

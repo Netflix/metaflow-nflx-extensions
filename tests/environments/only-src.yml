@@ -1,0 +1,14 @@
+dependencies:
+  - matplotlib
+  - plotly
+  - statsmodels
+  - pmdarima
+  - pydotplus
+  - ipython
+  - cerberus
+  - gql
+  - aiohttp
+  - reportlab
+  - pip:
+    - graphing
+    - outlier-detector = 0.0.3

@@ -8,6 +8,9 @@ from metaflow.metaflow_config import (
 from metaflow.metaflow_config_funcs import from_conf, get_validate_choice_fn
 
 
+# Set to true if running the tests with a local datastore
+CONDA_TEST = from_conf("CONDA_TEST", False)
+
 CONDA_S3ROOT = from_conf(
     "CONDA_S3ROOT",
     os.path.join(DATASTORE_SYSROOT_S3, "conda_env") if DATASTORE_SYSROOT_S3 else None,
@@ -36,7 +39,7 @@ CONDA_LOCALROOT = from_conf(
     ),
 )
 
-CONDA_MAGIC_FILE_V2 = "conda_v2.cnd"
+CONDA_MAGIC_FILE_V2 = from_conf("CONDA_MAGIC_FILE_V2", "conda_v2.cnd")
 
 # Use an alternate dependency resolver for conda packages instead of conda
 # Mamba promises faster package dependency resolution times, which
@@ -65,7 +68,7 @@ CONDA_MIXED_DEPENDENCY_RESOLVER = from_conf(
 CONDA_LOCK_TIMEOUT = from_conf("CONDA_LOCK_TIMEOUT", 300)
 
 # Location within CONDA_<DS>ROOT of the packages directory
-CONDA_PACKAGES_DIRNAME = from_conf("ENV_PACKAGES_DIRNAME", "packages")
+CONDA_PACKAGES_DIRNAME = from_conf("CONDA_PACKAGES_DIRNAME", "packages")
 # Ditto for the envs directory
 CONDA_ENVS_DIRNAME = from_conf("CONDA_ENVS_DIRNAME", "envs")
 

@@ -1090,9 +1090,13 @@ class TerminalMenu:
         )
         self._sort = self.Sort(
             self._menu_entries,
-            column_headers
-            if column_headers
-            else ["Column %d" % d for d in range(len(self._menu_entries_cols[0]) - 1)],
+            (
+                column_headers
+                if column_headers
+                else [
+                    "Column %d" % d for d in range(len(self._menu_entries_cols[0]) - 1)
+                ]
+            ),
             self._menu_entries_cols,
         )
         self._in_sort_query = False
@@ -1183,9 +1187,9 @@ class TerminalMenu:
                 name, ctrl_code = match_obj.group(1), match_obj.group(2)
                 if name != "erase":
                     continue
-                self._name_to_control_character[
-                    "backspace"
-                ] = self._get_keycode_for_key("ctrl-" + ctrl_code)
+                self._name_to_control_character["backspace"] = (
+                    self._get_keycode_for_key("ctrl-" + ctrl_code)
+                )
                 return
         except subprocess.CalledProcessError:
             pass
@@ -1207,10 +1211,12 @@ class TerminalMenu:
             return
         supported_colors = int(cls._query_terminfo_database("colors"))
         cls._codename_to_terminal_code = {
-            codename: cls._query_terminfo_database(codename)
-            if not (codename.startswith("bg_") or codename.startswith("fg_"))
-            or supported_colors >= 8
-            else ""
+            codename: (
+                cls._query_terminfo_database(codename)
+                if not (codename.startswith("bg_") or codename.startswith("fg_"))
+                or supported_colors >= 8
+                else ""
+            )
             for codename in cls._codenames
         }
         cls._codename_to_terminal_code.update(cls._name_to_control_character)
@@ -1684,9 +1690,11 @@ class TerminalMenu:
             )
             def strip_ansi_codes_except_styling(string: str) -> str:
                 stripped_string = strip_ansi_codes_except_styling.ansi_escape_regex.sub(  # type: ignore
-                    lambda match_obj: match_obj.group(0)
-                    if strip_ansi_codes_except_styling.ansi_sgr_regex.match(match_obj.group(0))  # type: ignore
-                    else "",
+                    lambda match_obj: (
+                        match_obj.group(0)
+                        if strip_ansi_codes_except_styling.ansi_sgr_regex.match(match_obj.group(0))  # type: ignore
+                        else ""
+                    ),
                     string,
                 )
                 return cast(str, stripped_string)

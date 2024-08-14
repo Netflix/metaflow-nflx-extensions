@@ -364,15 +364,17 @@ class DebugScriptGenerator(object):
         # Create an empty notebook
         nb = {
             "cells": [],
-            "metadata": {}
-            if kernel_def is None
-            else {
-                "kernelspec": {
-                    "name": kernel_def[0],
-                    "display_name": kernel_def[1],
-                    "language": "python",
+            "metadata": (
+                {}
+                if kernel_def is None
+                else {
+                    "kernelspec": {
+                        "name": kernel_def[0],
+                        "display_name": kernel_def[1],
+                        "language": "python",
+                    }
                 }
-            },
+            ),
             "nbformat": 4,
             "nbformat_minor": 4,
         }
@@ -458,9 +460,11 @@ class DebugScriptGenerator(object):
                 "format": "markdown",
                 "content": Constants.JUPYTER_TITLE_MARKDOWN.format(
                     TaskPathSpec=self.task_pathspec,
-                    DebugType="Post-Execution State"
-                    if self.inspect
-                    else "Pre-Execution State",
+                    DebugType=(
+                        "Post-Execution State"
+                        if self.inspect
+                        else "Pre-Execution State"
+                    ),
                 ),
             }
         ]
