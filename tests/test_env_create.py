@@ -121,7 +121,6 @@ def test_resolve_and_check_env(capsys, python_version, file_type, file_name, ali
                 _truncate_exc=False,
             )
     finally:
-        os.chdir(cwd)
         # Runners run out of space so clear out all the packages and environments we created/downloaded
         shutil.rmtree(
             os.path.join(
@@ -141,3 +140,5 @@ def test_resolve_and_check_env(capsys, python_version, file_type, file_name, ali
         )
         shutil.rmtree(env_dict["CONDA_ENVS_DIRS"])
         shutil.rmtree(env_dict["CONDA_PKGS_DIRS"])
+
+        os.chdir(cwd)
