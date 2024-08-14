@@ -1216,9 +1216,7 @@ def _parse_yml_file(
                     to_update = (
                         conda_deps
                         if mode == "deps"
-                        else pypi_deps
-                        if mode == "pypi_deps"
-                        else sys_deps
+                        else pypi_deps if mode == "pypi_deps" else sys_deps
                     )
                     splits = YML_SPLIT_LINE.split(line.replace(" ", ""), maxsplit=1)
                     if len(splits) == 1:

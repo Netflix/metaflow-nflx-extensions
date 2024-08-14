@@ -189,9 +189,11 @@ class EnvsResolver(object):
                 "deps": deps,
                 "sources": user_sources,
                 "extras": extras,
-                "conda_format": [CONDA_PREFERRED_FORMAT]
-                if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none"
-                else ["_any"],
+                "conda_format": (
+                    [CONDA_PREFERRED_FORMAT]
+                    if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none"
+                    else ["_any"]
+                ),
                 "base": base_env,
                 "base_accurate": base_env
                 and base_env.is_info_accurate
