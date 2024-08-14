@@ -1,0 +1,4 @@
+# Source only distribution
+outlier-detector==0.0.3
+# Local package
+foo @ file:///tmp/build_foo_pkg
