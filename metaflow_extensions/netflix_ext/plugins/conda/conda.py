@@ -2059,11 +2059,16 @@ class Conda(object):
                     self._remove(os.path.basename(dir_name))
             return None
 
-        if self._conda_executable_type == "micromamba" or CONDA_LOCAL_PATH is not None:
+        if (
+            self._conda_executable_type == "micromamba"
+            or CONDA_LOCAL_PATH is not None
+            or CONDA_TEST
+        ):
             # Micromamba does not record created environments so we look around for them
             # in the root env directory. We also do this if had a local installation
             # because we don't want to look around at other environments created outside
-            # of that local installation
+            # of that local installation. Finally, we also do this in test mode for
+            # similar reasons -- we only want to search the ones we created.
             # For micromamba OR if we are using a specific conda installation
             # (so with CONDA_LOCAL_PATH), only search there
             env_dir = self._root_env_dir

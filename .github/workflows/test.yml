@@ -53,4 +53,4 @@ jobs:
           set -x
           which pytest
           mkdir .metaflow
-          pytest -x -n 8 tests
+          pytest -n 4 tests
