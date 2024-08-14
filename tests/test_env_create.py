@@ -129,8 +129,7 @@ def test_resolve_and_check_env(capsys, python_version, file_type, file_name, ali
                 "conda_env",
                 "testing",
                 "envs_%s" % conda_rand,
-            ),
-            ignore_errors=True,
+            )
         )
         shutil.rmtree(
             os.path.join(
@@ -138,8 +137,7 @@ def test_resolve_and_check_env(capsys, python_version, file_type, file_name, ali
                 "conda_env",
                 "testing",
                 "packages_%s" % conda_rand,
-            ),
-            ignore_errors=True,
+            )
         )
-        shutil.rmtree(env_dict["CONDA_ENVS_DIRS"], ignore_errors=True)
-        shutil.rmtree(env_dict["CONDA_PKGS_DIRS"], ignore_errors=True)
+        shutil.rmtree(env_dict["CONDA_ENVS_DIRS"])
+        shutil.rmtree(env_dict["CONDA_PKGS_DIRS"])
