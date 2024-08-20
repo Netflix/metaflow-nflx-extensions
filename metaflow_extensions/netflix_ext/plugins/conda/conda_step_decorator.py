@@ -500,31 +500,26 @@ class CondaEnvInternalDecorator(StepDecorator):
         max_user_code_retries: int,
         ubf_context: str,
     ):
-        # We also set the env var in remote case for is_fetch_at_exec
-        # so that it can be used to fill out the bootstrap command with
-        # the proper environment
-        if self._is_enabled(UBF_TASK) or self._is_fetch_at_exec():
-            # Export this for local runs, we will use it to read the "resolved"
-            # environment ID in task_pre_step as well as in get_env_id in
-            # conda_environment.py. This makes it compatible with the remote
-            # bootstrap which also exports it. We do this even for UBF control tasks as
-            # this environment variable is then passed to the actual tasks. We don't
-            # always create the environment for the control task. Note that this is
-            # determined by _is_enabled
-
-            # Note that in the case of a fetch_at_exec, self._env_id is fully resolved
-            # (it was resolved in runtime_task_created) so this is the env_id we need
-            # to use for our task.
+        # Check if there is a conda environment to use. We check for UBF_TASK (instead of
+        # ubf_context) because, even if we don't create the environment for a control task,
+        # we want to pass down the environment variable for the mapper tasks.
+        if self._is_enabled(UBF_TASK):
             cli_args.env["_METAFLOW_CONDA_ENV"] = json.dumps(self._env_id)
-
-            # If we are executing remotely, we now have _METAFLOW_CONDA_ENV set-up
-            # properly so we will be able to use it in _get_env_id in conda_environment
-            # to figure out what environment we need to execute remotely
             if self._is_remote or not self._is_enabled(ubf_context):
+                # If we are executing remotely, we don't need to actually create the
+                # environment at all. We also don't create it if we are local and
+                # this is not enabled for the current UBF context.
                 return
         else:
+            # In this case, there is no need for a conda environment. Since we can
+            # be running with a runner *inside* another Metaflow step that *does* have
+            # a conda environment, we make sure to clear _METAFLOW_CONDA_ENV so that
+            # the outside environment doesn't "leak" (it could have been set for the external
+            # process in which case it would get passed down).
+            cli_args.env["_METAFLOW_CONDA_ENV"] = ""
             return
 
+        # Create the environment only if executing locally (ie: not self._is_remote)
         conda = cast(Conda, self._env.conda)
         assert self._env_id
         entrypoint = None  # type: Optional[str]

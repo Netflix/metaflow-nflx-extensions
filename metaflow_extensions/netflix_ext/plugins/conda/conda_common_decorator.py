@@ -127,6 +127,7 @@ class StepRequirement(StepRequirementIface):
                 or self.from_pathspec
                 or self.packages
                 or self.sources
+                or self.is_fetch_at_exec
             ):
                 return False
             return None
