@@ -52,6 +52,7 @@ from .utils import (
     get_sys_packages,
     merge_dep_dicts,
     resolve_env_alias,
+    sanitize_python_version,
 )
 
 from .env_descr import (
