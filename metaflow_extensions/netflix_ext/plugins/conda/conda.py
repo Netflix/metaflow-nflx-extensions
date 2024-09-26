@@ -2273,7 +2273,7 @@ class Conda(object):
     def _info_no_lock(self) -> Dict[str, Any]:
         if self._cached_info is None:
             self._cached_info = json.loads(self.call_conda(["info", "--json"]))
-            if self._is_non_conda_exec:
+            if "root_prefix" not in self._cached_info:  # Micromamba and Mamba 2+
                 self._cached_info["root_prefix"] = self._cached_info["base environment"]
                 self._cached_info["envs_dirs"] = self._cached_info["envs directories"]
                 self._cached_info["pkgs_dirs"] = self._cached_info["package cache"]
