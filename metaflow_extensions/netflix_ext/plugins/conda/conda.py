@@ -124,6 +124,7 @@ class Conda(object):
         self._mode = mode
         self._bins = None  # type: Optional[Dict[str, Optional[str]]]
         self._conda_executable_type = None  # type: Optional[str]
+        self._is_non_conda_exec = False  # type: bool
 
         self._have_micromamba_server = False  # type: bool
         self._micromamba_server_port = None  # type: Optional[int]
@@ -271,10 +272,7 @@ class Conda(object):
             if (
                 args
                 and args[0] not in ("package", "info")
-                and (
-                    self._conda_executable_type == "micromamba"
-                    or binary == "micromamba"
-                )
+                and (self._is_non_conda_exec or binary == "micromamba")
             ):
                 args.extend(["-r", self.root_prefix, "--json"])
             debug.conda_exec("Conda call: %s" % str([self._bins[binary]] + args))
@@ -1912,6 +1910,7 @@ class Conda(object):
             self._bins = {"conda": self._ensure_micromamba()}
             self._bins["micromamba"] = self._bins["conda"]
             self._conda_executable_type = "micromamba"
+            self._is_non_conda_exec = True
 
     def _install_remote_conda(self):
         # We download the installer and return a path to it
@@ -1962,6 +1961,7 @@ class Conda(object):
         os.sync()
         self._bins = {"conda": final_path, "micromamba": final_path}
         self._conda_executable_type = "micromamba"
+        self._is_non_conda_exec = True
 
     def _validate_conda_installation(self) -> Optional[Exception]:
         # If this is installed in CONDA_LOCAL_PATH look for special marker
@@ -2033,6 +2033,18 @@ class Conda(object):
                 return InvalidEnvironmentException(
                     self._install_message_for_resolver("micromamba")
                 )
+            else:
+                self._is_non_conda_exec = True
+        elif "mamba version" in self._info_no_lock:
+            # Mamba 2.0.0 has mamba version but no conda_version
+            if parse_version(self._info_no_lock["mamba version"]) < parse_version(
+                "2.0.0"
+            ):
+                return InvalidEnvironmentException(
+                    self._install_message_for_resolver("mamba")
+                )
+            else:
+                self._is_non_conda_exec = True
         else:
             if parse_version(self._info_no_lock["conda_version"]) < parse_version(
                 "4.14.0"
@@ -2099,12 +2111,9 @@ class Conda(object):
                     self._remove(os.path.basename(dir_name))
             return None
 
-        if (
-            self._conda_executable_type == "micromamba"
-            or CONDA_LOCAL_PATH is not None
-            or CONDA_TEST
-        ):
-            # Micromamba does not record created environments so we look around for them
+        if self._is_non_conda_exec or CONDA_LOCAL_PATH is not None or CONDA_TEST:
+            # Micromamba (or Mamba 2.0+) does not record created environments so we look
+            # around for them
             # in the root env directory. We also do this if had a local installation
             # because we don't want to look around at other environments created outside
             # of that local installation. Finally, we also do this in test mode for
@@ -2264,7 +2273,7 @@ class Conda(object):
     def _info_no_lock(self) -> Dict[str, Any]:
         if self._cached_info is None:
             self._cached_info = json.loads(self.call_conda(["info", "--json"]))
-            if self._conda_executable_type == "micromamba":
+            if self._is_non_conda_exec:
                 self._cached_info["root_prefix"] = self._cached_info["base environment"]
                 self._cached_info["envs_dirs"] = self._cached_info["envs directories"]
                 self._cached_info["pkgs_dirs"] = self._cached_info["package cache"]
@@ -2414,13 +2423,12 @@ class Conda(object):
                 "--offline",
                 "--no-deps",
             ]
-            if self._conda_executable_type == "micromamba":
-                # micromamba seems to have a bug when compiling .py files. In some
-                # circumstances, it just hangs forever. We avoid this by not compiling
-                # any file and letting things get compiled lazily. This may have the
-                # added benefit of a faster environment creation.
-                # This option is only available for micromamba so we don't add it
-                # for anything else. This should cover all remote installations though.
+            if self._is_non_conda_exec:
+                # Micromamba (some versions) seem to have a bug when compiling .py files.
+                # In some circumstances, it just hangs forever. We avoid this by not
+                # compiling any file and letting things get compiled lazily. This may
+                # have the added benefit of a faster environment creation.
+                # This option works for micromamba and new mamba
                 args.append("--no-pyc")
             args.extend(
                 [
@@ -2458,7 +2466,7 @@ class Conda(object):
                         "--no-deps",
                         "--no-input",
                     ]
-                    if self._conda_executable_type == "micromamba":
+                    if self._is_non_conda_exec:
                         # Be consistent with what we install with micromamba
                         arg_list.append("--no-compile")
                     arg_list.extend(["-r", pypi_list.name])
