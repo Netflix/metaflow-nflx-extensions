@@ -21,6 +21,7 @@ from metaflow.exception import CommandException
 from metaflow.plugins import DATASTORES
 from metaflow.metaflow_config import (
     CONDA_ALL_ARCHS,
+    CONDA_DEPENDENCY_RESOLVER,
     CONDA_TEST,
     CONDA_SYS_DEPENDENCIES,
     DEFAULT_DATASTORE,
@@ -242,6 +243,13 @@ def environment(
     "if it exists",
 )
 @click.option(
+    "--strict/--no-strict",
+    default=True,
+    is_flag=True,
+    show_default=True,
+    help="If True, fails if it cannot install the original Metaflow environment",
+)
+@click.option(
     "--into-dir",
     default=None,
     show_default=False,
@@ -269,6 +277,7 @@ def create(
     name: Optional[str],
     local_only: bool,
     force: bool,
+    strict: bool,
     into_dir: Optional[str],
     install_notebook: bool,
     pathspec: bool,
@@ -299,26 +308,26 @@ def create(
         else:
             os.makedirs(into_dir)
     if install_notebook and name is None:
-        raise click.BadOptionUsage("--install-notebook requires --name")
+        raise click.BadOptionUsage("install-notebook", "requires --name")
 
     code_pkg = None
-    mf_version = None
+    mf_version = ""
+    mf_extensions_info = None
 
     if pathspec:
         env_name = "step:%s" % env_name
     alias_type, resolved_alias = resolve_env_alias(env_name)
     if alias_type == AliasType.PATHSPEC:
         if not pathspec:
-            raise click.BadOptionUsage(
-                "--pathspec used but environment name is not a pathspec"
-            )
+            raise click.BadOptionUsage("pathspec", "environment name is not a pathspec")
         task = Step(resolved_alias, _namespace_check=False).task
         code_pkg = task.code
-        mf_version = task.metadata_dict["metaflow_version"]
+        mf_version = task.metadata_dict.get("metaflow_version", "")
+        mf_extensions_info = task["_graph_info"].data.get("extensions")
     else:
         if pathspec:
             raise click.BadOptionUsage(
-                "--pathspec not used but environment name is a pathspec"
+                "pathspec", "missing --pathspec; environment name is a pathspec"
             )
 
     env_id_for_alias = cast(Conda, obj.conda).env_id_from_alias(
@@ -339,61 +348,66 @@ def create(
         # We need to install ipykernel into the resolved environment
         obj.echo("    Resolving an environment compatible with Jupyter ...", nl=False)
 
-        # We use envsresolver to properly deal with builder environments and what not
-        resolver = EnvsResolver(obj.conda)
-        # We force the env_type to be the same as the base env since we don't modify that
-        # by adding these deps.
+        # We first check if `ipykernel` already exists in the environment. If it does, we
+        # can skip the whole resolution process.
+        if not any("ipykernel" == p.package_name for p in env.packages):
+            # We use envsresolver to properly deal with builder environments and what not
+            resolver = EnvsResolver(obj.conda)
+            # We force the env_type to be the same as the base env since we don't modify
+            # that by adding these deps.
 
-        # We also force the use of use_latest because we are not really doing anything
-        # that would require a re-resolve (ie: the user doesn't really care about the
-        # version of ipykernel most likely).
-        resolver.add_environment(
-            arch_id(),
-            user_deps={
-                "pypi" if env.env_type == EnvType.PYPI_ONLY else "conda": ["ipykernel"]
-            },
-            user_sources={},
-            extras={},
-            base_env=env,
-            local_only=local_only,
-            use_latest=":any:",
-        )
-        resolver.resolve_environments(obj.echo)
-        update_envs = []  # type: List[ResolvedEnvironment]
-        if obj.datastore_type != "local" or CONDA_TEST:
-            # We may need to update caches
-            # Note that it is possible that something we needed to resolve, we don't need
-            # to cache (if we resolved to something already cached).
-            formats = set()  # type: Set[str]
-            for _, resolved_env, f, _ in resolver.need_caching_environments(
+            # We also force the use of use_latest because we are not really doing
+            # anything that would require a re-resolve (ie: the user doesn't really
+            # care about the version of ipykernel most likely).
+            resolver.add_environment(
+                arch_id(),
+                user_deps={
+                    "pypi" if env.env_type == EnvType.PYPI_ONLY else "conda": [
+                        "ipykernel"
+                    ]
+                },
+                user_sources={},
+                extras={},
+                base_env=env,
+                local_only=local_only,
+                use_latest=":any:",
+            )
+            resolver.resolve_environments(obj.echo)
+            update_envs = []  # type: List[ResolvedEnvironment]
+            if obj.datastore_type != "local" or CONDA_TEST:
+                # We may need to update caches
+                # Note that it is possible that something we needed to resolve, we don't need
+                # to cache (if we resolved to something already cached).
+                formats = set()  # type: Set[str]
+                for _, resolved_env, f, _ in resolver.need_caching_environments(
+                    include_builder_envs=True
+                ):
+                    update_envs.append(resolved_env)
+                    formats.update(f)
+
+                cast(Conda, obj.conda).cache_environments(
+                    update_envs, {"conda": list(formats)}
+                )
+            else:
+                update_envs = [
+                    resolved_env
+                    for _, resolved_env, _ in resolver.new_environments(
+                        include_builder_envs=True
+                    )
+                ]
+            cast(Conda, obj.conda).add_environments(update_envs)
+
+            # Update the default environment
+            for _, resolved_env, _ in resolver.resolved_environments(
                 include_builder_envs=True
             ):
-                update_envs.append(resolved_env)
-                formats.update(f)
+                cast(Conda, obj.conda).set_default_environment(resolved_env.env_id)
 
-            cast(Conda, obj.conda).cache_environments(
-                update_envs, {"conda": list(formats)}
-            )
-        else:
-            update_envs = [
-                resolved_env
-                for _, resolved_env, _ in resolver.new_environments(
-                    include_builder_envs=True
-                )
-            ]
-        cast(Conda, obj.conda).add_environments(update_envs)
+            cast(Conda, obj.conda).write_out_environments()
 
-        # Update the default environment
-        for _, resolved_env, _ in resolver.resolved_environments(
-            include_builder_envs=True
-        ):
-            cast(Conda, obj.conda).set_default_environment(resolved_env.env_id)
-
-        cast(Conda, obj.conda).write_out_environments()
-
-        # We are going to be creating this new environment going forward (not the
-        # initial env we got)
-        _, env, _ = next(resolver.resolved_environments())
+            # We are going to be creating this new environment going forward (not the
+            # initial env we got)
+            _, env, _ = next(resolver.resolved_environments())
 
         delta_time = int(time.time() - start)
         obj.echo(" done in %d second%s." % (delta_time, plural_marker(delta_time)))
@@ -422,10 +436,12 @@ def create(
                 "Step '%s' does not have a code package -- "
                 "downloading active Metaflow version only" % env_name
             )
-            download_mf_version("./__conda_python", mf_version)
+            download_mf_version(
+                "./__conda_python", mf_version, mf_extensions_info, obj.echo, strict
+            )
         obj.echo(
-            "Code package for %s downloaded into '%s' -- `__conda_python` is "
-            "the executable to use" % (env_name, into_dir)
+            "Python executable `__conda_python` for environment '%s' downloaded "
+            "into '%s'" % (env_name, into_dir)
         )
     else:
         python_bin = os.path.join(obj.conda.create_for_name(name, env), "bin", "python")
@@ -498,8 +514,9 @@ def create(
                 f.write("\n")
     else:
         obj.echo(
-            "Created environment '%s' locally, activate with `%s activate %s`"
-            % (name, obj.conda.binary("conda"), name)
+            "Conda environment '%s' created locally, activate with "
+            "`CONDA_ENVS_DIRS=%s %s activate %s`"
+            % (name, obj.conda.root_env_dir, CONDA_DEPENDENCY_RESOLVER, name)
         )
     cast(Conda, obj.conda).write_out_environments()
 

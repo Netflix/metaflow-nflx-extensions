@@ -30,6 +30,7 @@ from metaflow.metaflow_config import (
     CONDA_USE_REMOTE_LATEST,
 )
 from metaflow.metaflow_environment import InvalidEnvironmentException
+from metaflow.system import _system_monitor, _system_logger
 
 from metaflow._vendor.packaging.version import parse as parse_version
 from .env_descr import (
@@ -221,21 +222,32 @@ class EnvsResolver(object):
         echo : Callable[..., None]
             Method to use to print things to the console
         """
-        # At this point, we check in our backend storage if we have the files we need
-        need_resolution = [
-            env_id
-            for env_id, req in self._requested_envs.items()
-            if req["resolved"] is None
-        ]
-        if debug.conda:
-            debug.conda_exec("Resolving environments:")
-            for env_id in need_resolution:
-                info = self._requested_envs[env_id]
-                debug.conda_exec(
-                    "%s (%s): %s" % (env_id.req_id, env_id.full_id, str(info))
-                )
-        if len(need_resolution):
-            self._resolve_environments(echo, need_resolution)
+        with _system_monitor.measure("metaflow.conda.all_resolve"):
+            start = time.time()
+            # At this point, we check in our backend storage if we have the files we need
+            need_resolution = [
+                env_id
+                for env_id, req in self._requested_envs.items()
+                if req["resolved"] is None
+            ]
+            if debug.conda:
+                debug.conda_exec("Resolving environments:")
+                for env_id in need_resolution:
+                    info = self._requested_envs[env_id]
+                    debug.conda_exec(
+                        "%s (%s): %s" % (env_id.req_id, env_id.full_id, str(info))
+                    )
+            if len(need_resolution):
+                self._resolve_environments(echo, need_resolution)
+            _system_logger.log_event(
+                level="info",
+                module="netflix_ext.conda",
+                name="all_envs_resolved",
+                payload={
+                    "msg": "All environment resolved and cached in %d seconds"
+                    % (time.time() - start)
+                },
+            )
 
     def all_environments(
         self, include_builder_envs: bool = False
@@ -640,91 +652,104 @@ class EnvsResolver(object):
         env_desc: Mapping[str, Any],
         builder_environments: Optional[Dict[str, List[EnvID]]],
     ) -> Tuple[EnvID, ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
-        env_id = cast(EnvID, env_desc["id"])
-        if builder_environments is None:
-            builder_environments = {}
+        with _system_monitor.measure("metaflow.conda.resolve"):
+            start = time.time()
+            env_id = cast(EnvID, env_desc["id"])
+            if builder_environments is None:
+                builder_environments = {}
 
-        builder_envs = [
-            self._builder_envs[builder_env_id]["resolved"]
-            for builder_env_id in builder_environments.get(env_id.req_id, [])
-        ]
+            builder_envs = [
+                self._builder_envs[builder_env_id]["resolved"]
+                for builder_env_id in builder_environments.get(env_id.req_id, [])
+            ]
 
-        # Figure out the env_type
-        env_type = cast(
-            EnvType, env_desc.get("env_type") or env_type_for_deps(env_desc["deps"])
-        )
+            # Figure out the env_type
+            env_type = cast(
+                EnvType, env_desc.get("env_type") or env_type_for_deps(env_desc["deps"])
+            )
 
-        # Create the resolver object
-        resolver = self.get_resolver(env_type)(self._conda)
+            # Create the resolver object
+            resolver = self.get_resolver(env_type)(self._conda)
 
-        # Resolve the environment
-        if env_type == EnvType.PYPI_ONLY:
-            # Pypi only mode
-            # In this mode, we also allow (as a workaround for poor support for
-            # more advanced options in conda-lock (like git repo, local support,
-            # etc)) the inclusion of conda packages that are *not* python packages.
-            # To ensure this, we check the npconda packages, create an environment
-            # for it and check if that environment doesn't contain python deps.
-            # If that is the case, we then create the actual environment including
-            # both conda and npconda packages and re-resolve. We could maybe
-            # optimize to not resolve from scratch twice but given this is a rare
-            # situation and the cost is only during resolution, it doesn't seem
-            # worth it.
-            npconda_deps = env_desc["deps"].get("npconda", [])
-            if npconda_deps:
-                npcondaenv, _ = self.get_resolver(EnvType.CONDA_ONLY)(
-                    self._conda
-                ).resolve(
-                    EnvType.CONDA_ONLY,
-                    {"npconda": npconda_deps},
-                    env_desc["sources"],
-                    {},
-                    env_id.arch,
-                )
-                if any((p.filename.startswith("python-") for p in npcondaenv.packages)):
-                    raise InvalidEnvironmentException(
-                        "Cannot specify a non-python Conda dependency that uses "
-                        "python: %s. Please use the mixed mode instead."
-                        % ", ".join([d.value for d in npconda_deps])
+            # Resolve the environment
+            if env_type == EnvType.PYPI_ONLY:
+                # Pypi only mode
+                # In this mode, we also allow (as a workaround for poor support for
+                # more advanced options in conda-lock (like git repo, local support,
+                # etc)) the inclusion of conda packages that are *not* python packages.
+                # To ensure this, we check the npconda packages, create an environment
+                # for it and check if that environment doesn't contain python deps.
+                # If that is the case, we then create the actual environment including
+                # both conda and npconda packages and re-resolve. We could maybe
+                # optimize to not resolve from scratch twice but given this is a rare
+                # situation and the cost is only during resolution, it doesn't seem
+                # worth it.
+                npconda_deps = env_desc["deps"].get("npconda", [])
+                if npconda_deps:
+                    npcondaenv, _ = self.get_resolver(EnvType.CONDA_ONLY)(
+                        self._conda
+                    ).resolve(
+                        EnvType.CONDA_ONLY,
+                        {"npconda": npconda_deps},
+                        env_desc["sources"],
+                        {},
+                        env_id.arch,
                     )
-        resolved_env, builder_envs = resolver.resolve(
-            env_type,
-            env_desc["deps"],
-            env_desc["sources"],
-            env_desc["extras"],
-            env_id.arch,
-            builder_envs,
-            env_desc["base"],
-        )
-
-        if env_desc["base"]:
-            # We try to copy things over from the base environment as it contains
-            # potential caching information we don't need to rebuild. This also
-            # properly sets the user dependencies to what we want as opposed to
-            # including everything we resolved for.
-            merged_packages = []  # type: List[PackageSpecification]
-            base_packages = {
-                p.filename: p.to_dict()
-                for p in cast(ResolvedEnvironment, env_desc["base"]).packages
-            }
-            for p in resolved_env.packages:
-                existing_info = base_packages.get(p.filename)
-                if existing_info:
-                    merged_packages.append(
-                        PackageSpecification.from_dict(existing_info)
-                    )
-                else:
-                    merged_packages.append(p)
-            resolved_env = ResolvedEnvironment(
-                env_desc["user_deps"],
+                    if any(
+                        (p.filename.startswith("python-") for p in npcondaenv.packages)
+                    ):
+                        raise InvalidEnvironmentException(
+                            "Cannot specify a non-python Conda dependency that uses "
+                            "python: %s. Please use the mixed mode instead."
+                            % ", ".join([d.value for d in npconda_deps])
+                        )
+            resolved_env, builder_envs = resolver.resolve(
+                env_type,
+                env_desc["deps"],
                 env_desc["sources"],
                 env_desc["extras"],
                 env_id.arch,
-                all_packages=merged_packages,
-                env_type=resolved_env.env_type,
-                accurate_source=env_desc["base_accurate"],
+                builder_envs,
+                env_desc["base"],
             )
-        return env_id, resolved_env, builder_envs
+
+            if env_desc["base"]:
+                # We try to copy things over from the base environment as it contains
+                # potential caching information we don't need to rebuild. This also
+                # properly sets the user dependencies to what we want as opposed to
+                # including everything we resolved for.
+                merged_packages = []  # type: List[PackageSpecification]
+                base_packages = {
+                    p.filename: p.to_dict()
+                    for p in cast(ResolvedEnvironment, env_desc["base"]).packages
+                }
+                for p in resolved_env.packages:
+                    existing_info = base_packages.get(p.filename)
+                    if existing_info:
+                        merged_packages.append(
+                            PackageSpecification.from_dict(existing_info)
+                        )
+                    else:
+                        merged_packages.append(p)
+                resolved_env = ResolvedEnvironment(
+                    env_desc["user_deps"],
+                    env_desc["sources"],
+                    env_desc["extras"],
+                    env_id.arch,
+                    all_packages=merged_packages,
+                    env_type=resolved_env.env_type,
+                    accurate_source=env_desc["base_accurate"],
+                )
+            _system_logger.log_event(
+                level="info",
+                module="netflix_ext.conda",
+                name="env_resolved",
+                payload={
+                    "qualifier_name": str(env_id),
+                    "msg": "Environment resolved in %d seconds" % (time.time() - start),
+                },
+            )
+            return env_id, resolved_env, builder_envs
 
     @staticmethod
     def extract_info_from_base(

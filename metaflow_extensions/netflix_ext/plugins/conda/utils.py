@@ -18,6 +18,7 @@ from typing import (
     Any,
     Dict,
     FrozenSet,
+    Iterable,
     List,
     Mapping,
     NamedTuple,
@@ -99,6 +100,9 @@ if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none":
 else:
     CONDA_FORMATS = _ALL_CONDA_FORMATS  # type: Tuple[str, ...]
 FAKEURL_PATHCOMPONENT = "_fake"
+
+
+_double_equal_match = re.compile("==(?=[<=>!~])")
 
 
 class CondaException(MetaflowException):
@@ -466,6 +470,10 @@ def split_into_dict(deps: List[str]) -> Dict[str, str]:
         else:
             result[s[0]] = s[1]
     return result
+
+
+def clean_up_double_equal(deps: Iterable[str]) -> List[str]:
+    return [_double_equal_match.sub("", d) for d in deps]
 
 
 def merge_dep_dicts(

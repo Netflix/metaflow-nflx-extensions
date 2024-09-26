@@ -13,7 +13,12 @@ from ..env_descr import (
     PackageSpecification,
     ResolvedEnvironment,
 )
-from ..utils import CondaException, channel_or_url, parse_explicit_url_conda
+from ..utils import (
+    CondaException,
+    channel_or_url,
+    clean_up_double_equal,
+    parse_explicit_url_conda,
+)
 from . import Resolver
 
 
@@ -40,7 +45,10 @@ class CondaResolver(Resolver):
                     % ", ".join([p.package_name for p in local_packages])
                 )
         sys_overrides = {k: v for d in deps.get("sys", []) for k, v in [d.split("==")]}
-        real_deps = list(chain(deps.get("conda", []), deps.get("npconda", [])))
+        real_deps = clean_up_double_equal(
+            chain(deps.get("conda", []), deps.get("npconda", []))
+        )
+
         packages = []  # type: List[PackageSpecification]
         with tempfile.TemporaryDirectory() as mamba_dir:
             args = [

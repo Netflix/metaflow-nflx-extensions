@@ -22,6 +22,7 @@ jobs:
         os: [ ubuntu-latest, macos-latest ]
         python-version: [ "3.8", "3.10", "3.12" ]
         resolver: [ mamba, conda, micromamba ]
+        mamba-version: [ "1.5.10", "latest" ]
     env:
       METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
       METAFLOW_CONDA_TEST: 1
@@ -31,7 +32,7 @@ jobs:
 
       - uses: mamba-org/setup-micromamba@f8b8a1e23a26f60a44c853292711bacfd3eac822 # v1.9.0
         with:
-          micromamba-version: latest
+          micromamba-version: ${{ matrix.mamba-version }}
           environment-file: dev-env.yml
           init-shell: bash
           create-args: >-
