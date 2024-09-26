@@ -22,7 +22,7 @@ jobs:
         os: [ ubuntu-latest, macos-latest ]
         python-version: [ "3.8", "3.10", "3.12" ]
         resolver: [ mamba, conda, micromamba ]
-        mamba-version: [ "1.5.10", "latest" ]
+        mamba-version: [ "1.5.10-0", "latest" ]
     env:
       METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
       METAFLOW_CONDA_TEST: 1
