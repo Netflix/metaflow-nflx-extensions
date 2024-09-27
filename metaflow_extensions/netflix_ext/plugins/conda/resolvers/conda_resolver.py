@@ -94,7 +94,8 @@ class CondaResolver(Resolver):
         #  - actions:
         #    - FETCH: List of objects to fetch -- this is where we get hash and URL
         #    - LINK: Packages to actually install (in that order)
-        # On micromamba, we can just use the LINK blob since it has all information we need
+        # On micromamba (or Mamba 2+), we can just use the LINK blob since it has all
+        # information we need
         if not conda_result["success"]:
             print(
                 "Pretty-printed Conda create result:\n%s" % conda_result,
@@ -104,7 +105,7 @@ class CondaResolver(Resolver):
                 "Could not resolve environment -- see above pretty-printed error."
             )
 
-        if self._conda.conda_executable_type == "micromamba":
+        if self._conda.is_non_conda_exec:
             for lnk in conda_result["actions"]["LINK"]:
                 parse_result = parse_explicit_url_conda(
                     "%s#%s" % (lnk["url"], lnk["md5"])
