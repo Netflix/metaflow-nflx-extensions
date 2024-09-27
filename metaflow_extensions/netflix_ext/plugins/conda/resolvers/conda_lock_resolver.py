@@ -228,15 +228,10 @@ class CondaLockResolver(Resolver):
                 #                else:
                 conda_exec_type = self._conda.conda_executable_type
                 if conda_exec_type:
-                    if conda_exec_type == "conda":
-                        args.append(cast(str, self._conda.binary(conda_exec_type)))
-                    else:
-                        args.extend(
-                            [
-                                cast(str, self._conda.binary(conda_exec_type)),
-                                "--%s" % conda_exec_type,
-                            ]
-                        )
+                    args.append(cast(str, self._conda.binary(conda_exec_type)))
+
+                    if conda_exec_type != "conda":
+                        args.append("--%s" % conda_exec_type)
                 else:
                     raise CondaException("Could not find conda binary for conda-lock")
 

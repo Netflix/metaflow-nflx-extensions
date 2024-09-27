@@ -24,6 +24,7 @@ from ..pypi_package_builder import PackageToBuild, build_pypi_packages
 from ..utils import (
     CondaException,
     arch_id,
+    clean_up_double_equal,
     correct_splitext,
     get_glibc_version,
     parse_explicit_path_pypi,
@@ -254,17 +255,7 @@ class PipResolver(Resolver):
 
             # Unfortunately, pip doesn't like things like ==<= so we need to strip
             # the ==
-            for d in real_deps:
-                splits = d.split("==", 1)
-                if len(splits) == 1:
-                    args.append(d)
-                else:
-                    if splits[1][0] in ("=", "<", ">", "!", "~"):
-                        # Something originally like pkg==<=ver
-                        args.append("".join(splits))
-                    else:
-                        # Something originally like pkg==ver
-                        args.append(d)
+            args.extend(clean_up_double_equal(real_deps))
 
             self._conda.call_binary(args, binary=builder_python, addl_env=addl_env)
 
