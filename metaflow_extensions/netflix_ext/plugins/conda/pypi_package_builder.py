@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Set, Tuple, cast
 
 if TYPE_CHECKING:
-    from metaflow.datastore.datastore_storage import DataStoreStorage
-    from .conda import Conda
+    import metaflow.datastore.datastore_storage
+    import metaflow_extensions.netflix_ext.plugins.conda.conda
 
 from metaflow.debug import debug
 
@@ -53,8 +53,8 @@ class PackageToBuild:
 
 
 def build_pypi_packages(
-    conda: Conda,
-    storage: DataStoreStorage,
+    conda: "metaflow_extensions.netflix_ext.plugins.conda.conda.Conda",
+    storage: "metaflow.datastore.datastore_storage.DataStoreStorage",
     python_version: str,
     to_build_pkg_info: Dict[str, PackageToBuild],
     builder_envs: Optional[List[ResolvedEnvironment]],
@@ -321,7 +321,7 @@ def build_pypi_packages(
 
 
 def _build_with_pip(
-    conda: Conda,
+    conda: "metaflow_extensions.netflix_ext.plugins.conda.conda.Conda",
     binary: str,
     dest_path: str,
     key: str,

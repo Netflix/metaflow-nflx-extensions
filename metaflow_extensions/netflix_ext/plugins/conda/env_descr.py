@@ -52,10 +52,23 @@ VALID_IMAGE_NAME_RE = "[^a-z0-9_]"
 
 
 class EnvType(Enum):
+    """Type of environment"""
+
     CONDA_ONLY = "conda-only"
+    """Environment only has conda packages
+    """
+
     PYPI_ONLY = "pypi-only"
+    """Environment only has Pypi packages
+    """
+
     PIP_ONLY = "pip-only"  # Here for legacy reasons -- we now use pypi-only
+    """Alias to PYPI_ONLY
+    """
+
     MIXED = "mixed"
+    """Environment has mixed Conda and Pypi packages
+    """
 
 
 class TStr:

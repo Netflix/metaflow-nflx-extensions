@@ -62,7 +62,7 @@ from metaflow.metaflow_config import (
 from metaflow.metaflow_environment import InvalidEnvironmentException
 
 if TYPE_CHECKING:
-    from .env_descr import TStr
+    import metaflow_extensions.netflix_ext.plugins.conda.env_descr
 
 # NOTA: Most of the code does not assume that there are only two formats BUT the
 # transmute code does (since you can only specify the infile -- the outformat and file
@@ -441,7 +441,9 @@ def is_alias_mutable(alias_type: AliasType, resolved_alias: str) -> bool:
     return len(splits) == 2 and splits[1] in ("latest", "candidate", "stable")
 
 
-def dict_to_tstr(deps: Dict[str, List[str]]) -> List[TStr]:
+def dict_to_tstr(
+    deps: Dict[str, List[str]]
+) -> List["metaflow_extensions.netflix_ext.plugins.conda.env_descr.TStr"]:
     from .env_descr import TStr  # Avoid circular import
 
     result = []  # type: List[TStr]
@@ -450,7 +452,9 @@ def dict_to_tstr(deps: Dict[str, List[str]]) -> List[TStr]:
     return result
 
 
-def tstr_to_dict(deps: List[TStr]) -> Dict[str, List[str]]:
+def tstr_to_dict(
+    deps: List["metaflow_extensions.netflix_ext.plugins.conda.env_descr.TStr"],
+) -> Dict[str, List[str]]:
     result = {}  # type: Dict[str, List[str]]
     for dep in deps:
         result.setdefault(dep.category, []).append(dep.value)

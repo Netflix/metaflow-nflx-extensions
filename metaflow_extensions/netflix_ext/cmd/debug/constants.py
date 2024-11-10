@@ -236,8 +236,9 @@ class Constants(object):
 
     # Escape hatch stub
     ESCAPE_HATCH_STUB = """
-    import sys
-    sys.path.insert(0, "{MetaflowEnvEscapeDir}")    
+    # Uncomment the following lines if os.environ.get("PYTHONPATH") is not set
+    # import sys
+    # sys.path.insert(0, "{MetaflowEnvEscapeDir}")    
     """
 
     # Imports needed to define stubbed classes & Debug steps
