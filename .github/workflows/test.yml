@@ -22,7 +22,16 @@ jobs:
         python-version: ["3.8", "3.10", "3.12"]
         resolver: [mamba, conda, micromamba]
         micromamba-version: ["1.5.10-0", "latest"]
-        mamba-version: ["1.5.10", "~2"]
+        mamba-version: ["mamba=1.5.10", "mamba"]
+        exclude:
+          - resolver: mamba
+            micromamba-version: "1.5.10-0"
+          - resolver: conda
+            micromamba-version: "1.5.10-0"
+          - resolver: conda
+            mamba-version: "mamba=1.5.10"
+          - resolver: micromamba
+            mamba-version: "mamba=1.5.10"
     env:
       METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
       METAFLOW_CONDA_TEST: 1
@@ -37,7 +46,7 @@ jobs:
           init-shell: bash
           create-args: >-
             python=${{ matrix.python-version }}
-            mamba=${{ matrix.mamba-version }}
+            ${{ matrix.mamba-version }}
 
       - name: install nflx-extension
         shell: bash -eo pipefail -l {0}
