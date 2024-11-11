@@ -6,22 +6,23 @@ on:
       - main
 
 jobs:
-
   pre-commit:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
-    - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
-    - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
+      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
   test:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest, macos-latest ]
-        python-version: [ "3.8", "3.10", "3.12" ]
-        resolver: [ mamba, conda, micromamba ]
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.8", "3.10", "3.12"]
+        resolver: [mamba, conda, micromamba]
+        micromamba-version: ["1.5.10-0", "latest"]
+        mamba-version: ["1.5.10", "~2"]
     env:
       METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
       METAFLOW_CONDA_TEST: 1
@@ -31,18 +32,19 @@ jobs:
 
       - uses: mamba-org/setup-micromamba@f8b8a1e23a26f60a44c853292711bacfd3eac822 # v1.9.0
         with:
-          micromamba-version: 1.5.10-0
+          micromamba-version: ${{ matrix.micromamba-version }}
           environment-file: dev-env.yml
           init-shell: bash
           create-args: >-
             python=${{ matrix.python-version }}
+            mamba=${{ matrix.mamba-version }}
 
       - name: install nflx-extension
         shell: bash -eo pipefail -l {0}
         run: |
           which pip
           pip install -e . --force-reinstall -U
-      
+
       - name: install bash
         if: runner.os == 'macOS'
         run: brew install bash
