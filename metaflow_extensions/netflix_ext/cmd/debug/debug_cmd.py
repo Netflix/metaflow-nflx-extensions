@@ -1,4 +1,5 @@
 import os
+import json
 import tarfile
 import datetime
 
@@ -287,8 +288,12 @@ def _generate_debug_scripts(
     if generate_notebook:
         kernel_def = _find_kernel_name(python_executable)
         if kernel_def:
+            _update_kernel_pythonpath(kernel_def[2], metaflow_root_dir)
             obj.echo(
                 f"Jupyter kernel name: {kernel_def[0]} with display name: {kernel_def[1]}"
+            )
+            obj.echo(
+                f"Added escape trampolines to PYTHONPATH for the kernel {kernel_def[0]}"
             )
         notebook_json = debug_script_generator.generate_debug_notebook(
             metaflow_root_dir, debug_file_name, kernel_def
@@ -304,3 +309,25 @@ def _generate_debug_scripts(
     # We copy the stub generators to the metaflow root directory as the stub generators
     # may not be present in the metaflow version that the user is using.
     copy_stub_generator_to_metaflow_root_dir(metaflow_root_dir)
+
+
+def _update_kernel_pythonpath(kernelspec_path, metaflow_root_dir):
+    """
+    Updates the kernelspec with the escape trampolines added to the PYTHONPATH.
+
+    Parameters
+    ----------
+    kernelspec_path : str
+        The kernelspec path.
+    metaflow_root_dir : str
+        The metaflow root directory.
+    """
+    kernel_json_path = os.path.join(kernelspec_path, "kernel.json")
+    with open(kernel_json_path, "r") as f:
+        kernel_json = json.load(f)
+
+    _ = kernel_json.setdefault("env", {})["PYTHONPATH"] = os.path.abspath(
+        os.path.join(metaflow_root_dir, "_escape_trampolines")
+    )
+    with open(kernel_json_path, "w") as f:
+        json.dump(kernel_json, f, indent=4)

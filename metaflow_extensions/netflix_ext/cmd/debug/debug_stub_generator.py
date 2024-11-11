@@ -167,9 +167,32 @@ class DebugStubGenerator(object):
             return sorted(
                 [task for task in previous_steps[0].tasks()], key=lambda x: x.index
             )
-        # If the step is linear, split-foreach, split-static or a static-join, then we just return the
-        # tasks in the order they were run.
-        return [step.task for step in previous_steps]
+        # TODO: This method is incomplete and incorrect in the general case. We actually
+        # need more information to return the exact subset of tasks that are runtime
+        # parents in some situations with nested foreaches. For now, best effort but
+        # we need to revisit/fix these. The primary limitation right now is that the
+        # `foreach-stack` field we are referring to is capped at some number of characters
+        # which can fail to work for deeply nested foreaches or even shallow ones with
+        # long values.
+        foreach_list = self.task.metadata_dict.get("foreach-stack", [])
+        if not foreach_list:
+            # We are not part of a foreach so return all the previous tasks. This will
+            # be a list of 1 for most everything except for a join.
+            return [step.task for step in previous_steps]
+
+        # We are part of a foreach, we want to list tasks that either have the same
+        # foreach_list or match everything but the last element
+        def _filter(t):
+            t_foreach_list = t.metadata_dict.get("foreach-stack", [])
+            return (
+                len(t_foreach_list) == len(foreach_list)
+                and t_foreach_list == foreach_list
+            ) or t_foreach_list == foreach_list[:-1]
+
+        to_return = []
+        for step in previous_steps:
+            to_return.extend([task for task in step if _filter(task)])
+        return to_return
 
     def get_task_namespace(self) -> str:
         """

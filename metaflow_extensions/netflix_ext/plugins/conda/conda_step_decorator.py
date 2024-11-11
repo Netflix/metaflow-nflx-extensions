@@ -24,8 +24,7 @@ from metaflow.decorators import StepDecorator
 from metaflow.extension_support import EXT_PKG
 from metaflow.flowspec import FlowSpec
 from metaflow.graph import FlowGraph
-from metaflow.metadata import MetaDatum
-from metaflow.metadata.metadata import MetadataProvider
+from metaflow.metadata_provider import MetaDatum, MetadataProvider
 from metaflow.metaflow_config import CONDA_REMOTE_COMMANDS
 from metaflow.metaflow_environment import (
     InvalidEnvironmentException,

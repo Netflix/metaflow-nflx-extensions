@@ -139,6 +139,7 @@ class CondaEnvironment(MetaflowEnvironment):
             )
 
         resolver.resolve_environments(echo)
+        self._log_conda_events(resolver)
 
         update_envs = []  # type: List[ResolvedEnvironment]
         if self._datastore_type != "local" or CONDA_TEST:
@@ -672,3 +673,76 @@ class CondaEnvironment(MetaflowEnvironment):
             # environment.
             return os.path.join(".", "__conda_python")
         return None
+
+    def _log_conda_events(self, resolver):
+        from metaflow.system import _system_logger
+        from metaflow import current
+
+        def _format_packages(packages):
+            return {
+                package.package_name: {
+                    "package_version": package.package_version,
+                    "filename": package.filename,
+                    "package_url": package.url,
+                    "package_detailed_version": package.package_detailed_version,
+                    "package_format": package.url_format,
+                }
+                for package in packages
+            }
+
+        for (
+            newly_resolved_env_id,
+            newly_resolved_env,
+            needed_in_steps,
+        ) in resolver.new_environments():
+            # Log the requested packages
+            _system_logger.log_event(
+                level="info",
+                module="netflix_ext.conda",
+                name="requested_packages",
+                payload={
+                    "full_id": newly_resolved_env_id.full_id,
+                    "arch": newly_resolved_env_id.arch,
+                    "req_id": newly_resolved_env_id.req_id,
+                    "msg": str(newly_resolved_env.deps),
+                },
+            )
+
+            # Log the sources
+            _system_logger.log_event(
+                level="info",
+                module="netflix_ext.conda",
+                name="sources",
+                payload={
+                    "full_id": newly_resolved_env_id.full_id,
+                    "arch": newly_resolved_env_id.arch,
+                    "req_id": newly_resolved_env_id.req_id,
+                    "msg": str(newly_resolved_env.sources),
+                },
+            )
+
+            # Log the sys packages
+            _system_logger.log_event(
+                level="info",
+                module="netflix_ext.conda",
+                name="sys_packages",
+                payload={
+                    "full_id": newly_resolved_env_id.full_id,
+                    "arch": newly_resolved_env_id.arch,
+                    "req_id": newly_resolved_env_id.req_id,
+                    "msg": str(newly_resolved_env.extras),
+                },
+            )
+
+            # Log the resolved packages
+            _system_logger.log_event(
+                level="info",
+                module="netflix_ext.conda",
+                name="resolved_packages",
+                payload={
+                    "full_id": newly_resolved_env_id.full_id,
+                    "arch": newly_resolved_env_id.arch,
+                    "req_id": newly_resolved_env_id.req_id,
+                    "msg": str(_format_packages(newly_resolved_env.packages)),
+                },
+            )

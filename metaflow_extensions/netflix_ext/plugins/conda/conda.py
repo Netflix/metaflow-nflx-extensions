@@ -36,6 +36,7 @@ from typing import (
 from shutil import which
 
 from requests.auth import AuthBase
+from urllib3 import Retry
 
 from metaflow.plugins.datastores.local_storage import LocalStorage
 from metaflow.datastore.datastore_storage import DataStoreStorage
@@ -58,6 +59,8 @@ from metaflow.metaflow_config import (
     CONDA_USE_REMOTE_LATEST,
 )
 from metaflow.metaflow_environment import InvalidEnvironmentException
+
+from metaflow.system import _system_logger, _system_monitor
 from metaflow.util import get_username
 
 from metaflow._vendor.packaging.version import parse as parse_version
@@ -122,6 +125,9 @@ class Conda(object):
         self._mode = mode
         self._bins = None  # type: Optional[Dict[str, Optional[str]]]
         self._conda_executable_type = None  # type: Optional[str]
+        # True when using micromamba or mamba 2.0+ which doesn't wrap
+        # conda anymore
+        self.is_non_conda_exec = False  # type: bool
 
         self._have_micromamba_server = False  # type: bool
         self._micromamba_server_port = None  # type: Optional[int]
@@ -269,10 +275,7 @@ class Conda(object):
             if (
                 args
                 and args[0] not in ("package", "info")
-                and (
-                    self._conda_executable_type == "micromamba"
-                    or binary == "micromamba"
-                )
+                and (self.is_non_conda_exec or binary == "micromamba")
             ):
                 args.extend(["-r", self.root_prefix, "--json"])
             debug.conda_exec("Conda call: %s" % str([self._bins[binary]] + args))
@@ -389,12 +392,50 @@ class Conda(object):
 
         try:
             env_name = self._env_directory_from_envid(env.env_id)
-            return self.create_for_name(env_name, env, do_symlink)
+            to_return = None
+            s = time.time()
+            with _system_monitor.measure("metaflow.conda.create_for_step"):
+                to_return = self.create_for_name(env_name, env, do_symlink)
+
+            _system_logger.log_event(
+                level="info",
+                module="netflix_ext.conda",
+                name="env_create_for_step",
+                payload={
+                    "qualifier_name": str(env.env_id),
+                    "msg": "Environment created in %d seconds" % (time.time() - s),
+                    # We log the step name in case its not available in the event logger context
+                    "step_name": step_name,
+                    # Override the log stream to be the default metrics stream
+                    "log_stream": "metrics",
+                },
+            )
+            return to_return
         except CondaException as e:
+            import traceback
+
+            with _system_monitor.count("metaflow.conda.create_for_step.error"):
+                _system_logger.log_event(
+                    level="error",
+                    module="netflix_ext.conda",
+                    name="env_create_for_step.error",
+                    payload={
+                        "qualifier_name": str(env.env_id),
+                        "msg": traceback.format_exc(),
+                        # We log the step name in case its not available in the event logger context
+                        "step_name": step_name,
+                        # Override the log stream to be the default metrics stream
+                        "log_stream": "metrics",
+                    },
+                )
             raise CondaStepException(e, [step_name]) from None
 
     def create_for_name(
-        self, name: str, env: ResolvedEnvironment, do_symlink: bool = False
+        self,
+        name: str,
+        env: ResolvedEnvironment,
+        do_symlink: bool = False,
+        quiet: bool = False,
     ) -> str:
         """
         Creates a local instance of the resolved environment
@@ -408,6 +449,9 @@ class Conda(object):
         do_symlink : bool, optional
             If True, creates a `__conda_python` symlink in the current directory
             pointing to the created Conda Python executable, by default False
+        quiet : bool, optional
+            If True, does not print status messages when creating the environment,
+            by default False
 
         Returns
         -------
@@ -430,7 +474,12 @@ class Conda(object):
             with CondaLockMultiDir(
                 self.echo, self._package_dirs, self._package_dir_lockfile_name
             ):
+                if quiet:
+                    techo = self.echo
+                    self.echo = self._no_echo
                 env_path = self._create(env, name)
+                if quiet:
+                    self.echo = techo
 
         if do_symlink:
             os.symlink(
@@ -442,12 +491,11 @@ class Conda(object):
     def create_builder_env(self, builder_env: ResolvedEnvironment) -> str:
         # A helper to build a named environment specifically for builder environments.
         # We are more quiet and have a specific name for it
-        techo = self.echo
-        self.echo = self._no_echo
         r = self.create_for_name(
-            self._env_builder_directory_from_envid(builder_env.env_id), builder_env
+            self._env_builder_directory_from_envid(builder_env.env_id),
+            builder_env,
+            quiet=True,
         )
-        self.echo = techo
 
         return r
 
@@ -1191,7 +1239,8 @@ class Conda(object):
                 self._upload_to_ds(upload_files)
                 delta_time = int(time.time() - start)
                 self.echo(
-                    " done in %d second%s." % (delta_time, plural_marker(delta_time))
+                    " done in %d second%s." % (delta_time, plural_marker(delta_time)),
+                    timestamp=False,
                 )
             else:
                 self.echo(
@@ -1239,7 +1288,8 @@ class Conda(object):
                 self._upload_to_ds(upload_files)
                 delta_time = int(time.time() - start)
                 self.echo(
-                    " done in %d second%s." % (delta_time, plural_marker(delta_time))
+                    " done in %d second%s." % (delta_time, plural_marker(delta_time)),
+                    timestamp=False,
                 )
             else:
                 self.echo(
@@ -1585,7 +1635,7 @@ class Conda(object):
                         a = requests.adapters.HTTPAdapter(
                             pool_connections=executor._max_workers,
                             pool_maxsize=executor._max_workers,
-                            max_retries=3,
+                            max_retries=Retry(total=5, backoff_factor=0.1),
                         )
                         s.mount("https://", a)
                         download_results = [
@@ -1797,7 +1847,7 @@ class Conda(object):
             "if ! type micromamba  >/dev/null 2>&1; then "
             "mkdir -p ~/.local/bin >/dev/null 2>&1; "
             'python -c "import requests, bz2, sys; '
-            "data = requests.get('https://micro.mamba.pm/api/micromamba/%s/1.5.7').content; "
+            "data = requests.get('https://micro.mamba.pm/api/micromamba/%s/1.5.10').content; "
             'sys.stdout.buffer.write(bz2.decompress(data))" | '
             "tar -xv -C ~/.local/bin/ --strip-components=1 bin/micromamba > /dev/null 2>&1; "
             "echo $HOME/.local/bin/micromamba; "
@@ -1872,6 +1922,7 @@ class Conda(object):
             self._bins = {"conda": self._ensure_micromamba()}
             self._bins["micromamba"] = self._bins["conda"]
             self._conda_executable_type = "micromamba"
+            self.is_non_conda_exec = True
 
     def _install_remote_conda(self):
         # We download the installer and return a path to it
@@ -1922,6 +1973,7 @@ class Conda(object):
         os.sync()
         self._bins = {"conda": final_path, "micromamba": final_path}
         self._conda_executable_type = "micromamba"
+        self.is_non_conda_exec = True
 
     def _validate_conda_installation(self) -> Optional[Exception]:
         # If this is installed in CONDA_LOCAL_PATH look for special marker
@@ -1993,6 +2045,16 @@ class Conda(object):
                 return InvalidEnvironmentException(
                     self._install_message_for_resolver("micromamba")
                 )
+            else:
+                self.is_non_conda_exec = True
+        elif "mamba version" in self._info_no_lock:
+            # Mamba 2.0+ has mamba version but no conda version
+            if parse_version(self._info_no_lock) < parse_version("2.0.0"):
+                return InvalidEnvironmentException(
+                    self._install_message_for_resolver("mamba")
+                )
+            else:
+                self.is_non_conda_exec = True
         else:
             if parse_version(self._info_no_lock["conda_version"]) < parse_version(
                 "4.14.0"
@@ -2059,19 +2121,16 @@ class Conda(object):
                     self._remove(os.path.basename(dir_name))
             return None
 
-        if (
-            self._conda_executable_type == "micromamba"
-            or CONDA_LOCAL_PATH is not None
-            or CONDA_TEST
-        ):
-            # Micromamba does not record created environments so we look around for them
+        if self.is_non_conda_exec or CONDA_LOCAL_PATH is not None or CONDA_TEST:
+            # Micromamba (or Mamba 2.0+) does not record created environments so we look
+            # around for them
             # in the root env directory. We also do this if had a local installation
             # because we don't want to look around at other environments created outside
             # of that local installation. Finally, we also do this in test mode for
             # similar reasons -- we only want to search the ones we created.
             # For micromamba OR if we are using a specific conda installation
             # (so with CONDA_LOCAL_PATH), only search there
-            env_dir = self._root_env_dir
+            env_dir = self.root_env_dir
             with CondaLock(self.echo, self._env_lock_file(os.path.join(env_dir, "_"))):
                 # Grab a lock *once* on the parent directory so we pick anyname for
                 # the "directory".
@@ -2206,7 +2265,7 @@ class Conda(object):
         return info["pkgs_dirs"]
 
     @property
-    def _root_env_dir(self) -> str:
+    def root_env_dir(self) -> str:
         info = self._info
         # We rely on the first directory existing. This should be a fairly
         # easy check.
@@ -2224,7 +2283,7 @@ class Conda(object):
     def _info_no_lock(self) -> Dict[str, Any]:
         if self._cached_info is None:
             self._cached_info = json.loads(self.call_conda(["info", "--json"]))
-            if self._conda_executable_type == "micromamba":
+            if "root_prefix" not in self._cached_info:  # Micromamba and Mamba 2.0+
                 self._cached_info["root_prefix"] = self._cached_info["base environment"]
                 self._cached_info["envs_dirs"] = self._cached_info["envs directories"]
                 self._cached_info["pkgs_dirs"] = self._cached_info["package cache"]
@@ -2233,7 +2292,7 @@ class Conda(object):
 
     def _create(self, env: ResolvedEnvironment, env_name: str) -> str:
         # We first check to see if the environment exists -- if it does, we skip it
-        env_dir = os.path.join(self._root_env_dir, env_name)
+        env_dir = os.path.join(self.root_env_dir, env_name)
 
         self._cached_info = None
 
@@ -2374,13 +2433,12 @@ class Conda(object):
                 "--offline",
                 "--no-deps",
             ]
-            if self._conda_executable_type == "micromamba":
-                # micromamba seems to have a bug when compiling .py files. In some
+            if self.is_non_conda_exec:
+                # Micromamba (some version) seems to have a bug when compiling .py files. In some
                 # circumstances, it just hangs forever. We avoid this by not compiling
                 # any file and letting things get compiled lazily. This may have the
                 # added benefit of a faster environment creation.
-                # This option is only available for micromamba so we don't add it
-                # for anything else. This should cover all remote installations though.
+                # This works with Micromamba and Mamba 2.0+.
                 args.append("--no-pyc")
             args.extend(
                 [
@@ -2418,7 +2476,7 @@ class Conda(object):
                         "--no-deps",
                         "--no-input",
                     ]
-                    if self._conda_executable_type == "micromamba":
+                    if self.is_non_conda_exec:
                         # Be consistent with what we install with micromamba
                         arg_list.append("--no-compile")
                     arg_list.extend(["-r", pypi_list.name])
@@ -2484,10 +2542,10 @@ class Conda(object):
 
     def _env_lock_file(self, env_directory: str):
         # env_directory is either a name or a directory -- if name, it is assumed
-        # to be rooted at _root_env_dir
+        # to be rooted at root_env_dir
         parent_dir = os.path.split(env_directory)[0]
         if parent_dir == "":
-            parent_dir = self._root_env_dir
+            parent_dir = self.root_env_dir
         return os.path.join(parent_dir, "mf_env-creation.lock")
 
     @property
@@ -2660,6 +2718,7 @@ class CondaLock(object):
         try_count = 0
         while True:
             try:
+                debug.conda_exec("Attempting to create lock at %s" % self.lock)
                 self.fd = os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_RDWR)
                 self.locked = True
                 break
@@ -2667,15 +2726,16 @@ class CondaLock(object):
                 if e.errno != errno.EEXIST:
                     raise
 
-                if try_count < 3:
-                    try_count += 1
-                elif try_count == 3:
+                debug.conda_exec(
+                    "Lock at %s already exists -- try %d" % (self.lock, try_count + 1)
+                )
+                try_count += 1
+                if try_count % 3 == 0:
                     self.echo(
                         "Waited %ds to acquire lock at '%s' -- if unexpected, "
                         "please remove that file and retry"
                         % (try_count * self.delay, self.lock)
                     )
-                    try_count += 1
 
                 if self.timeout is None:
                     raise CondaException(
@@ -2724,6 +2784,7 @@ class CondaLockMultiDir(object):
 
     def _acquire(self) -> None:
         start = time.time()
+        debug.conda_exec("Will acquire locks on %s" % ", ".join(self.dirs))
         for d in self.dirs:
             full_file = os.path.join(d, self.lockfile)
             try_count = 0
@@ -2734,6 +2795,8 @@ class CondaLockMultiDir(object):
                     raise
             while True:
                 try:
+                    debug.conda_exec("Attempting to create lock at %s" % full_file)
+
                     self.fd.append(
                         os.open(full_file, os.O_CREAT | os.O_EXCL | os.O_RDWR)
                     )
@@ -2742,15 +2805,17 @@ class CondaLockMultiDir(object):
                     if e.errno != errno.EEXIST:
                         raise
 
-                    if try_count < 3:
-                        try_count += 1
-                    elif try_count == 3:
+                    debug.conda_exec(
+                        "Lock at %s already exists -- try %d"
+                        % (full_file, try_count + 1)
+                    )
+                    try_count += 1
+                    if try_count % 3 == 0:
                         self.echo(
                             "Waited %ds to acquire lock at '%s' -- if unexpected, "
                             "please remove that file and retry"
                             % (try_count * self.delay, full_file)
                         )
-                        try_count += 1
 
                     if self.timeout is None:
                         raise CondaException(

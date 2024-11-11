@@ -5,9 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Type
 
 if TYPE_CHECKING:
-    from ..conda import Conda
-    from ..env_descr import ResolvedEnvironment
-    from ..env_descr import EnvType
+    import metaflow_extensions.netflix_ext.plugins.conda.conda
+    import metaflow_extensions.netflix_ext.plugins.conda.env_descr
 
 
 from ..utils import CondaException
@@ -35,19 +34,34 @@ class Resolver:
             )
         return resolver
 
-    def __init__(self, conda: Conda):
+    def __init__(
+        self, conda: "metaflow_extensions.netflix_ext.plugins.conda.conda.Conda"
+    ):
         self._conda = conda
 
     def resolve(
         self,
-        env_type: EnvType,
+        env_type: "metaflow_extensions.netflix_ext.plugins.conda.env_descr.EnvType",
         deps: Dict[str, List[str]],
         sources: Dict[str, List[str]],
         extras: Dict[str, List[str]],
         architecture: str,
-        builder_envs: Optional[List[ResolvedEnvironment]] = None,
-        base_env: Optional[ResolvedEnvironment] = None,
-    ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
+        builder_envs: Optional[
+            List[
+                "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"
+            ]
+        ] = None,
+        base_env: Optional[
+            "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"
+        ] = None,
+    ) -> Tuple[
+        "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment",
+        Optional[
+            List[
+                "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"
+            ]
+        ],
+    ]:
         """
         Resolves the environment specified by the dependencies, the sources (channels
         or indices), extra information (used for Pypi resolvers) for the given

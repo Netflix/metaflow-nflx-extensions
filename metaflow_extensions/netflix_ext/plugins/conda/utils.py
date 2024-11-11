@@ -18,6 +18,7 @@ from typing import (
     Any,
     Dict,
     FrozenSet,
+    Iterable,
     List,
     Mapping,
     NamedTuple,
@@ -62,7 +63,7 @@ from metaflow.metaflow_config import (
 from metaflow.metaflow_environment import InvalidEnvironmentException
 
 if TYPE_CHECKING:
-    from .env_descr import TStr
+    import metaflow_extensions.netflix_ext.plugins.conda.env_descr
 
 # NOTA: Most of the code does not assume that there are only two formats BUT the
 # transmute code does (since you can only specify the infile -- the outformat and file
@@ -99,6 +100,8 @@ if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none":
 else:
     CONDA_FORMATS = _ALL_CONDA_FORMATS  # type: Tuple[str, ...]
 FAKEURL_PATHCOMPONENT = "_fake"
+
+_double_equal_match = re.compile("==(?=[<=>!~])")
 
 
 class CondaException(MetaflowException):
@@ -441,7 +444,9 @@ def is_alias_mutable(alias_type: AliasType, resolved_alias: str) -> bool:
     return len(splits) == 2 and splits[1] in ("latest", "candidate", "stable")
 
 
-def dict_to_tstr(deps: Dict[str, List[str]]) -> List[TStr]:
+def dict_to_tstr(
+    deps: Dict[str, List[str]]
+) -> List["metaflow_extensions.netflix_ext.plugins.conda.env_descr.TStr"]:
     from .env_descr import TStr  # Avoid circular import
 
     result = []  # type: List[TStr]
@@ -450,7 +455,9 @@ def dict_to_tstr(deps: Dict[str, List[str]]) -> List[TStr]:
     return result
 
 
-def tstr_to_dict(deps: List[TStr]) -> Dict[str, List[str]]:
+def tstr_to_dict(
+    deps: List["metaflow_extensions.netflix_ext.plugins.conda.env_descr.TStr"],
+) -> Dict[str, List[str]]:
     result = {}  # type: Dict[str, List[str]]
     for dep in deps:
         result.setdefault(dep.category, []).append(dep.value)
@@ -466,6 +473,10 @@ def split_into_dict(deps: List[str]) -> Dict[str, str]:
         else:
             result[s[0]] = s[1]
     return result
+
+
+def clean_up_double_equal(deps: Iterable[str]) -> List[str]:
+    return [_double_equal_match.sub("", d) for d in deps]
 
 
 def merge_dep_dicts(

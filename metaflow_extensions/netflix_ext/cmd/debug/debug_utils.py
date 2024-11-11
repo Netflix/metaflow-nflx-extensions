@@ -224,15 +224,19 @@ def _find_kernel_name(
 
     Returns
     -------
-    Optional[Tuple[str, str]]
-        The kernel name and the kernel's display name if found, None otherwise.
+    Optional[Tuple[str, str, str]]
+        The kernel name, kernel display name, and kernelspec path if found, None otherwise.
     """
     try:
         output = subprocess.check_output(["jupyter", "kernelspec", "list", "--json"])
         kernelspecs = json.loads(output)
         for kernel_name, kernel_spec in kernelspecs["kernelspecs"].items():
             if kernel_spec["spec"]["argv"][0] == python_executable:
-                return kernel_name, kernel_spec["spec"]["display_name"]
+                return (
+                    kernel_name,
+                    kernel_spec["spec"]["display_name"],
+                    kernel_spec["resource_dir"],
+                )
     except Exception as e:
         # Ignore the exception and return None as it is a best effort function
         print(f"Error finding kernel name: {traceback.format_exc()}")
