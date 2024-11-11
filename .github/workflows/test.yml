@@ -32,6 +32,8 @@ jobs:
             mamba-version: "mamba=1.5.10"
           - resolver: micromamba
             mamba-version: "mamba=1.5.10"
+          - python-version: "3.8"
+            mamba-version: "mamba=1.5.10"
     env:
       METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
       METAFLOW_CONDA_TEST: 1
