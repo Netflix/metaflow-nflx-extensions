@@ -39,5 +39,5 @@ setup(
         "metaflow_extensions.netflix_ext.plugins.conda.resources": ["*.png", "*.svg"]
     },
     python_requires=">=3.7.2",
-    install_requires=["metaflow>=2.12.29", "appdirs>=1.4.4,<2.0.0"],
+    install_requires=["metaflow>=2.12.29"],
 )

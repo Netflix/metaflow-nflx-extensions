@@ -12,6 +12,5 @@ dependencies:
   - conda
   - conda-lock
   - conda-package-handling
-  - appdirs
   - pip:
     - sh

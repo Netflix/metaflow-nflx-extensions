@@ -37,7 +37,6 @@ from typing import (
 )
 from urllib.parse import urlparse, urlunparse
 
-from appdirs import user_config_dir
 from requests.auth import AuthBase
 from urllib3 import Retry
 
@@ -1383,7 +1382,9 @@ class Conda(object):
             url = pkg_spec.url
             up = urlparse(url)
             if up.hostname == "conda.anaconda.org":
-                token = Path(f"{user_config_dir()}/binstar/https%3A%2F%2Fapi.anaconda.org.token")
+                token = Path(
+                    f"{os.path.expanduser('~')}/.continuum/anaconda-client/tokens/https%3A%2F%2Fapi.anaconda.org.token"
+                )
                 if token.exists():
                     url = urlunparse([*up[:2], f"/t/{token.read_text()}{up.path}", *up[3:]])
             try:
