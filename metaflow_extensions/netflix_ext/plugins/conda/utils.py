@@ -574,14 +574,14 @@ def normalize_to_underscore(name: str) -> str:
 
 def channel_from_url(url: str) -> Optional[str]:
     up = urlparse(url)
-    if up.hostname == "conda.anaconda.org":
+    if up.hostname == "conda.anaconda.org" and not up.path.startswith("/t/"):
         return up.path.split("/", 2)[1]
     return None
 
 
 def channel_or_url(url: str) -> str:
     up = urlparse(url)
-    if up.hostname == "conda.anaconda.org":
+    if up.hostname == "conda.anaconda.org" and not up.path.startswith("/t/"):
         return up.path.split("/", 2)[1]
     return url
 

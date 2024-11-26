@@ -18,6 +18,8 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
 from datetime import datetime
+from pathlib import Path
+from shutil import which
 from typing import (
     Any,
     Callable,
@@ -33,8 +35,9 @@ from typing import (
     Union,
     cast,
 )
-from shutil import which
+from urllib.parse import urlparse, urlunparse
 
+from appdirs import user_config_dir
 from requests.auth import AuthBase
 from urllib3 import Retry
 
@@ -1377,9 +1380,15 @@ class Conda(object):
                 "%s -> download %s to %s"
                 % (pkg_spec.filename, pkg_spec.url, local_path)
             )
+            url = pkg_spec.url
+            up = urlparse(url)
+            if up.hostname == "conda.anaconda.org":
+                token = Path(f"{user_config_dir()}/binstar/https%3A%2F%2Fapi.anaconda.org.token")
+                if token.exists():
+                    url = urlunparse([*up[:2], f"/t/{token.read_text()}{up.path}", *up[3:]])
             try:
                 with open(local_path, "wb") as f:
-                    with session.get(pkg_spec.url, stream=True, auth=auth_info) as r:
+                    with session.get(url, stream=True, auth=auth_info) as r:
                         r.raise_for_status()
                         for chunk in r.iter_content(chunk_size=None):
                             base_hash.update(chunk)

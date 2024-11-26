@@ -139,6 +139,7 @@ class CondaResolver(Resolver):
                     lnk["build_number"],
                 )
                 url, md5_hash = fetched_packages[k]
+                url = url.replace("/t/<TOKEN>", "")
                 if not url.startswith(lnk["base_url"]):
                     raise CondaException(
                         "Unexpected record for %s: %s" % (k, str(conda_result))
