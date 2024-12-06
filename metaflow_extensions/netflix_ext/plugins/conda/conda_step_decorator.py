@@ -465,7 +465,9 @@ class CondaEnvInternalDecorator(StepDecorator):
                 parent_ds = self._flow_datastore.get_task_datastore(
                     run_id, step_name, task_id
                 )
-                for var, _ in self._flow._get_parameters():
+                for var, param in self._flow._get_parameters():
+                    if param.IS_CONFIG_PARAMETER:
+                        continue
                     self._env_for_fetch[
                         "METAFLOW_INIT_%s" % var.upper().replace("-", "_")
                     ] = lambda _param=getattr(
