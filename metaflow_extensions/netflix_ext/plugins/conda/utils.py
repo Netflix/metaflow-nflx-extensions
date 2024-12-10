@@ -213,6 +213,10 @@ def get_sys_packages(
     result = {
         k: v for k, v in result.items() if k in CONDA_SYS_DEPENDENCIES and v is not None
     }
+    if "__cuda" in result and not result["__cuda"].endswith("=0"):
+        # Make things consistent so users can specify 12.2 and it is like 12.2=0
+        # (otherwise it sometimes causes re-resolution)
+        result["__cuda"] = result["__cuda"] + "=0"
     return result
 
 

@@ -36,13 +36,13 @@ from metaflow_extensions.netflix_ext.plugins.conda.env_descr import (
     ResolvedEnvironment,
     env_type_for_deps,
 )
-from metaflow_extensions.nflx.plugins.new_conda.envsresolver import EnvsResolver
+from metaflow_extensions.netflix_ext.plugins.conda.envsresolver import EnvsResolver
 
-from metaflow_extensions.nflx.plugins.new_conda.parsers import (
+from metaflow_extensions.netflix_ext.plugins.conda.parsers import (
     parse_req_value,
     parse_yml_value,
 )
-from metaflow_extensions.nflx.plugins.new_conda.utils import (
+from metaflow_extensions.netflix_ext.plugins.conda.utils import (
     AliasType,
     arch_id,
     channel_or_url,

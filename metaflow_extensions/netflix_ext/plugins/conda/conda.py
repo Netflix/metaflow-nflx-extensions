@@ -267,17 +267,36 @@ class Conda(object):
             raise InvalidEnvironmentException("Binary '%s' unknown" % binary)
         try:
             env = {"CONDA_JSON": "True"}
+            initial_command = args[0] if args else None
             if self._conda_executable_type == "mamba":
                 env.update({"MAMBA_NO_BANNER": "1", "MAMBA_JSON": "True"})
+            if (
+                self._mode == "local"
+                and CONDA_LOCAL_PATH
+                and (self.is_non_conda_exec or binary == "micromamba")
+            ):
+                # In this case, we need to prepend some options to the arguments
+                # to ensure that it uses CONDA_LOCAL_PATH and not the system one
+                args = [
+                    "--no-env",
+                    "--rc-file",
+                    os.path.join(CONDA_LOCAL_PATH, ".mambarc"),
+                    "-r",
+                    CONDA_LOCAL_PATH,
+                ] + args
+                if initial_command and initial_command not in ("package", "info"):
+                    args.append("--json")
+            elif (
+                (self._conda_executable_type == "micromamba" or binary == "micromamba")
+                and initial_command
+                and initial_command not in ("package", "info")
+            ):
+                # This is in the remote case.
+                args.extend(["-r", self.root_prefix, "--json"])
+
             if addl_env:
                 env.update(addl_env)
 
-            if (
-                args
-                and args[0] not in ("package", "info")
-                and (self.is_non_conda_exec or binary == "micromamba")
-            ):
-                args.extend(["-r", self.root_prefix, "--json"])
             debug.conda_exec("Conda call: %s" % str([self._bins[binary]] + args))
             return cast(
                 bytes,

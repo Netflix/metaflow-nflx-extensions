@@ -21,7 +21,12 @@ class DebugStubGenerator(object):
         self.run_id = self.task.parent.parent.id
         self.flow_name = self.task.parent.parent.parent.id
         self.is_new_conda_step = self.is_new_conda_step()
-        self.workflow_dag = self.task["_graph_info"].data
+
+        parameters_task = Step(
+            "%s/_parameters" % self.task.parent.pathspec, _namespace_check=False
+        ).task
+
+        self.workflow_dag = parameters_task["_graph_info"].data
         self.file_name = self.workflow_dag["file"]
         self._dag_structure = self.get_dag_structure(self.workflow_dag["steps"])
         self.step_type = self.get_step_type(self.step_name)
