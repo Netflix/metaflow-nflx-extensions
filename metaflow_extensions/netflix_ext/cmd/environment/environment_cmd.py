@@ -21,6 +21,7 @@ from metaflow.plugins import DATASTORES
 from metaflow.metaflow_config import (
     CONDA_ALL_ARCHS,
     CONDA_DEPENDENCY_RESOLVER,
+    CONDA_TEST,
     DEFAULT_DATASTORE,
     DEFAULT_METADATA,
     get_pinned_conda_libs,

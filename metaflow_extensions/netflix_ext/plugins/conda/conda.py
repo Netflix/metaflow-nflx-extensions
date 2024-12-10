@@ -2068,7 +2068,9 @@ class Conda(object):
                 self.is_non_conda_exec = True
         elif "mamba version" in self._info_no_lock:
             # Mamba 2.0+ has mamba version but no conda version
-            if parse_version(self._info_no_lock) < parse_version("2.0.0"):
+            if parse_version(self._info_no_lock["mamba version"]) < parse_version(
+                "2.0.0"
+            ):
                 return InvalidEnvironmentException(
                     self._install_message_for_resolver("mamba")
                 )
