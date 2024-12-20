@@ -23,7 +23,7 @@ class DebugStubGenerator(object):
         self.is_new_conda_step = self.is_new_conda_step()
 
         parameters_task = Step(
-            "%s/_parameters" % self.task.parent.pathspec, _namespace_check=False
+            "%s/_parameters" % self.task.parent.parent.pathspec, _namespace_check=False
         ).task
 
         self.workflow_dag = parameters_task["_graph_info"].data

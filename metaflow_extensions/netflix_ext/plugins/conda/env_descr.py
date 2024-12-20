@@ -760,7 +760,7 @@ class ResolvedEnvironment:
                 env_full_id = self._compute_hash(
                     [
                         "%s#%s" % (p.filename, p.pkg_hash(p.url_format))
-                        for p in all_packages
+                        for p in sorted(all_packages, key=lambda p: p.filename)
                     ]
                     + [arch or arch_id()]
                 )

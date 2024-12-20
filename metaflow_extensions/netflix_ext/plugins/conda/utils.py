@@ -101,7 +101,7 @@ else:
     CONDA_FORMATS = _ALL_CONDA_FORMATS  # type: Tuple[str, ...]
 FAKEURL_PATHCOMPONENT = "_fake"
 
-_double_equal_match = re.compile("==(?=[<=>!~])")
+_double_equal_match = re.compile(r"==(?=[<=>!~])")
 
 
 class CondaException(MetaflowException):

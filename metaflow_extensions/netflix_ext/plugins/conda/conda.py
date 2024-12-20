@@ -266,10 +266,13 @@ class Conda(object):
         if self._bins is None or self._bins[binary] is None:
             raise InvalidEnvironmentException("Binary '%s' unknown" % binary)
         try:
-            env = {"CONDA_JSON": "True"}
+            env = {}
+            if addl_env:
+                env.update(addl_env)
+            self._envars_for_conda_exec(env)
+
             initial_command = args[0] if args else None
-            if self._conda_executable_type == "mamba":
-                env.update({"MAMBA_NO_BANNER": "1", "MAMBA_JSON": "True"})
+
             if (
                 self._mode == "local"
                 and CONDA_LOCAL_PATH
@@ -278,7 +281,6 @@ class Conda(object):
                 # In this case, we need to prepend some options to the arguments
                 # to ensure that it uses CONDA_LOCAL_PATH and not the system one
                 args = [
-                    "--no-env",
                     "--rc-file",
                     os.path.join(CONDA_LOCAL_PATH, ".mambarc"),
                     "-r",
@@ -294,10 +296,10 @@ class Conda(object):
                 # This is in the remote case.
                 args.extend(["-r", self.root_prefix, "--json"])
 
-            if addl_env:
-                env.update(addl_env)
-
-            debug.conda_exec("Conda call: %s" % str([self._bins[binary]] + args))
+            debug.conda_exec(
+                "Conda call: %s (env: %s)"
+                % (str([self._bins[binary]] + args), str(env))
+            )
             return cast(
                 bytes,
                 subprocess.check_output(
@@ -353,6 +355,7 @@ class Conda(object):
             raise InvalidEnvironmentException("Binary '%s' unknown" % binary)
         if addl_env is None:
             addl_env = {}
+        self._envars_for_conda_exec(addl_env)
         try:
             debug.conda_exec("Binary call: %s" % str([binary] + args))
             return subprocess.check_output(
@@ -1835,8 +1838,18 @@ class Conda(object):
                         os.path.join(CONDA_LOCAL_PATH, "..", ".conda-install.lock")
                     ),
                 ):
+                    # This check here is in case someone else grabbed the lock first
+                    # and successfully installed the environment
                     if self._validate_conda_installation():
                         self._install_local_conda()
+
+                        # This last check is actually just to set the
+                        # self.is_non_conda_exec flag correctly. In the case of local
+                        # installed conda, the call itself is very fast so it should
+                        # not be significant to call it three times.
+                        err = self._validate_conda_installation()
+                        if err:
+                            raise err
         else:
             self._bins = {
                 self._conda_executable_type: which(self._conda_executable_type),
@@ -1950,9 +1963,9 @@ class Conda(object):
         # inside the current directory
         parent_dir = os.path.dirname(os.getcwd())
         if os.access(parent_dir, os.W_OK):
-            final_path = os.path.join(parent_dir, "conda_env", "__conda_installer")
+            final_path = os.path.join(parent_dir, "conda_env", "micromamba")
         else:
-            final_path = os.path.join(os.getcwd(), "conda_env", "__conda_installer")
+            final_path = os.path.join(os.getcwd(), "conda_env", "micromamba")
 
         if os.path.isfile(final_path):
             os.unlink(final_path)
@@ -2003,6 +2016,15 @@ class Conda(object):
                 return InvalidEnvironmentException(
                     "Missing special marker .metaflow-local-env in locally installed environment"
                 )
+            # We need to check if we need to set is_non_conda_exec
+            # Note that mamba < 2.0 has mamba_version in the info and not mamba version
+            self.is_non_conda_exec = (self._conda_executable_type == "micromamba") or (
+                self._conda_executable_type == "mamba"
+                and "mamba version" in self._info_no_lock
+            )
+            if self.is_non_conda_exec:
+                # Clear out the info so we can properly re-compute it next time
+                self._cached_info = None
             # We consider that locally installed environments are OK
             return None
 
@@ -2083,7 +2105,8 @@ class Conda(object):
                 return InvalidEnvironmentException(
                     self._install_message_for_resolver(self._conda_executable_type)
                 )
-            # TODO: We should check mamba version too
+        if self.is_non_conda_exec:
+            self._cached_info = None
 
         # TODO: Re-add support for micromamba server when it is actually out
         # Even if we have conda/mamba as the dependency solver, we can also possibly
@@ -2308,6 +2331,7 @@ class Conda(object):
                 self._cached_info["root_prefix"] = self._cached_info["base environment"]
                 self._cached_info["envs_dirs"] = self._cached_info["envs directories"]
                 self._cached_info["pkgs_dirs"] = self._cached_info["package cache"]
+            debug.conda_exec("Got info: %s" % str(self._cached_info))
 
         return self._cached_info
 
@@ -2406,9 +2430,10 @@ class Conda(object):
                                 % (p.filename, cache_info.url)
                             )
                             explicit_urls.append(
-                                "%s#%s\n"
+                                "%s#%s%s\n"
                                 % (
                                     self._make_urlstxt_from_cacheurl(cache_info.url),
+                                    "md5=" if self.is_non_conda_exec else "",
                                     cache_info.hash,
                                 )
                             )
@@ -2460,7 +2485,9 @@ class Conda(object):
                 # any file and letting things get compiled lazily. This may have the
                 # added benefit of a faster environment creation.
                 # This works with Micromamba and Mamba 2.0+.
-                args.append("--no-pyc")
+                args.extend(
+                    ["--no-pyc", "--safety-checks=disabled", "--no-extra-safety-checks"]
+                )
             args.extend(
                 [
                     "--name",
@@ -2496,6 +2523,12 @@ class Conda(object):
                         "install",
                         "--no-deps",
                         "--no-input",
+                        "--no-index",
+                        "--no-user",
+                        "--no-warn-script-location",
+                        "--no-cache-dir",
+                        "--root-user-action=ignore",
+                        "--disable-pip-version-check",
                     ]
                     if self.is_non_conda_exec:
                         # Be consistent with what we install with micromamba
@@ -2644,6 +2677,31 @@ class Conda(object):
             )
         else:
             return "Unknown resolver '%s'" % resolver
+
+    def _envars_for_conda_exec(self, env_vars: Dict[str, str]):
+        def _update_if_not_present(d: Dict[str, str]):
+            for k, v in d.items():
+                if k not in env_vars:
+                    env_vars[k] = v
+
+        # When running non-conda (mamba 2.0+ or micromamba) with CONDA_LOCAL_PATH, we
+        # need to set a few more environment variables to lock it down. Even in other
+        # cases, we also need to set certain environment variables
+        env_vars.update(
+            {"CONDA_JSON": "True", "MAMBA_JSON": "True", "MAMBA_NO_BANNER": "1"}
+        )
+        if CONDA_LOCAL_PATH and self._mode == "local":
+            _update_if_not_present({"MAMBA_ROOT_PREFIX": CONDA_LOCAL_PATH})
+            if self.is_non_conda_exec:
+                _update_if_not_present(
+                    {
+                        "CONDA_PKGS_DIRS": os.path.join(CONDA_LOCAL_PATH, "pkgs"),
+                        "CONDA_ENVS_DIRS": os.path.join(CONDA_LOCAL_PATH, "envs"),
+                    }
+                )
+        # Transfer to MAMBA prefix
+        if self.is_non_conda_exec and "CONDA_CHANNEL_PRIORITY" in env_vars:
+            env_vars["MAMBA_CHANNEL_PRIORITY"] = env_vars["CONDA_CHANNEL_PRIORITY"]
 
     def _start_micromamba_server(self):
         if not self._have_micromamba_server:
