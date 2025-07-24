@@ -32,7 +32,9 @@ setup(
     },
     author="Netflix Metaflow Developers",
     author_email="metaflow-dev@netflix.com",
-    packages=find_namespace_packages(include=["metaflow_extensions.*"]),
+    packages=find_namespace_packages(
+        include=["metaflow_extensions", "metaflow_extensions.*"]
+    ),
     py_modules=[
         "metaflow_extensions",
     ],
