@@ -88,7 +88,7 @@ class TStr:
         return self._value
 
     @value.setter
-    def value_setter(self, value: str):
+    def value(self, value: str):
         self._value = value
 
     def __str__(self):
@@ -279,6 +279,25 @@ class PypiCachePackage(CachePackage):
 
 
 class PackageSpecification:
+    """
+    Details about a package to be installed as part of a ResolvedEnvironment.
+
+    If using this class in user-code, use only the attributes specified below:
+
+    Attributes
+    ----------
+    filename : str
+        The filename of the package
+    package_name : str
+        The name of the package
+    package_version : str
+        The version of the package
+    package_detailed_version : str
+        The detailed version of the package
+    pkg_hashes : Iterable[Tuple[str, str]]
+        The hashes of the package (for various formats if applicable)
+    """
+
     TYPE = "invalid"
 
     _class_per_type = None  # type: Optional[Dict[str, Type[PackageSpecification]]]
@@ -726,6 +745,12 @@ class PypiPackageSpecification(PackageSpecification):
 
 
 class ResolvedEnvironment:
+    """
+    A resolved environment fully describes a Conda/Pypi/Mixed environment including
+    the initial dependencies that led to this environment as well as all the transitive
+    dependencies.
+    """
+
     def __init__(
         self,
         user_dependencies: Dict[str, List[str]],
@@ -760,7 +785,7 @@ class ResolvedEnvironment:
                 env_full_id = self._compute_hash(
                     [
                         "%s#%s" % (p.filename, p.pkg_hash(p.url_format))
-                        for p in all_packages
+                        for p in sorted(all_packages, key=lambda p: p.filename)
                     ]
                     + [arch or arch_id()]
                 )
@@ -790,18 +815,17 @@ class ResolvedEnvironment:
             extra_args = {}
         return ResolvedEnvironment._compute_hash(
             chain(
-                *(
-                    map(lambda x, c=c: str(TStr(c, x)), sorted(deps[c]))
-                    for c in sorted(deps)
-                ),
-                *(
-                    map(lambda x, c=c: str(TStr(c, x)), sorted(sources[c]))
+                (str(TStr(c, pkg)) for c in sorted(deps) for pkg in sorted(deps[c])),
+                (
+                    str(TStr(c, pkg))
                     for c in sorted(sources)
+                    for pkg in sorted(sources[c])
                 ),
-                *(
-                    map(lambda x, c=c: str(TStr(c, x)), sorted(extra_args[c]))
+                (
+                    str(TStr(c, arg))
                     for c in sorted(extra_args)
-                )
+                    for arg in sorted(extra_args[c])
+                ),
             )
         )
 
@@ -833,18 +857,54 @@ class ResolvedEnvironment:
 
     @property
     def deps(self) -> List[TStr]:
+        """
+        Returns the user-requested dependencies for this environment.
+
+        Returns
+        -------
+        List[TStr]
+            List of user requested dependencies. Each dependency will indicate if it
+            is from the pypi ecosystem or conda one.
+        """
         return self._user_dependencies
 
     @property
     def sources(self) -> List[TStr]:
+        """
+        Returns the user-requested sources to use for this environment. In the
+        Conda ecosystem, these are the channels and in the Pypi ecosystem, these
+        are repository URLs.
+
+        Returns
+        -------
+        List[TStr]
+            List of user requested sources.
+        """
         return self._user_sources
 
     @property
     def extras(self) -> List[TStr]:
+        """
+        List any user-requested "extras". This is currently only applicable for the Pypi
+        ecosystem.
+
+        Returns
+        -------
+        List[TStr]
+            List of user requested extras.
+        """
         return self._user_extra_args
 
     @property
     def env_id(self) -> EnvID:
+        """
+        Returns the full environment ID for this environment.
+
+        Returns
+        -------
+        EnvID
+            Unique identifier for this environment.
+        """
         if self._env_id.full_id in ("_default", "_unresolved") and self._all_packages:
             all_packages = sorted(self._all_packages, key=lambda p: p.filename)
             env_full_id = self._compute_hash(
@@ -855,6 +915,16 @@ class ResolvedEnvironment:
 
     @property
     def packages(self) -> Iterable[PackageSpecification]:
+        """
+        Returns the full list of packages that will be installed for this environment.
+        The order of the packages returned will be the order in which they will
+        be installed.
+
+        Yields
+        ------
+        Iterator[PackageSpecification]
+            Packages that will be installed.
+        """
         # This returns the packages in the order in which they were added which
         # corresponds to the installation order. In some cases, the installation order
         # matters so we make sure to preserve it.
@@ -863,18 +933,53 @@ class ResolvedEnvironment:
 
     @property
     def resolved_on(self) -> datetime:
+        """
+        Returns the data and time on which this environment was resolved.
+
+        Returns
+        -------
+        datetime
+            Date/time on which this environment was resolved.
+        """
         return self._resolved_on
 
     @property
     def resolved_by(self) -> str:
+        """
+        Returns the user who triggered the resolution of this environment.
+
+        Returns
+        -------
+        str
+            Username who triggered the resolution of this environment.
+        """
         return self._resolved_by
 
     @property
     def co_resolved_archs(self) -> List[str]:
+        """
+        Lists all the architectures for which this environment was resolved.
+
+        Note that there is *no* guarantee that the environments are identical. They
+        are *likely* identical as they were resolved at the same time.
+
+        Returns
+        -------
+        List[str]
+            Architectures for which this environment was simultaneously resolved.
+        """
         return self._co_resolved
 
     @property
     def env_type(self) -> EnvType:
+        """
+        Type of the environment. One of "conda", "pypi" or "mixed".
+
+        Returns
+        -------
+        EnvType
+            Environment type.
+        """
         return self._env_type
 
     @property
@@ -1065,6 +1170,16 @@ class ResolvedEnvironment:
         return all([pkg.is_cached(formats.get(pkg.TYPE, [])) for pkg in self.packages])
 
     def to_dict(self) -> Dict[str, Any]:
+        """
+        Returns a dictionary representation of this environment.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary representation of this environment. Note that the environent
+            ID is not stored so needs to be stored separately if `from_dict` needs
+            to be used later.
+        """
         return {
             "deps": [str(x) for x in self._user_dependencies],
             "sources": [str(x) for x in self._user_sources],
@@ -1082,7 +1197,23 @@ class ResolvedEnvironment:
         cls,
         env_id: EnvID,
         d: Mapping[str, Any],
-    ):
+    ) -> "ResolvedEnvironment":
+        """
+        Creates a ResolvedEnvironment from a representation dumped by `to_dict` and
+        an environment ID.
+
+        Parameters
+        ----------
+        env_id : EnvID
+            Environment ID for this environment.
+        d : Mapping[str, Any]
+            Representation for this environment (dumped with `to_dict`).
+
+        Returns
+        -------
+        ResolvedEnvironment
+            A resolved environment.
+        """
         all_packages = [PackageSpecification.from_dict(pd) for pd in d["packages"]]
         env_type = EnvType(d.get("env_type", EnvType.MIXED.value))
         # Backward compatible aliasing
@@ -1108,19 +1239,161 @@ class ResolvedEnvironment:
         return sha1(b" ".join([s.encode("ascii") for s in inputs])).hexdigest()
 
 
+class MetaflowResolvedEnvironment:
+    """
+    Resolved Metaflow environment.
+    """
+
+    def __init__(self, env: ResolvedEnvironment):
+        self._resolved_env = env
+
+    @property
+    def deps(self) -> List[TStr]:
+        """
+        Returns the user-requested dependencies for this environment.
+
+        Returns
+        -------
+        List[TStr]
+            List of user requested dependencies. Each dependency will indicate if it
+            is from the pypi ecosystem or conda one.
+        """
+        return self._resolved_env.deps
+
+    @property
+    def sources(self) -> List[TStr]:
+        """
+        Returns the user-requested sources to use for this environment. In the
+        Conda ecosystem, these are the channels and in the Pypi ecosystem, these
+        are repository URLs.
+
+        Returns
+        -------
+        List[TStr]
+            List of user requested sources.
+        """
+        return self._resolved_env.sources
+
+    @property
+    def extras(self) -> List[TStr]:
+        """
+        List any user-requested "extras". This is currently only applicable for the Pypi
+        ecosystem.
+
+        Returns
+        -------
+        List[TStr]
+            List of user requested extras.
+        """
+        return self._resolved_env.extras
+
+    @property
+    def env_id(self) -> EnvID:
+        """
+        Returns the full environment ID for this environment.
+
+        Returns
+        -------
+        EnvID
+            Unique identifier for this environment.
+        """
+        return self._resolved_env.env_id
+
+    @property
+    def packages(self) -> Iterable[PackageSpecification]:
+        """
+        Returns the full list of packages that will be installed for this environment.
+        The order of the packages returned will be the order in which they will
+        be installed.
+
+        Yields
+        ------
+        Iterator[PackageSpecification]
+            Packages that will be installed.
+        """
+        for p in self._resolved_env.packages:
+            yield p
+
+    @property
+    def resolved_on(self) -> datetime:
+        """
+        Returns the data and time on which this environment was resolved.
+
+        Returns
+        -------
+        datetime
+            Date/time on which this environment was resolved.
+        """
+        return self._resolved_env.resolved_on
+
+    @property
+    def resolved_by(self) -> str:
+        """
+        Returns the user who triggered the resolution of this environment.
+
+        Returns
+        -------
+        str
+            Username who triggered the resolution of this environment.
+        """
+        return self._resolved_env.resolved_by
+
+    @property
+    def co_resolved_archs(self) -> List[str]:
+        """
+        Lists all the architectures for which this environment was resolved.
+
+        Note that there is *no* guarantee that the environments are identical. They
+        are *likely* identical as they were resolved at the same time.
+
+        Returns
+        -------
+        List[str]
+            Architectures for which this environment was simultaneously resolved.
+        """
+        return self._resolved_env.co_resolved_archs
+
+    @property
+    def env_type(self) -> EnvType:
+        """
+        Type of the environment. One of "conda", "pypi" or "mixed".
+
+        Returns
+        -------
+        EnvType
+            Environment type.
+        """
+        return self._resolved_env.env_type
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Returns a dictionary representation of this environment.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary representation of this environment. Note that the environent
+            ID is not stored so needs to be stored separately if `from_dict` needs
+            to be used later.
+        """
+        return self._resolved_env.to_dict()
+
+
 class CachedEnvironmentInfo:
     def __init__(
         self,
         version: int = 1,
-        step_mappings: Optional[Dict[str, Tuple[str, str]]] = None,
-        env_mutable_aliases: Optional[Dict[str, Tuple[str, str]]] = None,
-        env_aliases: Optional[Dict[str, Tuple[str, str]]] = None,
+        step_mappings: Optional[Dict[str, Tuple[Optional[str], ...]]] = None,
+        env_mutable_aliases: Optional[Dict[str, Tuple[str, ...]]] = None,
+        env_aliases: Optional[Dict[str, Tuple[str, ...]]] = None,
         resolved_environments: Optional[
             Dict[str, Dict[str, Dict[str, Union[ResolvedEnvironment, str]]]]
         ] = None,
     ):
         self._version = version
-        self._step_mappings = step_mappings if step_mappings else {}
+        self._step_mappings: Dict[str, Tuple[Optional[str], ...]] = (
+            step_mappings if step_mappings else {}
+        )
         self._env_mutable_aliases = env_mutable_aliases if env_mutable_aliases else {}
         self._env_aliases = env_aliases if env_aliases else {}
         self._resolved_environments = (
@@ -1234,6 +1507,8 @@ class CachedEnvironmentInfo:
     def env_id_for_alias(
         self, alias_type: AliasType, resolved_alias: str, arch: Optional[str] = None
     ) -> Optional[EnvID]:
+        req_id: Optional[str]
+        full_id: Optional[str]
         if alias_type == AliasType.REQ_FULL_ID:
             req_id, full_id = resolved_alias.rsplit(":", 1)
         elif alias_type == AliasType.PATHSPEC:
@@ -1258,6 +1533,7 @@ class CachedEnvironmentInfo:
         env_id = self.env_id_for_alias(alias_type, resolved_alias, arch)
         if env_id:
             return self.env_for(resolved_alias[0], resolved_alias[1], arch)
+        return None
 
     def aliases_for_env(self, env_id: EnvID) -> Tuple[List[str], List[str]]:
         # Returns immutable and mutable aliases
@@ -1308,11 +1584,11 @@ class CachedEnvironmentInfo:
             "mutable_aliases": self._env_mutable_aliases,
             "aliases": self._env_aliases,
         }  # type: Dict[str, Any]
-        resolved_envs = {}
+        resolved_envs: Dict[str, Dict[str, Dict[str, Any]]] = {}
         for arch, per_arch_envs in self._resolved_environments.items():
             per_arch_resolved_env = {}
             for req_id, per_req_id_envs in per_arch_envs.items():
-                per_req_id_resolved_env = {}
+                per_req_id_resolved_env: Dict[str, Any] = {}
                 for full_id, env in per_req_id_envs.items():
                     if isinstance(env, ResolvedEnvironment):
                         per_req_id_resolved_env[full_id] = env.to_dict()
@@ -1333,11 +1609,13 @@ class CachedEnvironmentInfo:
         if version != 1:
             raise ValueError("Wrong version information for CachedInformationInfo")
 
-        step_mappings = d.get("mappings", {})  # type: Dict[str, Tuple[str, str]]
-        aliases = d.get("aliases", {})  # type: Dict[str, Tuple[str, str]]
+        step_mappings = d.get(
+            "mappings", {}
+        )  # type: Dict[str, Tuple[Optional[str], ...]]
+        aliases = d.get("aliases", {})  # type: Dict[str, Tuple[str, ...]]
         mutable_aliases = d.get(
             "mutable_aliases", {}
-        )  # type: Dict[str, Tuple[str, str]]
+        )  # type: Dict[str, Tuple[str, ...]]
 
         for k, v in step_mappings.items():
             step_mappings[k] = tuple(v)

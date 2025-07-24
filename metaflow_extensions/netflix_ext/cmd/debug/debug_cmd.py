@@ -1,16 +1,15 @@
 import os
 import json
-import tarfile
-import datetime
 
-from metaflow import namespace, Flow, Run, Step, Task
+from metaflow import Flow, Run, Step, Task
 from metaflow._vendor import click
-from typing import Any, Dict, Optional, Union
+from typing import Any, Optional, Union
 from metaflow.exception import CommandException
 from metaflow.cli import echo_dev_null, echo_always
+from metaflow.packaging_sys import MetaflowCodeContent
+from .constants import Constants
 from .debug_script_generator import DebugScriptGenerator
 from .debug_utils import (
-    fetch_environment_type,
     copy_stub_generator_to_metaflow_root_dir,
     _set_python_environment,
     _extract_code_package,
@@ -277,7 +276,8 @@ def _generate_debug_scripts(
     os.makedirs(metaflow_root_dir, exist_ok=True)
     python_executable = python_executable.strip() if python_executable else None
     flow_name = task_pathspec.split("/")[0]
-    debug_file_name = task_pathspec.replace("/", "_").replace("-", "_") + "_debug.py"
+    translation_table = str.maketrans("/.-+=", "_____")
+    debug_file_name = task_pathspec.translate(translation_table) + "_debug.py"
     debug_script_generator = DebugScriptGenerator(task_pathspec, inspect)
     script = debug_script_generator.generate_debug_script(metaflow_root_dir, flow_name)
     debug_script_generator.write_debug_script(
@@ -301,7 +301,8 @@ def _generate_debug_scripts(
         debug_script_generator.write_debug_notebook(metaflow_root_dir, notebook_json)
 
     obj.echo(
-        f"Debug scripts and notebook generated at {metaflow_root_dir}",
+        f"Debug scripts and notebook generated at {metaflow_root_dir}; "
+        f"launch {Constants.DEBUG_SCRIPT_NAME} to debug the task",
         fg="green",
         bold=True,
     )
@@ -313,7 +314,9 @@ def _generate_debug_scripts(
 
 def _update_kernel_pythonpath(kernelspec_path, metaflow_root_dir):
     """
-    Updates the kernelspec with the escape trampolines added to the PYTHONPATH.
+    Updates the kernelspec with the escape trampolines added to the PYTHONPATH
+    as well as any other environment variables that may be needed by the
+    version of Metaflow installed.
 
     Parameters
     ----------
@@ -329,5 +332,18 @@ def _update_kernel_pythonpath(kernelspec_path, metaflow_root_dir):
     _ = kernel_json.setdefault("env", {})["PYTHONPATH"] = os.path.abspath(
         os.path.join(metaflow_root_dir, "_escape_trampolines")
     )
+
+    for key, value in MetaflowCodeContent.get_env_vars_for_packaged_metaflow(
+        metaflow_root_dir
+    ).items():
+        if key.endswith(":"):
+            # If the key ends with a colon, we override the existing value
+            kernel_json["env"][key[:-1]] = value
+        elif key not in kernel_json["env"]:
+            kernel_json["env"][key] = value
+        else:
+            # If the key already exists, we prepend the value to the existing one
+            kernel_json["env"][key] = f"{value}:{kernel_json['env'][key]}"
+
     with open(kernel_json_path, "w") as f:
         json.dump(kernel_json, f, indent=4)

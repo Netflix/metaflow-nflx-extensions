@@ -336,7 +336,7 @@ class DebugScriptGenerator(object):
             The name of the debug notebook.
         """
         # We then write out the notebook JSON
-        debug_notebook_name = "00_DEBUG_ME.ipynb"
+        debug_notebook_name = Constants.DEBUG_SCRIPT_NAME
         debug_notebook_path = os.path.join(metaflow_root_dir, debug_notebook_name)
         with open(debug_notebook_path, "w") as f:
             json.dump(notebook_json, f, indent=4)

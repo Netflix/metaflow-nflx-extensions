@@ -53,7 +53,9 @@ CONDA_DEPENDENCY_RESOLVER = from_conf(
 # For pure PYPI environments, if you want to support those, set to the pypi resolver.
 # Set to "none" if you do not want to support this functionality.
 CONDA_PYPI_DEPENDENCY_RESOLVER = from_conf(
-    "CONDA_PYPI_DEPENDENCY_RESOLVER", "pip", get_validate_choice_fn(["pip", "none"])
+    "CONDA_PYPI_DEPENDENCY_RESOLVER",
+    "uv",
+    get_validate_choice_fn(["pip", "uv", "none"]),
 )
 
 # For mixed conda/pypi environments, if you want to support those, set this to 'conda-lock'
@@ -65,7 +67,7 @@ CONDA_MIXED_DEPENDENCY_RESOLVER = from_conf(
 )
 
 # Timeout trying to acquire the lock to create environments
-CONDA_LOCK_TIMEOUT = from_conf("CONDA_LOCK_TIMEOUT", 300)
+CONDA_LOCK_TIMEOUT = from_conf("CONDA_LOCK_TIMEOUT", 3600)
 
 # Location within CONDA_<DS>ROOT of the packages directory
 CONDA_PACKAGES_DIRNAME = from_conf("CONDA_PACKAGES_DIRNAME", "packages")

@@ -1,1 +1,1 @@
-netflixext_version = "1.2.3"
+netflixext_version = "1.3.0"

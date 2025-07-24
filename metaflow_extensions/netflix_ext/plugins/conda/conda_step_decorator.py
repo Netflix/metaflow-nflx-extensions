@@ -19,9 +19,7 @@ from typing import (
 
 from metaflow.datastore.flow_datastore import FlowDataStore
 from metaflow.datastore.task_datastore import TaskDataStore
-from metaflow.debug import debug
 from metaflow.decorators import StepDecorator
-from metaflow.extension_support import EXT_PKG
 from metaflow.flowspec import FlowSpec
 from metaflow.graph import FlowGraph
 from metaflow.metadata_provider import MetaDatum, MetadataProvider
@@ -30,9 +28,10 @@ from metaflow.metaflow_environment import (
     InvalidEnvironmentException,
     MetaflowEnvironment,
 )
+
+from metaflow.packaging_sys import ContentType
 from metaflow.plugins.env_escape import generate_trampolines
-from metaflow.unbounded_foreach import UBF_CONTROL, UBF_TASK
-from metaflow.util import get_metaflow_root
+from metaflow.unbounded_foreach import UBF_TASK
 
 from .conda_environment import CondaEnvironment
 from .env_descr import EnvID
@@ -355,6 +354,9 @@ class CondaEnvInternalDecorator(StepDecorator):
     conda = None  # type: Optional[Conda]
     _local_root = None  # type: Optional[str]
 
+    _metaflow_home = None  # type: Optional[str]
+    _addl_env_vars = None  # type: Optional[Dict[str, str]]
+
     def step_init(
         self,
         flow: FlowSpec,
@@ -381,64 +383,25 @@ class CondaEnvInternalDecorator(StepDecorator):
         os.environ["PYTHONNOUSERSITE"] = "1"
 
     def runtime_init(self, flow: FlowSpec, graph: FlowGraph, package: Any, run_id: str):
-        # Create a symlink to installed version of metaflow to execute user code against
-        path_to_metaflow = os.path.join(get_metaflow_root(), "metaflow")
-        path_to_info = os.path.join(get_metaflow_root(), "INFO")
-        self._metaflow_home = tempfile.mkdtemp(dir="/tmp")
-        self._addl_paths = None  # type: Optional[List[str]]
-        os.symlink(path_to_metaflow, os.path.join(self._metaflow_home, "metaflow"))
 
-        # Symlink the INFO file as well to properly propagate down the Metaflow version
-        # if launching on AWS Batch for example
-        if os.path.isfile(path_to_info):
-            os.symlink(path_to_info, os.path.join(self._metaflow_home, "INFO"))
-        else:
-            # If there is no "INFO" file, we will actually create one in this new
-            # place because we won't be able to properly resolve the EXT_PKG extensions
-            # the same way as outside conda (looking at distributions, etc). In a
-            # Conda environment, as shown below (where we set self._addl_paths), all
-            # EXT_PKG extensions are PYTHONPATH extensions. Instead of re-resolving,
-            # we use the resolved information that is written out to the INFO file.
-            with open(
-                os.path.join(self._metaflow_home, "INFO"), mode="wt", encoding="utf-8"
-            ) as f:
-                f.write(
-                    json.dumps(self._env.get_environment_info(include_ext_info=True))
-                )
+        if self.__class__._metaflow_home is None:
+            # Do this ONCE per flow (thus class variable)
+            # Create a symlink to installed version of metaflow to execute user code against
+            self.__class__._metaflow_home = tempfile.mkdtemp(dir="/tmp")
+            package.extract_into(
+                self.__class__._metaflow_home,
+                ContentType.CODE_CONTENT.value
+                | ContentType.MODULE_CONTENT.value
+                | ContentType.OTHER_CONTENT.value,
+            )
 
-        # Do the same for EXT_PKG
-        try:
-            m = importlib.import_module(EXT_PKG)
-        except ImportError:
-            # No additional check needed because if we are here, we already checked
-            # for other issues when loading at the toplevel
-            pass
-        else:
-            custom_paths = list(set(m.__path__))  # For some reason, at times, unique
-            # paths appear multiple times. We simplify
-            # to avoid un-necessary links
+            self.__class__._addl_env_vars = package.get_post_extract_env_vars(
+                package.package_metadata, self.__class__._metaflow_home
+            )
 
-            if len(custom_paths) == 1:
-                # Regular package; we take a quick shortcut here
-                os.symlink(
-                    custom_paths[0],
-                    os.path.join(self._metaflow_home, EXT_PKG),
-                )
-            else:
-                # This is a namespace package, we therefore create a bunch of directories
-                # so we can symlink in those separately and we will add those paths
-                # to the PYTHONPATH for the interpreter. Note that we don't symlink
-                # to the parent of the package because that could end up including
-                # more stuff we don't want
-                self._addl_paths = []
-                for p in custom_paths:
-                    temp_dir = tempfile.mkdtemp(dir=self._metaflow_home)
-                    os.symlink(p, os.path.join(temp_dir, EXT_PKG))
-                    self._addl_paths.append(temp_dir)
-
-        # Also install any environment escape overrides directly here to enable
-        # the escape to work even in non metaflow-created subprocesses
-        generate_trampolines(self._metaflow_home)
+            # Also install any environment escape overrides directly here to enable
+            # the escape to work even in non metaflow-created subprocesses
+            generate_trampolines(self.__class__._metaflow_home)
 
         # If we need to fetch the environment on exec, save the information we need
         # so that we can resolve it using information such as run id, step name, task
@@ -465,7 +428,9 @@ class CondaEnvInternalDecorator(StepDecorator):
                 parent_ds = self._flow_datastore.get_task_datastore(
                     run_id, step_name, task_id
                 )
-                for var, _ in self._flow._get_parameters():
+                for var, param in self._flow._get_parameters():
+                    if param.IS_CONFIG_PARAMETER:
+                        continue
                     self._env_for_fetch[
                         "METAFLOW_INIT_%s" % var.upper().replace("-", "_")
                     ] = lambda _param=getattr(
@@ -547,12 +512,17 @@ class CondaEnvInternalDecorator(StepDecorator):
                 raise InvalidEnvironmentException("Cannot create environment")
 
         # Actually set it up.
-        python_path = self._metaflow_home
-        if self._addl_paths is not None:
-            addl_paths = os.pathsep.join(self._addl_paths)
-            python_path = os.pathsep.join([addl_paths, python_path])
-
-        cli_args.env["PYTHONPATH"] = python_path
+        python_path = self.__class__._metaflow_home
+        addl_env_vars = {}
+        if self.__class__._addl_env_vars:
+            for key, value in self.__class__._addl_env_vars.items():
+                if key.endswith(":"):
+                    addl_env_vars[key[:-1]] = value
+                elif key == "PYTHONPATH":
+                    addl_env_vars[key] = os.pathsep.join([value, python_path])
+                else:
+                    addl_env_vars[key] = value
+        cli_args.env.update(addl_env_vars)
 
         if entrypoint is None:
             # This should never happen -- it means the environment was not
@@ -612,7 +582,10 @@ class CondaEnvInternalDecorator(StepDecorator):
             )
 
     def runtime_finished(self, exception: Exception):
-        shutil.rmtree(self._metaflow_home)
+        pass
+        # if self.__class__._metaflow_home is not None:
+        #     shutil.rmtree(self.__class__._metaflow_home)
+        #     self.__class__._metaflow_home = None
 
     def _is_enabled(self, ubf_context: str = UBF_TASK) -> bool:
         return CondaEnvironment.enabled_for_step(self._step_name, ubf_context)
