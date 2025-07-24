@@ -52,7 +52,7 @@ jobs:
           condarc: |
             channels:
               - conda-forge
-            channel_alias: https://prefix.dev/channels
+            channel_alias: https://prefix.dev
           create-args: >-
             python=${{ matrix.python-version }}
             ${{ matrix.mamba-version }}
