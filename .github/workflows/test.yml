@@ -34,6 +34,8 @@ jobs:
             mamba-version: "mamba=1.5.10"
           - python-version: "3.8"
             mamba-version: "mamba=1.5.10"
+          - python-version: "3.13"
+            mamba-version: "mamba=1.5.10"
     env:
       METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
       METAFLOW_CONDA_TEST: 1
@@ -46,10 +48,13 @@ jobs:
           micromamba-version: ${{ matrix.micromamba-version }}
           environment-file: dev-env.yml
           init-shell: bash
+          condarc: |
+            channels:
+              - conda-forge
+            channel_alias: https://prefix.dev/channels
           create-args: >-
             python=${{ matrix.python-version }}
             ${{ matrix.mamba-version }}
-
       - name: install nflx-extension
         shell: bash -eo pipefail -l {0}
         run: |
