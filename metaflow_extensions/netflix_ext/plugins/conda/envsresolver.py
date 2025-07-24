@@ -60,7 +60,7 @@ from .utils import (
 
 
 class EnvsResolver(object):
-    def __init__(self, conda: Conda):
+    def __init__(self, conda: "Conda"):
         # key: EnvID; value: dict containing:
         #  - "id": key
         #  - "steps": steps using this environment

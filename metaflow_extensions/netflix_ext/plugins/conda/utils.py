@@ -51,6 +51,8 @@ from metaflow.metaflow_config import CONDA_SYS_DEFAULT_GPU_PACKAGES  # type: ign
 from metaflow.metaflow_config import CONDA_SYS_DEFAULT_PACKAGES  # type: ignore
 from metaflow.metaflow_config import CONDA_SYS_DEPENDENCIES  # type: ignore
 from metaflow.metaflow_environment import InvalidEnvironmentException
+from requests import PreparedRequest
+from requests.auth import AuthBase, HTTPBasicAuth
 
 if TYPE_CHECKING:
     import metaflow_extensions.netflix_ext.plugins.conda.env_descr
