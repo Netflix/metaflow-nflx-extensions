@@ -251,7 +251,7 @@ class CondaLockResolver(Resolver):
                     # Strip out build as it seems to be causing some issues with
                     # some versions of conda-lock when it extracts the GLIBC version.
                     lines.extend(
-                        '      %s: "%s"\n' % (virt_pkg, virt_build_str.split("=", 1)[0])
+                        '      %s: "%s"\n' % (virt_pkg, virt_build_str.split("=")[0])
                         for virt_pkg, virt_build_str in self._conda.virtual_packages.items()
                         if virt_pkg not in sys_overrides
                     )
