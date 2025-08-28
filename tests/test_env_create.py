@@ -7,6 +7,8 @@ import shutil
 import sh
 
 
+python_tuple = (sys.version_info.major, sys.version_info.minor)
+
 my_dir = os.path.dirname(os.path.abspath(__file__))
 
 all_tests = []
@@ -27,6 +29,8 @@ with os.scandir(os.path.join(my_dir, "environments")) as it:
                 flag = "-f"
             else:
                 flag = "-r"
+            if entry.name.startswith("conda_lock_prio") and python_tuple == (3, 8):
+                continue  # Skip this test which does not resolve on 3.8
             if entry.name.startswith("no_python_"):
                 python_versions = ["file"]
             elif entry.name.startswith("pip-version"):
