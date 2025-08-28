@@ -365,7 +365,7 @@ def parse_explicit_url_pypi(url: str) -> ParseExplicitResult:
 
     url_clean, temp_url_hash = url.rsplit("#", 1)
     url_hash: Optional[str] = temp_url_hash
-    
+
     if url_hash:
         if not url_hash.startswith("sha256="):
             raise CondaException("URL '%s' has a SHA type which is not supported" % url)
