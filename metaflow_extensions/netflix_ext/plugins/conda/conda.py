@@ -47,6 +47,7 @@ from metaflow.debug import debug
 from metaflow.exception import MetaflowException, MetaflowNotFound
 from metaflow.metaflow_config import (
     CONDA_DEPENDENCY_RESOLVER,
+    CONDA_HACK_CHANNEL_ALIAS,
     CONDA_PYPI_DEPENDENCY_RESOLVER,
     CONDA_LOCAL_DIST_DIRNAME,
     CONDA_LOCAL_DIST,
@@ -2429,21 +2430,29 @@ class Conda(object):
                         "For %s, using local Conda directory at '%s'"
                         % (p.filename, local_dir)
                     )
-                    with open(
-                        os.path.join(local_dir, "info", "repodata_record.json"),
-                        mode="r",
-                        encoding="utf-8",
-                    ) as fh2:
-                        info = json.load(fh2)
-                        # Some packages don't have a repodata_record.json with url so
-                        # we will download again
-                        if "url" in info and "md5" in info:
-                            explicit_urls.append("%s#%s\n" % (info["url"], info["md5"]))
-                            found_local_dir = True
-                        else:
-                            debug.conda_exec(
-                                "Skipping local directory as no URL information"
-                            )
+                    try:
+                        with open(
+                            os.path.join(local_dir, "info", "repodata_record.json"),
+                            mode="r",
+                            encoding="utf-8",
+                        ) as fh2:
+                            info = json.load(fh2)
+                            # Some packages don't have a repodata_record.json with url so
+                            # we will download again
+                            if "url" in info and "md5" in info:
+                                explicit_urls.append(
+                                    "%s#%s\n" % (info["url"], info["md5"])
+                                )
+                                found_local_dir = True
+                            else:
+                                debug.conda_exec(
+                                    "Skipping local directory as no URL information"
+                                )
+                    except (IOError, json.JSONDecodeError) as e:
+                        debug.conda_exec(
+                            "Skipping local directory %s as it is not usable: %s"
+                            % (local_dir, e)
+                        )
 
                 if not found_local_dir:
                     for f in CONDA_FORMATS:
@@ -2467,9 +2476,20 @@ class Conda(object):
                             "For %s, using package from '%s'" % (p.filename, p.url)
                         )
                         # Here we don't have any cache format so we just use the base URL
-                        explicit_urls.append(
-                            "%s#%s\n" % (p.url, p.pkg_hash(p.url_format))
-                        )
+                        if CONDA_HACK_CHANNEL_ALIAS:
+                            explicit_urls.append(
+                                "%s#%s\n"
+                                % (
+                                    p.url.replace(
+                                        CONDA_HACK_CHANNEL_ALIAS, "conda.anaconda.org"
+                                    ),
+                                    p.pkg_hash(p.url_format),
+                                )
+                            )
+                        else:
+                            explicit_urls.append(
+                                "%s#%s\n" % (p.url, p.pkg_hash(p.url_format))
+                            )
             else:
                 raise CondaException(
                     "Package of type %s is not supported in Conda environments" % p.TYPE
@@ -2503,6 +2523,7 @@ class Conda(object):
                 "--offline",
                 "--no-deps",
             ]
+            shutil.copy(explicit_list.name, "/tmp/explicit_list.txt")
             if self.is_non_conda_exec:
                 # Micromamba (some version) seems to have a bug when compiling .py files. In some
                 # circumstances, it just hangs forever. We avoid this by not compiling
@@ -2696,7 +2717,11 @@ class Conda(object):
             start_idx = 0
             while splits[start_idx] != "conda":
                 start_idx += 1
-            return "https://" + "/".join(splits[start_idx + 1 : -3])
+
+            url = "https://" + "/".join(splits[start_idx + 1 : -3])
+            if CONDA_HACK_CHANNEL_ALIAS:
+                url.replace(CONDA_HACK_CHANNEL_ALIAS, "conda.anaconda.org")
+            return url
 
     @staticmethod
     def _env_directory_from_envid(env_id: EnvID) -> str:

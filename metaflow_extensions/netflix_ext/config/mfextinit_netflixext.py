@@ -11,6 +11,15 @@ from metaflow.metaflow_config_funcs import from_conf, get_validate_choice_fn
 # Set to true if running the tests with a local datastore
 CONDA_TEST = from_conf("CONDA_TEST", False)
 
+# HACK -- work around an issue with micromamba where using a channel_alias
+# causes the packages to be considered invalid (URL verification). This
+# value should be set to the channel_alias prefix that will be replaced by
+# conda.anaconda.org. You should most likely not need this.
+CONDA_HACK_CHANNEL_ALIAS = from_conf(
+    "CONDA_HACK_CHANNEL_ALIAS",
+    None,
+)
+
 CONDA_S3ROOT = from_conf(
     "CONDA_S3ROOT",
     os.path.join(DATASTORE_SYSROOT_S3, "conda_env") if DATASTORE_SYSROOT_S3 else None,

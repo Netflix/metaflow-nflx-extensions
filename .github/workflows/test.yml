@@ -40,6 +40,7 @@ jobs:
       METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
       METAFLOW_CONDA_TEST: 1
       METAFLOW_DATASTORE_SYSROOT_LOCAL: .metaflow
+      METAFLOW_HACK_CONDA_CHANNEL_ALIAS: prefix.dev
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
