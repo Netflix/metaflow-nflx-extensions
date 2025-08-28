@@ -256,7 +256,8 @@ class CondaLockResolver(Resolver):
                         if virt_pkg not in sys_overrides
                     )
                     lines.extend(
-                        '      %s: "%s"\n' % (k, v) for k, v in sys_overrides.items()
+                        '      %s: "%s"\n' % (k, v.split("=")[0])
+                        for k, v in sys_overrides.items()
                     )
 
                     with open(
