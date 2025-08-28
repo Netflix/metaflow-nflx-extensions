@@ -5,7 +5,10 @@ from .jupyter_title_markdown import _jupyter_title_markdown
 
 class Constants(object):
     # Default Python version
-    DEFAULT_PYTHON_VERSION = "3.7"
+    DEFAULT_PYTHON_VERSION = "3.10"
+
+    # Name of the main debug file
+    DEBUG_SCRIPT_NAME = "00_DEBUG_ME.ipynb"
 
     # Stubbed class for Metaflow artifacts
     DEBUG_INPUT_ITEM_STUB = """
@@ -115,6 +118,12 @@ class Constants(object):
             
             raise AttributeError(f"No such attribute: {{name}}")
     
+        def __delattr__(self, name):
+            if name in self._artifact_data:
+                del self._artifact_data[name]
+                return
+            return super().__delattr__(name)
+
         def load_artifact_data(self, name):
             for artifact in self._prev_task.artifacts:
                 if artifact.id == name:
@@ -236,9 +245,10 @@ class Constants(object):
 
     # Escape hatch stub
     ESCAPE_HATCH_STUB = """
-    # Uncomment the following lines if os.environ.get("PYTHONPATH") is not set
-    # import sys
-    # sys.path.insert(0, "{MetaflowEnvEscapeDir}")    
+    import os
+    import sys
+    if os.environ.get("PYTHONPATH") is None:
+        sys.path.insert(0, "{MetaflowEnvEscapeDir}")
     """
 
     # Imports needed to define stubbed classes & Debug steps

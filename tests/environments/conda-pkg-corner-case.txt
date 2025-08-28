@@ -1,4 +1,0 @@
-# A conda package in a pure pip env
---conda-pkg git-lfs
-# Needs LFS to build
-transnetv2 @ git+https://github.com/soCzech/TransNetV2.git#main

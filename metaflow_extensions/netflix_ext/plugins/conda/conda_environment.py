@@ -22,6 +22,8 @@ from typing import (
 
 from metaflow.debug import debug
 
+from metaflow.packaging_sys import ContentType
+from metaflow.package import MetaflowPackage
 from metaflow.plugins.datastores.local_storage import LocalStorage
 from metaflow.flowspec import FlowSpec
 
@@ -108,7 +110,7 @@ class CondaEnvironment(MetaflowEnvironment):
         for step in self._flow:
             # Figure out the environments that we need to resolve for all steps
             # We will resolve all unique environments in parallel
-            env_type, arch, req, base_env = self.extract_merged_reqs_for_step(
+            _, arch, req, base_env = self.extract_merged_reqs_for_step(
                 self.conda, self._flow, self._datastore_type, step
             )
 
@@ -232,7 +234,7 @@ class CondaEnvironment(MetaflowEnvironment):
         # so we skip
         path = get_conda_manifest_path(self._local_root)
         if path and os.path.exists(path):
-            files.append((path, os.path.basename(path)))
+            files.append((path, os.path.basename(path), ContentType.OTHER_CONTENT))
         return files
 
     def pylint_config(self) -> List[str]:
@@ -282,8 +284,15 @@ class CondaEnvironment(MetaflowEnvironment):
             return new_info
         return {"type": "conda"}
 
-    def get_package_commands(self, code_package_url: str, datastore_type: str):
-        return self.base_env.get_package_commands(code_package_url, datastore_type)
+    def get_package_commands(
+        self,
+        code_package_url: str,
+        datastore_type: str,
+        code_package_metadata: Optional[str] = None,
+    ):
+        return self.base_env.get_package_commands(
+            code_package_url, datastore_type, code_package_metadata
+        )
 
     def get_environment_info(self, include_ext_info=False):
         return self.base_env.get_environment_info(include_ext_info)
@@ -323,6 +332,12 @@ class CondaEnvironment(MetaflowEnvironment):
 
     @classmethod
     def get_env_id(cls, conda: Conda, step_name: str) -> Optional[Union[str, EnvID]]:
+        # Returns the environment ID for the step:
+        #  - if the step has conda disabled or has no known resolved env, it returns None
+        #  - if the step has fetch_at_exec, it returns the environment name to fetch on
+        #    execution
+        #  - if the step has a conda environment, it returns the environment ID
+        #
         # We either look in _result_for_step for the env id (this only works for the
         # initial process that launched Metaflow ie: the first CLI process). This is what
         # happens when deploying to argo/airflow or any other scheduler. For everything
@@ -361,9 +376,7 @@ class CondaEnvironment(MetaflowEnvironment):
             resolved_env = conda.environment(step_info[2][0], local_only=True)
             if resolved_env:
                 return resolved_env.env_id
-            raise RuntimeError(
-                "Cannot find environment for step '%s' -- this is a bug" % step_name
-            )
+            return None
 
     @classmethod
     def enabled_for_step(cls, step_name: str, ubf_context: str) -> bool:
@@ -704,6 +717,7 @@ class CondaEnvironment(MetaflowEnvironment):
                     "full_id": newly_resolved_env_id.full_id,
                     "arch": newly_resolved_env_id.arch,
                     "req_id": newly_resolved_env_id.req_id,
+                    "resolver_uuid": resolver.uuid,
                     "msg": str(newly_resolved_env.deps),
                 },
             )
@@ -717,6 +731,7 @@ class CondaEnvironment(MetaflowEnvironment):
                     "full_id": newly_resolved_env_id.full_id,
                     "arch": newly_resolved_env_id.arch,
                     "req_id": newly_resolved_env_id.req_id,
+                    "resolver_uuid": resolver.uuid,
                     "msg": str(newly_resolved_env.sources),
                 },
             )
@@ -730,6 +745,7 @@ class CondaEnvironment(MetaflowEnvironment):
                     "full_id": newly_resolved_env_id.full_id,
                     "arch": newly_resolved_env_id.arch,
                     "req_id": newly_resolved_env_id.req_id,
+                    "resolver_uuid": resolver.uuid,
                     "msg": str(newly_resolved_env.extras),
                 },
             )
@@ -743,6 +759,7 @@ class CondaEnvironment(MetaflowEnvironment):
                     "full_id": newly_resolved_env_id.full_id,
                     "arch": newly_resolved_env_id.arch,
                     "req_id": newly_resolved_env_id.req_id,
+                    "resolver_uuid": resolver.uuid,
                     "msg": str(_format_packages(newly_resolved_env.packages)),
                 },
             )

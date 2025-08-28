@@ -1,7 +1,9 @@
 # pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
+import json
 import os
+import sys
 
-from typing import Any, Dict, List, Set, Tuple, Optional, cast
+from typing import Any, Dict, List, Set, TYPE_CHECKING, Tuple, Union, Optional, cast
 
 from metaflow._vendor import click
 
@@ -16,8 +18,12 @@ from .conda.env_descr import (
     AliasType,
     EnvID,
     ResolvedEnvironment,
+    MetaflowResolvedEnvironment,
 )
 from .conda.utils import dict_to_tstr, plural_marker, resolve_env_alias
+
+if TYPE_CHECKING:
+    import metaflow
 
 # Very simple functions to create some highlights without importing other packages
 _BOLD = 1
@@ -32,6 +38,273 @@ _BLUE = 34
 _all_local_instances = None  # type: Optional[Dict[str, Dict[str, List[str]]]]
 
 
+# This is a dataclass -- can move to that when we only support 3.7+
+class StepEnvInfo:
+    """
+    Information about the environment needed for a step.
+
+    Attributes
+    ----------
+    is_disabled : bool
+        If True, environment management is disabled for the step
+
+    error : Optional[str]
+        If the specification of the environment is invalid, this will contain the
+        reason for it. Note that the absence of an error does not guarantee that the
+        environment will be fully resolved correctly (this is un-knowable in all cases).
+
+    requested_hash : Optional[str]
+        Hash of the requested environment. This is used to uniquely identify the requirements
+        set by the user. Note that for a given requested hash, multiple environments may
+        be created. A unique environment is determined by both its requested hash as well
+        as its full hash. The full hash is only available for resolved environments.
+        Will be none if is_disabled or error is set. If the environment is resolved then
+        env.env_id.req_id will be the same as requested_hash.
+
+    requested_packages : Dict[str, Dict[str, str]]
+        Packages requested for the step. The first key is the type of package (pypi,
+        conda or sys), the second key is the package name and the value is the version
+        constraint.
+
+    requested_sources : Dict[str, List[str]]
+        Sources requested for the step. The first key is the type of source (conda or pypi)
+        and the value is a list of the sources. The order of the list is preserved
+        based on what the user indicated.
+
+    from_env_name : Optional[str]
+        If non-None, the environment is derived from another environment (either a named
+        environment or a step's environment).
+
+    is_fetch_at_exec : bool
+        If True, the environment does not need to be known when deploying the flow
+        but only at runtime.
+
+    env : Optional[MetaflowResolvedEnvironment]
+        If the environment is known an resolved, it will be returned here. Otherwise,
+        this value will be None. This means that the environment will need to be
+        resolved prior to deploying unless is_fetch_at_exec is True.
+    """
+
+    def __init__(
+        self,
+        is_disabled: bool,
+        error: Optional[str] = None,
+        requested_hash: Optional[str] = None,
+        requested_packages: Optional[Dict[str, Dict[str, str]]] = None,
+        requested_sources: Optional[Dict[str, List[str]]] = None,
+        from_env_name: Optional[str] = None,
+        is_fetch_at_exec: bool = False,
+        env: Optional[MetaflowResolvedEnvironment] = None,
+    ):
+        self.is_disabled = is_disabled
+        self.error = error
+        self.requested_hash = requested_hash
+        self.requested_packages = requested_packages or {}
+        self.requested_sources = requested_sources or {}
+        self.from_env_name = from_env_name
+        self.is_fetch_at_exec = is_fetch_at_exec
+        self.env = env
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "is_disabled": self.is_disabled,
+            "error": self.error,
+            "requested_hash": self.requested_hash,
+            "requested_packages": self.requested_packages,
+            "requested_sources": self.requested_sources,
+            "from_env_name": self.from_env_name,
+            "is_fetch_at_exec": self.is_fetch_at_exec,
+            "env_id": self.env.env_id if self.env else None,
+            "env": self.env.to_dict() if self.env else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StepEnvInfo":
+        return cls(
+            data["is_disabled"],
+            data["error"],
+            data["requested_hash"],
+            data["requested_packages"],
+            data["requested_sources"],
+            data["from_env_name"],
+            data["is_fetch_at_exec"],
+            (
+                MetaflowResolvedEnvironment(
+                    ResolvedEnvironment.from_dict(EnvID(*data["env_id"]), data["env"])
+                )
+                if data["env"]
+                else None
+            ),
+        )
+
+
+class RunnerCLI(object):
+    name = "environment"
+
+    def __init__(self, runner: "metaflow.Runner"):
+        """
+        Environment command for the flow. Requires the conda environment.
+        """
+        self.runner = runner
+
+    def resolve(
+        self,
+        *args: str,
+        arch: Optional[Union[str, List[str]]] = None,
+        alias: Optional[List[str]] = None,
+        force: bool = False,
+        dry_run: bool = False,
+        timeout: int = 1200,
+    ) -> Dict[str, Dict[str, Tuple[MetaflowResolvedEnvironment, bool]]]:
+        """
+        Resolve the environments needed for this flow. Returns a dictionary associating
+        the name of the step with the resolved environment.
+
+        Note that steps that have conda disabled will not be present in the returned
+        dictionary.
+
+        Parameters
+        ----------
+        *args : str
+            Name of the steps to resolve. If not specified, all steps are resolved
+        arch : Union[str, List[str]], optional, default None
+            Architecture(s) to resolve the environments for. If None, the default
+            architecture is used (dependent on where the step should run)
+        alias : List[str], optional, default None
+            If specified, aliases to alias the resolved environment by. Only valid if
+            only one environment is being resolved (ie: only one step)
+        force : bool, default False
+            Force the resolution of all environments even if they are already resolved.
+        dry_run : bool, default False
+            Perform the resolution but do not cache or write out the resolved environments.
+        timeout : int, default 1200
+            Timeout in seconds -- note that this effectively caps the total amount of time
+            available for environment resolution.
+
+        Returns
+        -------
+        Dict[str, Dict[str, Tuple[MetaflowResolvedEnvironment, bool]]]
+            Resolved environments for all steps requested.
+            The outer key is the name of the step
+            The inner key is the architecture
+            The element is a tuple consisting of the resolved environment and a boolean
+            indicating if the environment was newly resolved or not (True if just
+            resolved or False if previously resolved)
+        """
+        from metaflow.runner.utils import (
+            handle_timeout,
+            make_process_error_message,
+            temporary_fifo,
+        )
+
+        with temporary_fifo() as (attribute_file_path, attribute_file_fd):
+            command = (
+                self.runner.api(**self.runner.top_level_kwargs)
+                .environment()
+                .resolve(
+                    arch=arch,
+                    alias=alias,
+                    force=force,
+                    dry_run=dry_run,
+                    output=attribute_file_path,
+                    steps_to_resolve=args if args else None,
+                )
+            )
+            pid = self.runner.spm.run_command(
+                [sys.executable, *command],
+                env=self.runner.env_vars,
+                cwd=self.runner.cwd,
+                show_output=False,
+            )
+            command_obj = self.runner.spm.get(pid)
+            if not command_obj:
+                raise RuntimeError("Failed to get command object")
+
+            content = handle_timeout(attribute_file_fd, command_obj, timeout)
+            command_obj.sync_wait()
+
+            if command_obj.process.returncode == 0:
+                # We parse content and return the resolved environments
+                content = json.loads(content)
+                return {
+                    k: {
+                        kk: (
+                            MetaflowResolvedEnvironment(
+                                ResolvedEnvironment.from_dict(
+                                    EnvID(vv["req_id"], vv["full_id"], kk),
+                                    vv["env"],
+                                )
+                            ),
+                            vv["newly_resolved"],
+                        )
+                        for kk, vv in v.items()
+                    }
+                    for k, v in content.items()
+                }
+            raise RuntimeError(make_process_error_message(command_obj))
+
+    def show(
+        self, *args: str, local_only: bool = False, timeout: int = 60
+    ) -> Dict[str, StepEnvInfo]:
+        """
+        Returns information about the environments needed for the steps in the flow.
+
+        For each requested step, information about the packages and sources requested
+        as well as an optional resolved environment is returned.
+
+        Parameters
+        ----------
+        args : str
+            Steps to show information for. If none are specified, information for all
+            steps will be returned.
+        local_only : bool, default False
+            If True, will only list environments as known if they are locally known. This
+            primarily affects named environments or if you have
+            METAFLOW_CONDA_USE_REMOTE_LATEST set to something different than ":none:".
+        timeout : int, default 60
+            Timeout in seconds for this call.
+
+        Returns
+        -------
+        Dict[str, StepEnvInfo]
+            For each step requested, returns information about the environment needed for
+            that step.
+        """
+        from metaflow.runner.utils import (
+            handle_timeout,
+            make_process_error_message,
+            temporary_fifo,
+        )
+
+        with temporary_fifo() as (attribute_file_path, attribute_file_fd):
+            command = (
+                self.runner.api(**self.runner.top_level_kwargs)
+                .environment()
+                .show(
+                    local_only=local_only,
+                    output=attribute_file_path,
+                    steps_to_show=args if args else None,
+                )
+            )
+            pid = self.runner.spm.run_command(
+                [sys.executable, *command],
+                env=self.runner.env_vars,
+                cwd=self.runner.cwd,
+                show_output=False,
+            )
+            command_obj = self.runner.spm.get(pid)
+            assert command_obj
+            content = handle_timeout(attribute_file_fd, command_obj, timeout)
+            command_obj.sync_wait()
+
+            if command_obj.process.returncode == 0:
+                # We parse content and return the resolved environments
+                content = json.loads(content)
+                return {k: StepEnvInfo.from_dict(v) for k, v in content.items()}
+
+            raise RuntimeError(make_process_error_message(command_obj))
+
+
 @click.group()
 def cli():
     pass
@@ -42,7 +315,6 @@ def cli():
 def environment(obj):
     if obj.environment.TYPE != "conda":
         raise CommandException("'environment' requires a Conda environment")
-    pass
 
 
 @environment.command(help="Resolve environments for steps in a flow")
@@ -72,6 +344,14 @@ def environment(obj):
     "If not specified, defaults to the architecture for the step",
     required=False,
 )
+@click.option(
+    "--output",
+    show_default=True,
+    default=None,
+    type=click.Path(file_okay=True, writable=True, resolve_path=True),
+    help="If specified, the environments for the requested steps are written out "
+    "to this file. Note that this includes only newly resolved environments.",
+)
 @click.argument(
     "steps-to-resolve",
     required=False,
@@ -85,14 +365,37 @@ def resolve(
     alias: Optional[Tuple[str]] = None,
     force: bool = False,
     dry_run: bool = False,
+    output: Optional[str] = None,
 ):
+
     conda = Conda(obj.echo, obj.flow_datastore.TYPE)
     resolver = EnvsResolver(conda)
+
+    def _write_out_environments():
+        # If we have an output file, write out to it
+        if output:
+            resolved_per_step = {}  # type: Dict[str, Dict[str, ResolvedEnvironment]]
+            new_env_ids = set(env.env_id for _, env, _ in resolver.new_environments())
+            for env_id, env, steps in resolver.resolved_environments():
+                for step in steps:
+                    resolved_per_step.setdefault(step, {})[env_id.arch] = env
+            out_json = {}
+            with open(output, "w", encoding="utf-8") as f:
+                for step, envs in resolved_per_step.items():
+                    for env_arch, env in envs.items():
+                        out_json.setdefault(step, {})[env_arch] = {
+                            "req_id": env.env_id.req_id,
+                            "full_id": env.env_id.full_id,
+                            "newly_resolved": env.env_id in new_env_ids,
+                            "env": env.to_dict(),
+                        }
+                json.dump(out_json, f, indent=2)
+
     for step in obj.flow:
         if not steps_to_resolve or step.name in steps_to_resolve:
             for resolve_arch in arch or [None]:
                 (
-                    env_type,
+                    _,
                     step_arch,
                     req,
                     base_env,
@@ -150,6 +453,7 @@ def resolve(
                 )
         else:
             obj.echo("No environments to resolve, use --force to force re-resolution")
+        _write_out_environments()
         return
     if aliases is not None and len(per_req_id) > 1:
         raise CommandException(
@@ -175,6 +479,9 @@ def resolve(
 
     _compute_local_instances(conda)
     assert _all_local_instances is not None
+
+    _write_out_environments()
+
     if obj.is_quiet:
         for req_id, (env, steps) in resolved_per_req_id.items():
             obj.echo_always(",".join(steps))
@@ -236,13 +543,21 @@ def resolve(
     default=False,
     help="Search only locally cached environments",
 )
+@click.option(
+    "--output",
+    show_default=True,
+    default=None,
+    type=click.Path(file_okay=True, writable=True, resolve_path=True),
+    help="If specified, the environments for the requested steps are written out "
+    "to this file.",
+)
 @click.argument(
     "steps-to-show",
     required=False,
     nargs=-1,
 )
 @click.pass_obj
-def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
+def show(obj: Any, local_only: bool, output: Optional[str], steps_to_show: Tuple[str]):
     # Goes from step_name to information about the step
     result = {}  # type: Dict[str, Any]
     conda = Conda(obj.echo, obj.flow_datastore.TYPE)
@@ -257,8 +572,14 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
                 conda, obj.flow, obj.flow_datastore.TYPE, step, local_only=local_only
             )
             from_name = req.from_env_name
-            result[step.name] = {"req": req}
+            result[step.name] = {
+                "req": req,
+                "req_hash": ResolvedEnvironment.get_req_id(
+                    req.packages_as_str, req.sources
+                ),
+            }
             if from_name:
+                result[step.name]["from_env_name"] = from_name
                 if base_env is None:
                     result[step.name]["error"] = (
                         "Base environment '%s' was not found for architecture '%s'"
@@ -275,7 +596,7 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
 
             step_env_id = CondaEnvironment.get_env_id(conda, step.name)
             resolved_env = None
-            if step_env_id is None:
+            if req.is_disabled:
                 result[step.name]["state"].append("disabled")
             elif isinstance(step_env_id, EnvID):
                 resolved_env = conda.environment(step_env_id, local_only)
@@ -300,35 +621,49 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
                         result[step.name]["state"].append("locally present")
                 else:
                     result[step.name]["state"].append("unresolved")
-            else:
+            elif isinstance(step_env_id, str):
                 result[step.name]["state"].append("fetch-at-exec of %s" % step_env_id)
+            else:
+                result[step.name]["state"].append("not resolved")
 
     _compute_local_instances(conda)
+
     assert _all_local_instances is not None
-    if obj.is_quiet:
-        for name, info in result.items():
-            obj.echo_always(name)
-            if "error" in info:
-                obj.echo_always("ERR %s" % info["error"])
-                obj.echo_always("")
-            else:
-                obj.echo_always(
-                    "OK%s Environment is %s."
-                    % ("+ENV" if "env" in info else "", ", ".join(info["state"]))
-                )
-                if "env" in info:
-                    env_id = cast(ResolvedEnvironment, info["env"]).env_id
-                    obj.echo_always(
-                        cast(ResolvedEnvironment, info["env"]).quiet_print(
-                            _all_local_instances.get(env_id.req_id, {}).get(
-                                env_id.full_id
-                            )
-                        )
-                    )
+    if output:
+        out_json = {}
+        with open(output, "w", encoding="utf-8") as f:
+            for step_name, step_info in result.items():
+                if "disabled" in step_info["state"]:
+                    out_json[step_name] = StepEnvInfo(is_disabled=True).to_dict()
+                elif "error" in step_info:
+                    out_json[step_name] = StepEnvInfo(
+                        is_disabled=False, error=step_info["error"]
+                    ).to_dict()
                 else:
-                    # TODO: Maybe print dependencies here too
-                    obj.echo_always("")
-    else:
+                    is_fetch_at_exec = False
+                    req_hash = step_info["req_hash"]
+                    if any(s.startswith("fetch-at-exec") for s in step_info["state"]):
+                        is_fetch_at_exec = True
+                    out_json[step_name] = StepEnvInfo(
+                        is_disabled=False,
+                        requested_hash=req_hash,
+                        requested_packages=cast(
+                            StepRequirement, step_info["req"]
+                        ).packages,
+                        requested_sources=cast(
+                            StepRequirement, step_info["req"]
+                        ).sources,
+                        from_env_name=step_info.get("from_env_name"),
+                        is_fetch_at_exec=is_fetch_at_exec,
+                        env=(
+                            MetaflowResolvedEnvironment(step_info.get("env"))
+                            if step_info.get("env")
+                            else None
+                        ),
+                    ).to_dict()
+
+            json.dump(out_json, f, indent=2)
+    if not obj.is_quiet:
         for name, info in result.items():
             obj.echo("\nStep *%s*" % name)
             if "error" in info:
@@ -347,7 +682,7 @@ def show(obj: Any, local_only: bool, steps_to_show: Tuple[str]):
                     "*User-requested packages* %s"
                     % ", ".join(
                         [
-                            str(d)
+                            str(d).replace("*", "x")
                             for d in dict_to_tstr(
                                 cast(StepRequirement, info["req"]).packages_as_str
                             )

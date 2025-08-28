@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.8", "3.10", "3.12"]
+        python-version: ["3.8", "3.10", "3.12", "3.13"]
         resolver: [mamba, conda, micromamba]
         micromamba-version: ["1.5.10-0", "latest"]
         mamba-version: ["mamba=1.5.10", "mamba"]
@@ -34,22 +34,29 @@ jobs:
             mamba-version: "mamba=1.5.10"
           - python-version: "3.8"
             mamba-version: "mamba=1.5.10"
+          - python-version: "3.13"
+            mamba-version: "mamba=1.5.10"
     env:
       METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
       METAFLOW_CONDA_TEST: 1
       METAFLOW_DATASTORE_SYSROOT_LOCAL: .metaflow
+      METAFLOW_HACK_CONDA_CHANNEL_ALIAS: prefix.dev
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
-      - uses: mamba-org/setup-micromamba@f8b8a1e23a26f60a44c853292711bacfd3eac822 # v1.9.0
+      - uses: mamba-org/setup-micromamba@b09ef9b599704322748535812ca03efb2625677b # v2.0.5
         with:
           micromamba-version: ${{ matrix.micromamba-version }}
           environment-file: dev-env.yml
           init-shell: bash
+          post-cleanup: all
+          condarc: |
+            channels:
+              - conda-forge
+            channel_alias: https://prefix.dev
           create-args: >-
             python=${{ matrix.python-version }}
             ${{ matrix.mamba-version }}
-
       - name: install nflx-extension
         shell: bash -eo pipefail -l {0}
         run: |

@@ -11,7 +11,8 @@ from metaflow.extension_support import (
     get_extensions_in_dir,
     update_package_info,
 )
-from metaflow.info_file import INFO_FILE
+
+from metaflow.packaging_sys import MFCONTENT_MARKER, MetaflowCodeContentV1Base
 
 # _deps_parse = re.compile(r"([^<>=!~]+)(.*)")
 _ext_parse = re.compile(r"([-_\w]+)\(([^)]+)\)")
@@ -99,6 +100,8 @@ def _merge_directories(src_dir, dest_dir):
 def download_mf_version(
     executable: str, version_str: str, extension_info: Dict[str, Any], echo, fail_hard
 ):
+    dst_code_dir = MetaflowCodeContentV1Base._code_dir
+
     def echo_or_fail(msg):
         if fail_hard:
             raise RuntimeError(
@@ -109,6 +112,7 @@ def download_mf_version(
 
     def _install_pkg(pkg: str, ver: Optional[str]):
         try:
+            os.makedirs(dst_code_dir, exist_ok=True)
             subprocess.check_call(
                 [
                     executable,
@@ -117,7 +121,7 @@ def download_mf_version(
                     "install",
                     "--quiet",
                     "-t",
-                    ".",
+                    dst_code_dir,
                     "--no-deps",
                     "%s==%s" % (pkg, ver) if ver else pkg,
                 ]
@@ -144,8 +148,9 @@ def download_mf_version(
     # That is ideal if we have that. If not, we do our best from the version string
     # where packages are in the form name(vers);name(vers) but name is not necessarily
     # the package name.
+    wrong_version_info = set()
+
     if extension_info:
-        wrong_version_info = set()
         first_round = True
         for pkg_name, pkg_info in extension_info["installed"].items():
             if pkg_name.startswith("_pythonpath"):
@@ -161,13 +166,21 @@ def download_mf_version(
                 )
                 pkg_version = pkg_info["dist_version"]
                 wrong_version_info.add(pkg_name)
+            else:
+                pkg_version = pkg_info["package_version"]
             _install_pkg(pkg_name, pkg_version)
             if first_round:
-                shutil.move("metaflow_extensions", "metaflow_extensions_tmp")
+                shutil.move(
+                    os.path.join(dst_code_dir, "metaflow_extensions"),
+                    os.path.join(dst_code_dir, "metaflow_extensions_tmp"),
+                )
                 first_round = False
             else:
-                _merge_directories("metaflow_extensions", "metaflow_extensions_tmp")
-                shutil.rmtree("metaflow_extensions")
+                _merge_directories(
+                    os.path.join(dst_code_dir, "metaflow_extensions"),
+                    os.path.join(dst_code_dir, "metaflow_extensions_tmp"),
+                )
+                shutil.rmtree(os.path.join(dst_code_dir, "metaflow_extensions"))
     else:
         s = s[1].split(";")
         first_round = True
@@ -185,11 +198,17 @@ def download_mf_version(
                 raise ValueError("Metaflow extension '%s' is not known" % pkg_name)
             _install_pkg(pkg, pkg_version)
             if first_round:
-                shutil.move("metaflow_extensions", "metaflow_extensions_tmp")
+                shutil.move(
+                    os.path.join(dst_code_dir, "metaflow_extensions"),
+                    os.path.join(dst_code_dir, "metaflow_extensions_tmp"),
+                )
                 first_round = False
             else:
-                _merge_directories("metaflow_extensions", "metaflow_extensions_tmp")
-                shutil.rmtree("metaflow_extensions")
+                _merge_directories(
+                    os.path.join(dst_code_dir, "metaflow_extensions"),
+                    os.path.join(dst_code_dir, "metaflow_extensions_tmp"),
+                )
+                shutil.rmtree(os.path.join(dst_code_dir, "metaflow_extensions"))
     # We now do a few things to make sure the Metaflow environment is recreated
     # as closely as possible:
     #  - add a __init__.py file to the metaflow_extensions directory to prevent
@@ -197,11 +216,15 @@ def download_mf_version(
     #  - create a INFO file with the extension information. This will allow for the
     #    __init__.py file (since otherwise it is an error) and will also remove
     #    conflicts when trying to load the extensions.
-    #  - we clean up all the dist-info directories that were created as part of the
-    #    pip install. This is not strictly necessary but it is cleaner.
-    shutil.move("metaflow_extensions_tmp", "metaflow_extensions")
-    sys.path.insert(0, ".")
-    installed_packages, pkgs_per_extension_point = get_extensions_in_dir(os.getcwd())
+    #  - add the mf install file
+    shutil.move(
+        os.path.join(dst_code_dir, "metaflow_extensions_tmp"),
+        os.path.join(dst_code_dir, "metaflow_extensions"),
+    )
+    sys.path.insert(0, dst_code_dir)
+    installed_packages, pkgs_per_extension_point = get_extensions_in_dir(
+        os.path.join(os.getcwd(), dst_code_dir)
+    )
     # Update the information with the reported version and name from extension_info
     for pkg_name, pkg_info in extension_info["installed"].items():
         if pkg_name in installed_packages:
@@ -219,14 +242,24 @@ def download_mf_version(
     key, val = dump_module_info(installed_packages, pkgs_per_extension_point)
     sys.path.pop(0)
 
-    with open("metaflow_extensions/__init__.py", "w+", encoding="utf-8") as f:
+    with open(
+        os.path.join(dst_code_dir, "metaflow_extensions", "__init__.py"),
+        "w+",
+        encoding="utf-8",
+    ) as f:
         f.write("# This file is automatically generated by Metaflow\n")
 
-    with open(os.path.basename(INFO_FILE), "w+", encoding="utf-8") as f:
+    os.makedirs(MetaflowCodeContentV1Base._other_dir, exist_ok=True)
+    with open(
+        os.path.join(
+            MetaflowCodeContentV1Base._other_dir, MetaflowCodeContentV1Base._info_file
+        ),
+        "w+",
+        encoding="utf-8",
+    ) as f:
         json.dump({key: val}, f)
 
-    # Clean up the dist-info directories
-    for root, dirs, _ in os.walk(".", topdown=False):
-        for d in dirs:
-            if d.endswith(".dist-info"):
-                shutil.rmtree(os.path.join(root, d))
+    # This is attrocious -- see about fixing at some point. It's a small file though
+    # and with local code packaging, this should not happen much anymore.
+    with open(MFCONTENT_MARKER, mode="w", encoding="utf-8") as f:
+        json.dump({"version": 1, "module_files": []}, f)

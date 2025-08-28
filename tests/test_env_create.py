@@ -7,6 +7,8 @@ import shutil
 import sh
 
 
+python_tuple = (sys.version_info.major, sys.version_info.minor)
+
 my_dir = os.path.dirname(os.path.abspath(__file__))
 
 all_tests = []

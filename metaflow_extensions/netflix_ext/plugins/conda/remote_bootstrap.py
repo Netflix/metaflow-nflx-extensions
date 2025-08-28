@@ -12,6 +12,7 @@ from metaflow.cli import echo_always
 
 from metaflow.debug import debug
 
+from metaflow.packaging_sys import ContentType, MetaflowCodeContent
 from metaflow.plugins.env_escape import generate_trampolines, ENV_ESCAPE_PY
 
 from .conda import Conda
@@ -86,8 +87,16 @@ def setup_conda_manifest():
     manifest_folder = os.path.join(os.getcwd(), DATASTORE_LOCAL_DIR)
     if not os.path.exists(manifest_folder):
         os.makedirs(manifest_folder)
+    path_to_manifest = MetaflowCodeContent.get_filename(
+        CONDA_MAGIC_FILE_V2, ContentType.OTHER_CONTENT
+    )
+    if path_to_manifest is None:
+        raise RuntimeError(
+            "Cannot find the conda manifest file %s in the package"
+            % CONDA_MAGIC_FILE_V2
+        )
     shutil.move(
-        os.path.join(os.getcwd(), CONDA_MAGIC_FILE_V2),
+        path_to_manifest,
         os.path.join(manifest_folder, CONDA_MAGIC_FILE_V2),
     )
 

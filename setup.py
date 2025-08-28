@@ -24,6 +24,7 @@ setup(
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
     ],
     project_urls={
         "Source": "https://github.com/Netflix/metaflow-nflx-extensions",
@@ -31,7 +32,9 @@ setup(
     },
     author="Netflix Metaflow Developers",
     author_email="metaflow-dev@netflix.com",
-    packages=find_namespace_packages(include=["metaflow_extensions.*"]),
+    packages=find_namespace_packages(
+        include=["metaflow_extensions", "metaflow_extensions.*"]
+    ),
     py_modules=[
         "metaflow_extensions",
     ],
@@ -39,5 +42,5 @@ setup(
         "metaflow_extensions.netflix_ext.plugins.conda.resources": ["*.png", "*.svg"]
     },
     python_requires=">=3.7.2",
-    install_requires=["metaflow>=2.12.29"],
+    install_requires=["metaflow>=2.16.0"],
 )

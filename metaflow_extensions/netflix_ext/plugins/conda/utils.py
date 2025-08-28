@@ -10,7 +10,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-
 from enum import Enum
 from itertools import chain
 from typing import (
@@ -28,39 +27,32 @@ from typing import (
     Union,
     cast,
 )
-from urllib.parse import urlparse, unquote
+from urllib.parse import unquote, urlparse
 
-from requests import PreparedRequest
-from requests.auth import AuthBase, HTTPBasicAuth
-
-from metaflow._vendor.packaging.tags import (
-    compatible_tags,
-    _cpython_abis,
-    cpython_tags,
-    mac_platforms,
-    Tag,
-)
-
-from metaflow._vendor.packaging.utils import BuildTag, parse_wheel_filename
-
-from metaflow._vendor.packaging.version import Version
+import metaflow.metaflow_config as mf_config
 from metaflow._vendor.packaging.requirements import Requirement
 from metaflow._vendor.packaging.specifiers import SpecifierSet
-
+from metaflow._vendor.packaging.tags import (
+    Tag,
+    _cpython_abis,
+    compatible_tags,
+    cpython_tags,
+    mac_platforms,
+)
+from metaflow._vendor.packaging.utils import BuildTag, parse_wheel_filename
+from metaflow._vendor.packaging.version import Version
 from metaflow.debug import debug
 from metaflow.exception import MetaflowException
-import metaflow.metaflow_config as mf_config
-from metaflow.metaflow_config import (
-    CONDA_BUILDER_ENV_PACKAGES,  # type: ignore
-    CONDA_MAGIC_FILE_V2,  # type: ignore
-    CONDA_PREFERRED_FORMAT,  # type: ignore
-    CONDA_SRCS_AUTH_INFO,  # type: ignore
-    CONDA_SYS_DEPENDENCIES,  # type: ignore
-    CONDA_SYS_DEFAULT_PACKAGES,  # type: ignore
-    CONDA_SYS_DEFAULT_GPU_PACKAGES,  # type: ignore
-)
-
+from metaflow.metaflow_config import CONDA_BUILDER_ENV_PACKAGES  # type: ignore
+from metaflow.metaflow_config import CONDA_MAGIC_FILE_V2  # type: ignore
+from metaflow.metaflow_config import CONDA_PREFERRED_FORMAT  # type: ignore
+from metaflow.metaflow_config import CONDA_SRCS_AUTH_INFO  # type: ignore
+from metaflow.metaflow_config import CONDA_SYS_DEFAULT_GPU_PACKAGES  # type: ignore
+from metaflow.metaflow_config import CONDA_SYS_DEFAULT_PACKAGES  # type: ignore
+from metaflow.metaflow_config import CONDA_SYS_DEPENDENCIES  # type: ignore
 from metaflow.metaflow_environment import InvalidEnvironmentException
+from requests import PreparedRequest
+from requests.auth import AuthBase, HTTPBasicAuth
 
 if TYPE_CHECKING:
     import metaflow_extensions.netflix_ext.plugins.conda.env_descr
@@ -68,18 +60,25 @@ if TYPE_CHECKING:
 # NOTA: Most of the code does not assume that there are only two formats BUT the
 # transmute code does (since you can only specify the infile -- the outformat and file
 # are inferred)
-_ALL_CONDA_FORMATS = (".tar.bz2", ".conda")
+_ALL_CONDA_FORMATS: Tuple[str, ...] = (".tar.bz2", ".conda")
 # NOTE: Order is important as it is a preference order
 _ALL_PYPI_FORMATS = (".whl", ".tar.gz", ".zip")
 _VALID_IMAGE_NAME = "[^-a-z0-9_/]"
 _VALID_TAG_NAME = "[^-a-z0-9_]"
 
 # Things that need to be put in any of the builder environments
-# HACK: Workaround bad wheel package in conda-forge
-# See: https://github.com/conda-forge/wheel-feedstock/issues/61
-# We could check the version of python but it was hard to do in all cases
-# since we don't have the full version so just pin to 0.42.0 for now
-_BUILDER_ENVS_PACKAGES = ("pip", "wheel==0.42.0", "tomli", "setuptools")
+# TODO: Currently the marker is not actually used and has no effect which means that
+# uv will always be restricted to 0.7.8 which is not ideal. If we support markers
+# (a feature request at any rate), we should be able to support a more flexible uv
+# version.
+_BUILDER_ENVS_PACKAGES = (
+    "pip",
+    "wheel",
+    "tomli",
+    "setuptools",
+    "uv<=0.7.8; python_version<'3.8'",
+    "uv",
+)
 
 
 class AliasType(Enum):
@@ -98,10 +97,10 @@ if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none":
         *[x for x in _ALL_CONDA_FORMATS if x != CONDA_PREFERRED_FORMAT],
     )  # type: Tuple[str, ...]
 else:
-    CONDA_FORMATS = _ALL_CONDA_FORMATS  # type: Tuple[str, ...]
+    CONDA_FORMATS = _ALL_CONDA_FORMATS  # noqa: F811
 FAKEURL_PATHCOMPONENT = "_fake"
 
-_double_equal_match = re.compile("==(?=[<=>!~])")
+_double_equal_match = re.compile(r"==(?=[<=>!~])")
 
 
 class CondaException(MetaflowException):
@@ -213,6 +212,10 @@ def get_sys_packages(
     result = {
         k: v for k, v in result.items() if k in CONDA_SYS_DEPENDENCIES and v is not None
     }
+    if "__cuda" in result and not result["__cuda"].endswith("=0"):
+        # Make things consistent so users can specify 12.2 and it is like 12.2=0
+        # (otherwise it sometimes causes re-resolution)
+        result["__cuda"] = result["__cuda"] + "=0"
     return result
 
 
@@ -300,9 +303,6 @@ def parse_explicit_url_conda(url: str) -> ParseExplicitResult:
     #  - the URL (without the hash)
     #  - the format for the URL
     #  - the hash
-    filename = None
-    url_format = None
-
     url_clean, url_hash = url.rsplit("#", 1)
     filename, url_format = correct_splitext(os.path.split(urlparse(url_clean).path)[1])
     if url_format not in _ALL_CONDA_FORMATS:
@@ -362,10 +362,8 @@ def parse_explicit_url_pypi(url: str) -> ParseExplicitResult:
     #  - the URL (without the hash)
     #  - the format for the URL
     #  - the hash
-    filename = None
-    url_format = None
-
-    url_clean, url_hash = url.rsplit("#", 1)
+    url_clean, temp_url_hash = url.rsplit("#", 1)
+    url_hash: Optional[str] = temp_url_hash
     if url_hash:
         if not url_hash.startswith("sha256="):
             raise CondaException("URL '%s' has a SHA type which is not supported" % url)
@@ -394,15 +392,22 @@ def is_hexadecimal(s: str) -> bool:
 
 def resolve_env_alias(env_alias: str) -> Tuple[AliasType, str]:
     if env_alias.startswith("step:"):
+        # Pathspec environment alias
         env_alias = env_alias[5:]
-        if len(env_alias.split("/")) == 3:
-            return AliasType.PATHSPEC, env_alias
+        env_alias_splits = env_alias.split("/")
+        if len(env_alias_splits) in (3, 4):
+            return AliasType.PATHSPEC, "/".join(env_alias_splits[:3])
     elif len(env_alias) == 81 and env_alias[40] == ":":
-        # req-id:full-id possibly
+        # Full environment hashes are:
+        #  - a 40 character requirement hash
+        #  - a colon
+        #  - a 40 character full environment hash
+        # thus a total size of 81 characters with the 40th character being a ":"
         req_id, full_id = env_alias.split(":", 1)
         if is_hexadecimal(req_id) and is_hexadecimal(full_id):
             return AliasType.REQ_FULL_ID, env_alias
     elif len(env_alias) == 40 and is_hexadecimal(env_alias):
+        # Just a full ID environment hash
         # For now we do not support this -- remove if you want to support
         # The issue with supporting this is that a full-id can refer to multiple req-id
         # so it is impossible to unambiguously identify the source environment (ie:
@@ -412,6 +417,8 @@ def resolve_env_alias(env_alias: str) -> Tuple[AliasType, str]:
         )
         # return AliasType.FULL_ID, env_alias
     else:
+        # An alias in the form <name>:<tag> (where <tag> is optional and assumed to
+        # be "latest" if not present)
         splits = env_alias.rsplit(":", 1)
         if len(splits) == 2:
             image_name = splits[0]
@@ -445,7 +452,7 @@ def is_alias_mutable(alias_type: AliasType, resolved_alias: str) -> bool:
 
 
 def dict_to_tstr(
-    deps: Dict[str, List[str]]
+    deps: Dict[str, List[str]],
 ) -> List["metaflow_extensions.netflix_ext.plugins.conda.env_descr.TStr"]:
     from .env_descr import TStr  # Avoid circular import
 
@@ -624,7 +631,7 @@ class PerHostAuth(AuthBase):
 def version_to_str(v: Version, overrides: Dict[str, Any]) -> str:
     # This code copies __str__ from Version basically but allows components to be
     # changed
-    parts = []  # type: List[str]
+    parts: List[str] = []
 
     # Epoch
     val = int(overrides.get("epoch", v.epoch))
@@ -633,12 +640,12 @@ def version_to_str(v: Version, overrides: Dict[str, Any]) -> str:
 
     # Release segment
     val = overrides.get("release", v.release)
-    parts.append(".".join(str(x) for x in val))
+    parts.append(".".join(str(x) for x in cast(Tuple[int, ...], val)))
 
     # Pre-release
     val = overrides.get("pre", v.pre)
     if val is not None:
-        parts.append("".join(str(x) for x in val))
+        parts.append("".join(str(x) for x in cast(Tuple[Union[str, int], ...], val)))
 
     # Post-release
     val = overrides.get("post", v.post)
@@ -805,7 +812,7 @@ def hash_directory(path: str) -> str:
     # The "hash" of a directory will be the last modified time and last modified
     # file. We could just use the time probably but this will hopefully inject
     # even more safety.
-    last_modified_time = 0
+    last_modified_time = 0.0
     last_modified_file = None  # type: Optional[str]
 
     # Walk through all files and directories in the root directory

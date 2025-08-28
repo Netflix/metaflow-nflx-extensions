@@ -27,6 +27,11 @@ class Resolver:
         cls._ensure_class_per_type()
         assert cls._class_per_type
 
+        # We will split uv and pip resolvers at some point but right now
+        # we use uv where we can for the pip resolver so we currently consider "uv"
+        # to be an alias of "pip" for now
+        if resolver_type == "uv":
+            resolver_type = "pip"
         resolver = cls._class_per_type.get(resolver_type)
         if resolver is None:
             raise CondaException(

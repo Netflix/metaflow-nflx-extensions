@@ -1,5 +1,6 @@
 # pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
 
+import uuid
 import time
 
 from itertools import chain
@@ -17,6 +18,7 @@ from typing import (
     Set,
     Tuple,
     Type,
+    TYPE_CHECKING,
 )
 
 from metaflow.debug import debug
@@ -40,7 +42,9 @@ from .env_descr import (
     ResolvedEnvironment,
     env_type_for_deps,
 )
-from .conda import Conda
+
+if TYPE_CHECKING:
+    from .conda import Conda
 
 from .resolvers import Resolver
 from .utils import (
@@ -56,7 +60,7 @@ from .utils import (
 
 
 class EnvsResolver(object):
-    def __init__(self, conda: Conda):
+    def __init__(self, conda: "Conda"):
         # key: EnvID; value: dict containing:
         #  - "id": key
         #  - "steps": steps using this environment
@@ -70,6 +74,8 @@ class EnvsResolver(object):
         #  - "resolved": The resolved environment
         #  - "already_resolved": T/F: True if we had a resolved environment prior to resolving
         #  - "force": T/F: True if we need to re-resolve
+        # Log a unique UUID for each EnvsResolver instance
+        self.uuid = str(uuid.uuid4())
         self._requested_envs = {}  # type: Dict[EnvID, Dict[str, Any]]
         self._builder_envs = {}  # type: Dict[EnvID, Dict[str, Any]]
         self._conda = conda
@@ -199,8 +205,8 @@ class EnvsResolver(object):
                 "base_accurate": base_env
                 and base_env.is_info_accurate
                 and not base_from_full_id,
-                "resolved": resolved_env,
-                "already_resolved": resolved_env is not None,
+                "resolved": None if force else resolved_env,
+                "already_resolved": False if force else resolved_env is not None,
                 "env_type": env_type,
                 "force": force,
             }
@@ -239,13 +245,51 @@ class EnvsResolver(object):
                     )
             if len(need_resolution):
                 self._resolve_environments(echo, need_resolution)
+            if not self._non_step_envs:
+                # Print some breadcrumbs about environments used in the flow.
+                # This helps data-scientists understand a bit better what
+                # environment is being used.
+                newly_resolved_steps = sorted(
+                    chain(
+                        req["steps"]
+                        for req in self._requested_envs.values()
+                        if not req["already_resolved"]
+                    )
+                )
+                previously_resolved_envs = {
+                    sorted(req["steps"]): req["resolved"]
+                    for req in self._requested_envs.values()
+                    if req["already_resolved"]
+                }
+                if len(newly_resolved_steps):
+                    end_line = "a newly resolved environment"
+                else:
+                    end_line = "newly resolved environments"
+
+                echo(
+                    f"    Step{plural_marker(len(newly_resolved_steps))} "
+                    f"{', '.join(newly_resolved_steps)} using {end_line}."
+                )
+                for steps, resolved in previously_resolved_envs.items():
+                    resolved = cast(ResolvedEnvironment, resolved)
+                    echo(
+                        f"    Step{plural_marker(len(steps))} "
+                        f"{', '.join(steps)} using an environment previously "
+                        f"resolved by {resolved.resolved_by} on {resolved.resolved_on} "
+                        f"(id {resolved.env_id.full_id})."
+                    )
+
             _system_logger.log_event(
                 level="info",
                 module="netflix_ext.conda",
                 name="all_envs_resolved",
                 payload={
-                    "msg": "All environment resolved and cached in %d seconds"
-                    % (time.time() - start),
+                    "msg": str(
+                        {
+                            "resolve_time": time.time() - start,
+                            "resolver_uuid": self.uuid,
+                        }
+                    ),
                     # Override the log stream to be the default metrics stream
                     "log_stream": "metrics",
                 },
@@ -631,7 +675,6 @@ class EnvsResolver(object):
                     # so makes it nicer)
                     if cached_resolved_env:
                         resolved_env = cached_resolved_env
-                        self._requested_envs[orig_env_id]["already_resolved"] = True
 
                     self._requested_envs[orig_env_id]["resolved"] = resolved_env
                     debug.conda_exec(
@@ -757,7 +800,7 @@ class EnvsResolver(object):
 
     @staticmethod
     def extract_info_from_base(
-        conda: Conda,
+        conda: "Conda",
         base_env: ResolvedEnvironment,
         deps: Dict[str, List[str]],
         sources: Dict[str, List[str]],
@@ -954,6 +997,16 @@ class EnvsResolver(object):
             "_default",
             architecture,
         )
+
+        if (
+            new_env_id.req_id == base_env.env_id.req_id
+            and new_env_id.arch == base_env.env_id.arch
+        ):
+            # This means that the environment is identical to the base one. We can
+            # set the full_id to be the same
+            new_env_id = EnvID(
+                new_env_id.req_id, base_env.env_id.full_id, new_env_id.arch
+            )
 
         return env_type, new_env_id, new_sources, user_deps, deps, extras
 

@@ -93,9 +93,16 @@ class CondaLockResolver(Resolver):
             sys_overrides = {
                 k: v for d in deps.get("sys", []) for k, v in [d.split("==")]
             }
+
             # We only add pip if not present
             if not any([(d == "pip" or d.startswith("pip==")) for d in conda_deps]):
                 conda_deps.append("pip")
+            # Ditto for uv -- uv 0.7.8 is the last to actually work with python 3.7
+            # but this is not listed as a condition so we enforce it here
+            # TODO: Remove this once python3.7 is retired
+            if not any([(d == "uv" or d.startswith("uv==")) for d in conda_deps]):
+                conda_deps.append("uv==<=0.7.8")
+
             toml_lines = [
                 "[build-system]\n",
                 'requires = ["poetry>=0.12"]\n',
@@ -241,13 +248,16 @@ class CondaLockResolver(Resolver):
                 # overrides (currently __cuda) down as well.
                 if arch_id() == architecture or sys_overrides:
                     lines = ["subdirs:\n", "  %s:\n" % architecture, "    packages:\n"]
+                    # Strip out build as it seems to be causing some issues with
+                    # some versions of conda-lock when it extracts the GLIBC version.
                     lines.extend(
-                        '      %s: "%s"\n' % (virt_pkg, virt_build_str)
+                        '      %s: "%s"\n' % (virt_pkg, virt_build_str.split("=")[0])
                         for virt_pkg, virt_build_str in self._conda.virtual_packages.items()
                         if virt_pkg not in sys_overrides
                     )
                     lines.extend(
-                        '      %s: "%s"\n' % (k, v) for k, v in sys_overrides.items()
+                        '      %s: "%s"\n' % (k, v.split("=")[0])
+                        for k, v in sys_overrides.items()
                     )
 
                     with open(
