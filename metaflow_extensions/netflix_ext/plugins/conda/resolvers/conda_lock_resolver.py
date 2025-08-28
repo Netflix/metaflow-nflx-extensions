@@ -1,16 +1,12 @@
 # pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
-import json
 import os
-import subprocess
-import sys
 import tempfile
-import uuid
 
 from itertools import chain
 from typing import Dict, List, Optional, Set, Tuple, cast
 
+from urllib.parse import urlparse
 from metaflow.debug import debug
-from metaflow.metaflow_config import CONDA_LOCAL_PATH
 
 from metaflow._vendor.packaging.requirements import Requirement
 
@@ -27,7 +23,6 @@ from ..pypi_package_builder import PackageToBuild, build_pypi_packages
 
 from ..utils import (
     CondaException,
-    WithDir,
     arch_id,
     channel_or_url,
     parse_explicit_url_conda,
@@ -35,6 +30,7 @@ from ..utils import (
     pypi_tags_from_arch,
 )
 from . import Resolver
+from .pip_resolver import _FAKE_WHEEL
 
 
 class CondaLockResolver(Resolver):
@@ -204,8 +200,13 @@ class CondaLockResolver(Resolver):
             for pypi_name, info in pypi_dep_lines.items():
                 if "url" in info:
                     toml_lines.append(
-                        '"%s" = {url = "%s", %s source="pypi"}\n'
-                        % (pypi_name, info["url"], info["url_extras"])
+                        '"%s" = {%s = "%s", %s source="pypi"}\n'
+                        % (
+                            pypi_name,
+                            "git" if info["url"].startswith("git+") else "url",
+                            info["url"],
+                            info["url_extras"],
+                        )
                     )
                 else:
                     toml_lines.append(
@@ -298,6 +299,34 @@ class CondaLockResolver(Resolver):
                                 raise CondaException(
                                     "Unexpected package specification line: %s" % l
                                 )
+                            debug.conda_exec("Got PYPI package %s" % l)
+                            if components[4].startswith("git+"):
+                                # This is a GIT URL so we have to build the package
+                                # See pip_resolver.py for vcs_info on an explanation
+                                # on how we deal with git packages
+                                # Looks like gi+https://<url>@<commit>
+                                base_build_url = components[4]
+                                parse = urlparse(base_build_url)
+                                clean_path, clean_commit = parse.path.split("@")
+                                clean_url = parse.scheme[4:] + parse.netloc + clean_path
+                                base_pkg_url = "%s/%s" % (clean_url, clean_commit)
+                                # TODO: Do we need to handle subdirectories
+                                cache_base_url = (
+                                    PypiCachePackage.make_partial_cache_url(
+                                        base_pkg_url, is_real_url=False
+                                    )
+                                )
+                                packages_to_build[cache_base_url] = PackageToBuild(
+                                    base_build_url,
+                                    PypiPackageSpecification(
+                                        _FAKE_WHEEL,
+                                        base_pkg_url,
+                                        is_real_url=False,
+                                        url_format=".whl",
+                                    ),
+                                )
+                                continue
+                            # Non-GIT URL
                             parse_result = parse_explicit_url_pypi(components[4])
                             if parse_result.url_format != ".whl":
                                 cache_base_url = (
@@ -375,27 +404,24 @@ class CondaLockResolver(Resolver):
                     supported_tags = pypi_tags_from_arch(
                         python_version, architecture, glibc_version
                     )
-                    if self._conda.storage:
-                        built_pypi_packages, builder_envs = build_pypi_packages(
-                            self._conda,
-                            self._conda.storage,
-                            python_version,
-                            packages_to_build,
-                            builder_envs,
-                            build_dir,
-                            architecture,
-                            supported_tags,
-                            sources.get("pypi", []),
+                    if not self._conda.storage:
+                        raise CondaException(
+                            "Cannot create a relocatable environment as it depends on "
+                            "local files or non wheels and no storage backend is defined: %s"
+                            % ", ".join([v.url for v in packages_to_build.values()])
                         )
-                        packages.extend(built_pypi_packages)
-                    else:
-                        # Here it was just URLs so we are good
-                        packages.extend(
-                            [
-                                cast(PackageSpecification, v.spec)
-                                for v in packages_to_build.values()
-                            ]
-                        )
+                    built_pypi_packages, builder_envs = build_pypi_packages(
+                        self._conda,
+                        self._conda.storage,
+                        python_version,
+                        packages_to_build,
+                        builder_envs,
+                        build_dir,
+                        architecture,
+                        supported_tags,
+                        sources.get("pypi", []),
+                    )
+                    packages.extend(built_pypi_packages)
             return (
                 ResolvedEnvironment(
                     deps,
