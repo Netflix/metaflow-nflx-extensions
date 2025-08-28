@@ -1,4 +1,0 @@
-dependencies:
-  - pytorch::pytorch = 1.12.0
-  - pip:
-      - graphspire = 0.1.3
