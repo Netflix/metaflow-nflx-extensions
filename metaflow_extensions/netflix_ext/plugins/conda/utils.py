@@ -680,7 +680,7 @@ class PerHostAuth(AuthBase):
         # credentials without a username. This is only available for
         # keyring>=15.2.0.
         if hasattr(self._keyring, "get_credential"):
-            logger.debug("Getting credentials from keyring for %s", url)
+            debug.conda_exec("Getting credentials from keyring for %s" % hostname)
             cred = self._keyring.get_credential(hostname, username)
             if cred is not None:
                 debug.conda_exec(
