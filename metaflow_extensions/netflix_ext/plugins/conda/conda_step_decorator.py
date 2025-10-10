@@ -50,6 +50,8 @@ from .conda import Conda
 class PackageRequirementStepDecorator(StepDecorator):
     name = "step_package_req"
 
+    allow_multiple = True
+
     def step_init(
         self,
         flow: FlowSpec,
