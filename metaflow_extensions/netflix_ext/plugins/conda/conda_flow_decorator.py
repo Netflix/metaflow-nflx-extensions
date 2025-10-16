@@ -14,6 +14,8 @@ from .conda_common_decorator import (
 class PackageRequirementFlowDecorator(FlowDecorator):
     name = "package_base"
 
+    allow_multiple = True
+
     def flow_init(
         self, flow, graph, environment, flow_datastore, metadata, logger, echo, options
     ):
