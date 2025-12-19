@@ -30,15 +30,13 @@ from metaflow.metaflow_config import (
     CONDA_SYS_DEPENDENCIES,
     CONDA_SYS_DEFAULT_PACKAGES,
     CONDA_USE_REMOTE_LATEST,
+    PYLOCK_TOML_DEPENDENCY_RESOLVER,
 )
 from metaflow.metaflow_environment import InvalidEnvironmentException
 from metaflow.system import _system_monitor, _system_logger
 
 from metaflow._vendor.packaging.requirements import Requirement
 from metaflow._vendor.packaging.version import parse as parse_version
-from metaflow_extensions.netflix_ext.config.mfextinit_nflx import (
-    PYLOCK_TOML_DEPENDENCY_RESOLVER,
-)
 from .env_descr import (
     EnvID,
     EnvType,
