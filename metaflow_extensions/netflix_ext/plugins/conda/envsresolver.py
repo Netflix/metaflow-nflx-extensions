@@ -1011,7 +1011,7 @@ class EnvsResolver(object):
 
         Returns
         -------
-        Tuple[EnvType, EnvID, Dict[str, List[str]], Dict[str, List[str]],Dict[str, List[str]], Dict[str, List[str]]]
+        Tuple[EnvType, EnvID, Dict[str, List[str]], Dict[str, List[str]],Dict[str, List[str]], Dict[str, List[str]], bool]
             The tuple contains:
                 - the EnvType
                 - the new EnvID

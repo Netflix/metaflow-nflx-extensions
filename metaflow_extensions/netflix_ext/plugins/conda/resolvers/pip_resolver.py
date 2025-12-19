@@ -11,6 +11,8 @@ from urllib.parse import unquote, urlparse
 
 from metaflow.debug import debug
 
+from metaflow.metaflow_config import CONDA_SYS_MARKERS
+
 from ..env_descr import (
     EnvType,
     PackageSpecification,  # noqa

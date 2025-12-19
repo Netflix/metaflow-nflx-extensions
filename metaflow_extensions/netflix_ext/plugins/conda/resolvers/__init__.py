@@ -15,6 +15,8 @@ from ..utils import CondaException
 class Resolver:
     TYPES = ["invalid"]
 
+    REQUIRES_BUILDER_ENV = False
+
     _class_per_type = None  # type: Optional[Dict[str, Type[Resolver]]]
 
     @classmethod
@@ -108,3 +110,4 @@ class Resolver:
 from .builder_envs_resolver import BuilderEnvsResolver
 from .conda_lock_resolver import CondaLockResolver
 from .pip_resolver import PipResolver
+from .pylock_toml_resolver import PylockTomlResolver
