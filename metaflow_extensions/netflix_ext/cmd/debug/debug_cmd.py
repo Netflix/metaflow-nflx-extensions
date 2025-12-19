@@ -1,7 +1,7 @@
 import os
 import json
 
-from metaflow import Flow, Run, Step, Task
+from metaflow import Flow, Run
 from metaflow._vendor import click
 from typing import Any, Optional, Union
 from metaflow.exception import CommandException
@@ -19,13 +19,15 @@ from .debug_utils import (
 
 
 class CommandObj:
-    def __init__(self):
-        pass
+    def __init__(self) -> None:
+        self.quiet: bool = False
+        self.echo: Any = None
+        self.echo_always: Any = None
 
 
 @click.group()
 @click.pass_context
-def cli(ctx):
+def cli(ctx: Any) -> None:
     pass
 
 
@@ -40,7 +42,7 @@ def cli(ctx):
 def debug(
     ctx: Any,
     quiet: bool,
-):
+) -> None:
     if quiet:
         echo = echo_dev_null
     else:
@@ -284,8 +286,8 @@ def _generate_debug_scripts(
         metaflow_root_dir, script, debug_file_name
     )
 
-    generate_notebook = generate_notebook.lower() in ["true", "1"]
-    if generate_notebook:
+    generate_notebook_bool = generate_notebook.lower() in ["true", "1"]
+    if generate_notebook_bool:
         kernel_def = _find_kernel_name(python_executable)
         if kernel_def:
             _update_kernel_pythonpath(kernel_def[2], metaflow_root_dir)
@@ -295,9 +297,13 @@ def _generate_debug_scripts(
             obj.echo(
                 f"Added escape trampolines to PYTHONPATH for the kernel {kernel_def[0]}"
             )
-        notebook_json = debug_script_generator.generate_debug_notebook(
-            metaflow_root_dir, debug_file_name, kernel_def
-        )
+            notebook_json = debug_script_generator.generate_debug_notebook(
+                metaflow_root_dir, debug_file_name, (kernel_def[0], kernel_def[1])
+            )
+        else:
+            notebook_json = debug_script_generator.generate_debug_notebook(
+                metaflow_root_dir, debug_file_name, None
+            )
         debug_script_generator.write_debug_notebook(metaflow_root_dir, notebook_json)
 
     obj.echo(

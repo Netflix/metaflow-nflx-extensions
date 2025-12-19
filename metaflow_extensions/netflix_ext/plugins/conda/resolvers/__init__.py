@@ -47,6 +47,7 @@ class Resolver:
     def resolve(
         self,
         env_type: "metaflow_extensions.netflix_ext.plugins.conda.env_descr.EnvType",
+        python_version_requested: str,
         deps: Dict[str, List[str]],
         sources: Dict[str, List[str]],
         extras: Dict[str, List[str]],

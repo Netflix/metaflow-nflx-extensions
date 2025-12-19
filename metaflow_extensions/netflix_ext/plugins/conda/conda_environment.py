@@ -1,5 +1,3 @@
-# pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
-
 import json
 import os
 import platform
@@ -14,7 +12,7 @@ from typing import (
     Dict,
     List,
     Optional,
-    Set,
+    Set,  # noqa
     Tuple,
     Union,
     cast,
@@ -23,16 +21,14 @@ from typing import (
 from metaflow.debug import debug
 
 from metaflow.packaging_sys import ContentType
-from metaflow.package import MetaflowPackage
 from metaflow.plugins.datastores.local_storage import LocalStorage
 from metaflow.flowspec import FlowSpec
 
-from metaflow.exception import MetaflowException
-
 from metaflow.metaflow_config import (
-    CONDA_MAGIC_FILE_V2,
-    CONDA_REMOTE_COMMANDS,
-    CONDA_TEST,
+    CONDA_MAGIC_FILE_V2,  # type: ignore[attr-defined]
+    CONDA_REMOTE_COMMANDS,  # type: ignore[attr-defined]
+    CONDA_TEST,  # type: ignore[attr-defined]
+    CONDA_IGNORE_CACHING_DATASTORES,  # type: ignore[attr-defined]
     get_pinned_conda_libs,
 )
 
@@ -135,6 +131,7 @@ class CondaEnvironment(MetaflowEnvironment):
                 req.packages_as_str,
                 req.sources,
                 {},
+                req.file_paths,
                 step.name,
                 base_env,
                 base_from_full_id=base_from_full_id,
@@ -144,7 +141,7 @@ class CondaEnvironment(MetaflowEnvironment):
         self._log_conda_events(resolver)
 
         update_envs = []  # type: List[ResolvedEnvironment]
-        if self._datastore_type != "local" or CONDA_TEST:
+        if self._datastore_type not in CONDA_IGNORE_CACHING_DATASTORES or CONDA_TEST:
             # We may need to update caches
             # Note that it is possible that something we needed to resolve, we don't need
             # to cache (if we resolved to something already cached).
@@ -252,11 +249,13 @@ class CondaEnvironment(MetaflowEnvironment):
             from metaflow.client.filecache import FileCache
 
             cls._filecache = FileCache()
-        info = metadata.get("code-package")
+        info_str = metadata.get("code-package")
         env_id = json.loads(metadata.get("conda_env_id", "[]"))
-        if info is None or not env_id:
+        if info_str is None or not env_id:
             return {"type": "conda"}
-        info = json.loads(info)
+        info = json.loads(info_str)
+        if info is None:
+            return {"type": "conda"}
         _, blobdata = cls._filecache.get_data(
             info["ds_type"], flow_name, info["location"], info["sha"]
         )
@@ -377,6 +376,9 @@ class CondaEnvironment(MetaflowEnvironment):
             if resolved_env:
                 return resolved_env.env_id
             return None
+        else:
+            # Default case when step_info exists but no conditions are met
+            return None
 
     @classmethod
     def enabled_for_step(cls, step_name: str, ubf_context: str) -> bool:
@@ -435,8 +437,11 @@ class CondaEnvironment(MetaflowEnvironment):
         override_arch: Optional[str] = None,
         local_only: bool = False,
     ) -> Tuple[EnvType, str, StepRequirement, Optional[ResolvedEnvironment]]:
+        # We typically only have one architecture per step but it is possible to
+        # use the resolve CLI and pass multiple architectures. In that case, we use
+        # override_arch and so in that case, we skip caching.
         computed_result = cls._result_for_step.get(step.name)
-        if computed_result:
+        if override_arch is None and computed_result:
             if computed_result[2] is None:
                 # Disabled or fetch_at_exec
                 return EnvType.CONDA_ONLY, computed_result[0], computed_result[1], None
@@ -481,8 +486,9 @@ class CondaEnvironment(MetaflowEnvironment):
             "For step %s, merged requirement: %s" % (step.name, repr(final_req))
         )
 
-        if final_req.is_disabled:
-            cls._result_for_step[step.name] = (step_arch, final_req, None)
+        if not computed_result and final_req.is_disabled:
+            if override_arch is None:
+                cls._result_for_step[step.name] = (step_arch, final_req, None)
             return (
                 EnvType.CONDA_ONLY,
                 step_arch,
@@ -506,7 +512,8 @@ class CondaEnvironment(MetaflowEnvironment):
                     "any additional requirements (packages, sources, or python)"
                     % step.name
                 )
-            cls._result_for_step[step.name] = (step_arch, final_req, None)
+            if override_arch is None:
+                cls._result_for_step[step.name] = (step_arch, final_req, None)
             return (
                 EnvType.CONDA_ONLY,
                 step_arch,
@@ -514,10 +521,7 @@ class CondaEnvironment(MetaflowEnvironment):
                 None,  # No point going further -- we won't be able to get all info
             )
 
-        all_packages = final_req.packages
-
-        has_conda = len(all_packages.get("conda", {})) > 0
-        has_pypi = len(all_packages.get("pypi", {})) > 0
+        all_packages: Dict[str, Dict[str, str]] = final_req.packages
 
         # Figure out the from_env information
         from_env_name = final_req.from_env_name
@@ -539,16 +543,9 @@ class CondaEnvironment(MetaflowEnvironment):
                     "Base environment '%s' not found" % from_env_name
                 )
 
-        env_type = EnvType.CONDA_ONLY
+        env_type = CondaEnvironment._determine_env_type_for_step(from_env, final_req)
+
         if from_env is not None:
-            # We keep the same environment if possible
-            if (from_env.env_type == EnvType.PYPI_ONLY and has_conda) or (
-                from_env.env_type == EnvType.CONDA_ONLY and has_pypi
-            ):
-                env_type = EnvType.MIXED
-            else:
-                env_type = from_env.env_type
-            # Extract python version from the environment
             for p in from_env.packages:
                 if p.package_name == "python":
                     final_req.python = p.package_version
@@ -558,19 +555,18 @@ class CondaEnvironment(MetaflowEnvironment):
                     "Cannot determine Python version from the base environment"
                 )
         else:
-            if has_conda and has_pypi:
-                env_type = EnvType.MIXED
-            elif has_pypi:
-                env_type = EnvType.PYPI_ONLY
-
             if final_req.python is None:
                 final_req.python = sanitize_python_version(platform.python_version())
-            all_packages.setdefault("conda", {})["python"] = canonicalize_version(
-                final_req.python
-            )
+            # Ensure final_req.python is not None before calling canonicalize_version
+            python_version = final_req.python
+            if python_version is not None:
+                all_packages.setdefault("conda", {})["python"] = canonicalize_version(
+                    python_version
+                )
 
         # Add pinned dependencies based on env-type; we prefer conda dependencies if
         # env-type is mixed
+
         if env_type == EnvType.PYPI_ONLY:
             all_packages["pypi"] = merge_dep_dicts(
                 all_packages.get("pypi", {}),
@@ -595,11 +591,11 @@ class CondaEnvironment(MetaflowEnvironment):
         # The user can specify whatever they want but we inject things they don't
         # specify
         final_req_sys = all_packages.setdefault("sys", {})
-        for p, v in sys_pkgs.items():
-            if p not in final_req_sys:
-                final_req_sys[p] = v
+        for pkg_name, pkg_version in sys_pkgs.items():
+            if pkg_name not in final_req_sys:
+                final_req_sys[pkg_name] = pkg_version
 
-        final_req.packages = all_packages
+        final_req._packages = all_packages
 
         # Update sources -- here the order is important so we explicitly set it
         # This code will put:
@@ -636,7 +632,7 @@ class CondaEnvironment(MetaflowEnvironment):
         # to be able to get the req_id from steps even if init_environment is not called)
         # We could improve this though it is likely not a huge overhead.
         if from_env:
-            _, env_id, _, _, _, _ = EnvsResolver.extract_info_from_base(
+            _, env_id, _, _, _, _, _ = EnvsResolver.extract_info_from_base(
                 conda,
                 from_env,
                 final_req.packages_as_str,
@@ -652,12 +648,79 @@ class CondaEnvironment(MetaflowEnvironment):
                 "_default",
                 step_arch,
             )
-        cls._result_for_step[step.name] = (
-            step_arch,
-            final_req,
-            (env_id, env_type, from_env),
-        )
+        if override_arch is None:
+            cls._result_for_step[step.name] = (
+                step_arch,
+                final_req,
+                (env_id, env_type, from_env),
+            )
+
         return env_type, step_arch, final_req, from_env
+
+    # Determines the environment type for a step given its final requirements.
+    #
+    # There are two "sources" of information that determine the environment type:
+    # 1) The env_type of the from_env (if any)
+    # 2) The presence of conda/pypi packages in the final requirements
+    # If
+    # a) from_env is CONDA_ONLY and only has conda packages --> return CONDA_ONLY
+    # b) from_env is PYPI_ONLY and only has pypi packages --> return PYPI_ONLY
+    # c) presence of two different things, such as a CONDA_ONLY from_env and a pypi package
+    #    presence --> return MIXED.
+    @staticmethod
+    def _determine_env_type_for_step(
+        from_env: Optional[ResolvedEnvironment],
+        # Deliberately taking a StepRequirement rather than all_packages,
+        # in case later we want to consider other fields.
+        final_req: StepRequirement,
+    ) -> EnvType:
+
+        from_env_env_type: Optional[EnvType] = (
+            None if from_env is None else from_env.env_type
+        )
+
+        # Use the private variables directly to avoid deep copy on packages(), sources() properties.
+        has_conda = len(final_req._packages.get("conda", {})) > 0
+        has_pypi = len(final_req._packages.get("pypi", {})) > 0
+
+        mapping = dict[EnvType, bool](
+            {
+                EnvType.CONDA_ONLY: has_conda,
+                EnvType.PYPI_ONLY: has_pypi,
+            }
+        )
+
+        env_hits = sum(
+            # from_env env_type is the same as "has__", then that counts as one hit (bool true->1)
+            int(k == from_env_env_type or v)
+            for (k, v) in mapping.items()
+        )
+
+        if env_hits > 1:
+            return EnvType.MIXED
+        elif env_hits == 1:
+            # env_hits == 1 is only possible in the following cases:
+            # (a) from_env_env_type is the same as the only present package, such as
+            #     from_env_env_type == CONDA_ONLY and has_conda == True and has_pypi == False
+            # (b) from_env_env_type is None and only one of has_conda or has_pypi is True,
+            #     in this case we return the one that is True
+            # (c) from_env_env_type is MIXED and only one package presence is counted,
+            #     such as has_conda == True and has_pypi == False or vice-versa,
+            #     in this case we return MIXED.
+            return (
+                from_env_env_type
+                # When from_env_env_type is not None, we have (a) or (b) scenarios in above.
+                # In those two cases, we return the same from_env_env_type.
+                if from_env_env_type is not None
+                else (
+                    # When from_env_env_type is None, we have (b) scenario in above.
+                    next(k for k, v in mapping.items() if v)
+                )
+            )
+        else:
+            # It should be be impossible to have both has_conda==False and has_pypi==False,
+            # and this line of code shouldn't be reached.
+            pass
 
     @staticmethod
     def sub_envvars_in_envname(
@@ -689,7 +752,6 @@ class CondaEnvironment(MetaflowEnvironment):
 
     def _log_conda_events(self, resolver):
         from metaflow.system import _system_logger
-        from metaflow import current
 
         def _format_packages(packages):
             return {

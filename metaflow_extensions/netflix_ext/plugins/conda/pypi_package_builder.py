@@ -5,7 +5,16 @@ import os
 import shutil
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Set, Tuple, cast
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    cast,
+)  # noqa
 
 if TYPE_CHECKING:
     import metaflow.datastore.datastore_storage
@@ -137,7 +146,10 @@ def build_pypi_packages(
             # we need to update it since a tarball has a generic name without
             # ABI, etc but a wheel name has more information)
             if pkg_spec.filename != cache_filename:
-                pkg_spec = pkg_spec.clone_with_filename(cache_filename)
+                pkg_spec = cast(
+                    PypiPackageSpecification,
+                    pkg_spec.clone_with_filename(cache_filename),
+                )
                 pkg_info.spec = pkg_spec
         debug.conda_exec(
             "%s:%s adding cache file %s"
@@ -164,7 +176,13 @@ def build_pypi_packages(
 
     debug.conda_exec(
         "Going to build packages %s"
-        % ", ".join([to_build_pkg_info[k].spec.filename for k in keys_to_build])
+        % ", ".join(
+            [
+                to_build_pkg_info[k].spec.filename  # type: ignore[union-attr]
+                for k in keys_to_build
+                if to_build_pkg_info[k].spec is not None
+            ]
+        )
     )
     # Here we are the same architecture so we can go ahead and build the wheel and
     # add it.
@@ -183,6 +201,7 @@ def build_pypi_packages(
     if not builder_env:
         builder_env, builder_envs = BuilderEnvsResolver(conda).resolve(
             EnvType.CONDA_ONLY,
+            f"python=={python_version}",
             {"conda": ["python==%s" % python_version]},
             {},
             {},
@@ -304,7 +323,10 @@ def build_pypi_packages(
 
             # We update because we need to change the filename mostly so that it
             # now reflects the abi, etc and all that goes in a wheel filename.
-            pkg_spec = pkg_spec.clone_with_filename(parse_result.filename)
+            pkg_spec = cast(
+                PypiPackageSpecification,
+                pkg_spec.clone_with_filename(parse_result.filename),
+            )
             to_build_pkg_info[key].spec = pkg_spec
             pkg_spec.add_local_file(".whl", wheel_file, pkg_hash=parse_result.hash)
 

@@ -11,6 +11,10 @@ from metaflow.metaflow_config_funcs import from_conf, get_validate_choice_fn
 # Set to true if running the tests with a local datastore
 CONDA_TEST = from_conf("CONDA_TEST", False)
 
+CONDA_IGNORE_CACHING_DATASTORES = from_conf(
+    "CONDA_IGNORE_CACHING_DATASTORES", ["local", "spin"]
+)
+
 # HACK -- work around an issue with micromamba where using a channel_alias
 # causes the packages to be considered invalid (URL verification). This
 # value should be set to the channel_alias prefix that will be replaced by
@@ -57,6 +61,14 @@ CONDA_DEPENDENCY_RESOLVER = from_conf(
     "CONDA_DEPENDENCY_RESOLVER",
     "mamba",
     get_validate_choice_fn(["mamba", "conda", "micromamba"]),
+)
+
+# Resolver for pylock.toml file (it's not really a resolver since the
+# resolution is assumed to have been done)
+PYLOCK_TOML_DEPENDENCY_RESOLVER = from_conf(
+    "PYLOCK_TOML_DEPENDENCY_RESOLVER",
+    "pylock_toml",
+    get_validate_choice_fn(["pylock_toml"]),
 )
 
 # For pure PYPI environments, if you want to support those, set to the pypi resolver.
@@ -146,6 +158,25 @@ CONDA_SYS_DEFAULT_PACKAGES = from_conf(
         "linux-64": {"__glibc": os.environ.get("CONDA_OVERRIDE_GLIBC", "2.27")},
     },
 )
+
+# Markers to assume for different architectures. See
+# https://packaging.pypa.io/en/stable/markers.html#packaging.markers.Environment for
+# valid keys.
+# By default:
+#  - implementation_version is cleared
+#  - python_version and python_full_version are cleared (and set based on environment
+#    to resolve)
+#  - others are taken from the default environment
+# Any keys set here will override the above (except python_version and python_full_version)
+CONDA_SYS_MARKERS = {
+    "linux-64": {
+        "os_name": "posix",
+        "platform_machine": "x86_64",
+        "platform_system": "Linux",
+        "platform_release": "6.5.13",
+        "sys_platform": "linux",
+    }
+}
 
 # Packages to add when building for GPU machines (ie: if there is a GPU resource
 # requirement). As an example you can set this to:

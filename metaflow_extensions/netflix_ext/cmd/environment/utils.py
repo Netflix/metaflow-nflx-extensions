@@ -13,6 +13,7 @@ from metaflow.extension_support import (
 )
 
 from metaflow.packaging_sys import MFCONTENT_MARKER, MetaflowCodeContentV1Base
+from metaflow.util import walk_without_cycles
 
 # _deps_parse = re.compile(r"([^<>=!~]+)(.*)")
 _ext_parse = re.compile(r"([-_\w]+)\(([^)]+)\)")
@@ -78,7 +79,7 @@ def _merge_directories(src_dir, dest_dir):
     # Due to a bug in PIP, we can't use --target to install namespace packages
     # so we hack around it by merging directories manually.
 
-    for root, dirs, files in os.walk(src_dir):
+    for root, dirs, files in walk_without_cycles(src_dir):
         # Determine the path of the current directory relative to src_dir
         relative_path = os.path.relpath(root, src_dir)
         # Determine the corresponding path in the destination directory

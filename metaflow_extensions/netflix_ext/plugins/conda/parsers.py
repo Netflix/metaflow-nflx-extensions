@@ -18,28 +18,22 @@ YML_SPLIT_LINE = re.compile(r"(?:=\s)?(<=|>=|~=|==|<|>|=)")
 
 
 def req_parser(config_value: str) -> Dict[str, Any]:
-    extra_args = {}
-    sources = {}
-    deps = {}
-    np_deps = {}
-    sys_deps = {}
+    extra_args: Dict[str, Any] = {}
+    sources: Dict[str, List[str]] = {}
+    deps: Dict[str, str] = {}
+    np_deps: Dict[str, str] = {}
+    sys_deps: Dict[str, str] = {}
     python_version = parse_req_value(
         config_value, extra_args, sources, deps, np_deps, sys_deps
     )
-    result = {}
+    result: Dict[str, Any] = {}
     if python_version:
         result["python"] = python_version
 
     if extra_args:
-        raise InvalidEnvironmentException(
-            "Additional arguments are not supported when parsing requirements.txt for "
-            "the pypi decorator -- use a named environment instead"
-        )
+        result["extras"] = extra_args
     if np_deps:
-        raise InvalidEnvironmentException(
-            "Non-python dependencies are not supported when parsing requirements.txt for "
-            "the pypi decorator -- use a named environment instead"
-        )
+        result["conda_only"] = np_deps
     if sys_deps:
         raise InvalidEnvironmentException(
             "System dependencies are not supported when parsing requirements.txt for "
@@ -47,23 +41,23 @@ def req_parser(config_value: str) -> Dict[str, Any]:
         )
 
     if "pypi" in sources:
-        result["extra_indices"] = sources["pypi"]
+        result["extra_indices"] = sources["pypi"]  # type: ignore[assignment]
         del sources["pypi"]
     if len(sources):
         raise InvalidEnvironmentException(
             "Only PYPI sources are allowed in requirements.txt"
         )
 
-    result["packages"] = deps
+    result["packages"] = deps  # type: ignore[assignment]
 
     return result
 
 
 def yml_parser(config_value: str) -> Dict[str, Any]:
-    sources = {}
-    conda_deps = {}
-    pypi_deps = {}
-    sys_deps = {}
+    sources: Dict[str, List[str]] = {}
+    conda_deps: Dict[str, str] = {}
+    pypi_deps: Dict[str, str] = {}
+    sys_deps: Dict[str, str] = {}
     python_version = parse_yml_value(
         config_value, {}, sources, conda_deps, pypi_deps, sys_deps
     )
@@ -78,24 +72,24 @@ def yml_parser(config_value: str) -> Dict[str, Any]:
         result["python"] = python_version
 
     if "conda" in sources:
-        result["channels"] = sources["conda"]
+        result["channels"] = sources["conda"]  # type: ignore[assignment]
     if "pypi" in sources:
-        result["pip_sources"] = sources["pypi"]
+        result["pip_sources"] = sources["pypi"]  # type: ignore[assignment]
 
     if len(conda_deps):
-        result["libraries"] = conda_deps
+        result["libraries"] = conda_deps  # type: ignore[assignment]
     if len(pypi_deps):
-        result["pip_packages"] = pypi_deps
+        result["pip_packages"] = pypi_deps  # type: ignore[assignment]
 
     return result
 
 
 def toml_parser(config_value: str) -> Dict[str, Any]:
-    extra_args = {}
-    sources = {}
-    deps = {}
-    np_deps = {}
-    sys_deps = {}
+    extra_args: Dict[str, List[str]] = {}
+    sources: Dict[str, List[str]] = {}
+    deps: Dict[str, str] = {}
+    np_deps: Dict[str, str] = {}
+    sys_deps: Dict[str, str] = {}
     python_version = parse_toml_value(
         config_value, extra_args, sources, deps, np_deps, sys_deps
     )
@@ -104,14 +98,14 @@ def toml_parser(config_value: str) -> Dict[str, Any]:
         result["python"] = python_version
 
     if "pypi" in sources:
-        result["extra_indices"] = sources["pypi"]
+        result["extra_indices"] = sources["pypi"]  # type: ignore[assignment]
         del sources["pypi"]
     if len(sources):
         raise InvalidEnvironmentException(
             "Only PYPI sources are allowed in requirements.txt"
         )
 
-    result["packages"] = deps
+    result["packages"] = deps  # type: ignore[assignment]
 
     return result
 
@@ -191,16 +185,14 @@ def parse_req_value(
                 parsed_req = Requirement(line)
             except InvalidRequirement as ex:
                 raise InvalidEnvironmentException("Could not parse '%s'" % line) from ex
-            if parsed_req.marker is not None:
-                raise InvalidEnvironmentException(
-                    "Environment markers are not supported for '%s'" % line
-                )
             dep_name = parsed_req.name
             if parsed_req.extras:
                 dep_name += "[%s]" % ",".join(parsed_req.extras)
             if parsed_req.url:
                 dep_name += "@%s" % parsed_req.url
             specifier = str(parsed_req.specifier).lstrip(" =")
+            if parsed_req.marker:
+                specifier += ";" + str(parsed_req.marker)
             if dep_name == "python":
                 if specifier:
                     python_version = specifier
@@ -334,16 +326,16 @@ def parse_toml_value(
             parsed_req = Requirement(dep_line)
         except InvalidRequirement as ex:
             raise InvalidEnvironmentException("Could not parse '%s'" % dep_line) from ex
-        if parsed_req.marker is not None:
-            raise InvalidEnvironmentException(
-                "Environment markers are not supported for '%s'" % dep_line
-            )
+
         dep_name = parsed_req.name
         if parsed_req.extras:
             dep_name += "[%s]" % ",".join(parsed_req.extras)
         if parsed_req.url:
             dep_name += "@%s" % parsed_req.url
         specifier = str(parsed_req.specifier).lstrip(" =")
+        if parsed_req.marker:
+            specifier += ";" + str(parsed_req.marker)
+
         if dep_name == "python":
             raise InvalidEnvironmentException(
                 "Python specification should be specified as 'requires-python'"
@@ -353,6 +345,12 @@ def parse_toml_value(
     # Also parse poetry sources as extra indices
     poetry_sources = data.get("tool", {}).get("poetry", {}).get("source", [])
     for s in poetry_sources:
+        if "url" in s:
+            sources.setdefault("pypi", []).append(s["url"])
+
+    # Also parse uv index as extra indices
+    uv_sources = data.get("tool", {}).get("uv", {}).get("index", [])
+    for s in uv_sources:
         if "url" in s:
             sources.setdefault("pypi", []).append(s["url"])
 

@@ -5,7 +5,7 @@ import shutil
 import traceback
 import subprocess
 from metaflow import Task, S3
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional, Tuple
 from metaflow.exception import CommandException
 from metaflow.plugins.env_escape import generate_trampolines
 from metaflow_extensions.netflix_ext.cmd.debug.constants import Constants
@@ -211,7 +211,7 @@ def _extract_code_package(obj, task: Task, metaflow_root_dir: str):
 
 def _find_kernel_name(
     python_executable: Optional[str] = None,
-) -> Optional[Tuple[str, str]]:
+) -> Optional[Tuple[str, str, str]]:
     """
     Finds the jupyter kernel name for the python executable. This is a best effort
     function and may potentially fail in some cases. We return None in those cases
@@ -240,7 +240,6 @@ def _find_kernel_name(
     except Exception as e:
         # Ignore the exception and return None as it is a best effort function
         print(f"Error finding kernel name: {traceback.format_exc()}")
-        pass
     return None
 
 

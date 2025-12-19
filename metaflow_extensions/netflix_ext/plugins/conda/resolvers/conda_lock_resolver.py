@@ -1,9 +1,10 @@
 # pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
 import os
+import re
 import tempfile
 
 from itertools import chain
-from typing import Dict, List, Optional, Set, Tuple, cast
+from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING, cast  # noqa
 
 from urllib.parse import urlparse
 from metaflow.debug import debug
@@ -13,7 +14,6 @@ from metaflow._vendor.packaging.requirements import Requirement
 from ..env_descr import (
     CondaPackageSpecification,
     EnvType,
-    PackageSpecification,
     PypiCachePackage,
     PypiPackageSpecification,
     ResolvedEnvironment,
@@ -25,12 +25,19 @@ from ..utils import (
     CondaException,
     arch_id,
     channel_or_url,
+    filter_user_reqs_by_markers,
     parse_explicit_url_conda,
     parse_explicit_url_pypi,
     pypi_tags_from_arch,
+    split_into_dict,
 )
 from . import Resolver
 from .pip_resolver import _FAKE_WHEEL
+
+if TYPE_CHECKING:
+    from metaflow_extensions.netflix_ext.plugins.conda.env_descr import (
+        PackageSpecification,
+    )  # noqa
 
 
 class CondaLockResolver(Resolver):
@@ -39,12 +46,14 @@ class CondaLockResolver(Resolver):
     def resolve(
         self,
         env_type: EnvType,
+        python_version_requested: str,
         deps: Dict[str, List[str]],
         sources: Dict[str, List[str]],
         extras: Dict[str, List[str]],
         architecture: str,
         builder_envs: Optional[List[ResolvedEnvironment]] = None,
         base_env: Optional[ResolvedEnvironment] = None,
+        file_paths: Dict[str, List[str]] = {},
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
         outfile_name = None
         external_packages = {}
@@ -55,7 +64,7 @@ class CondaLockResolver(Resolver):
             external_packages = {
                 p.package_name: p.url
                 for p in base_env.packages
-                if p.TYPE == "pypi" and p.is_external_url(sources)
+                if p.TYPE == "pypi" and p.is_external_url(sources)  # type: ignore[attr-defined]
             }
             if local_packages:
                 # We actually only care about things that are not online. Derived packages
@@ -77,6 +86,7 @@ class CondaLockResolver(Resolver):
         )
         debug.conda_exec("Will add pypi channels: %s" % ", ".join(pypi_channels))
 
+        deps = filter_user_reqs_by_markers(deps, python_version_requested, architecture)
         try:
             # We resolve the environment using conda-lock
 
@@ -86,9 +96,7 @@ class CondaLockResolver(Resolver):
             pypi_deps = deps.get("pypi", [])
             conda_deps = list(chain(deps.get("conda", []), deps.get("npconda", [])))
 
-            sys_overrides = {
-                k: v for d in deps.get("sys", []) for k, v in [d.split("==")]
-            }
+            sys_overrides = split_into_dict(deps.get("sys", []))
 
             # We only add pip if not present
             if not any([(d == "pip" or d.startswith("pip==")) for d in conda_deps]):
@@ -97,7 +105,38 @@ class CondaLockResolver(Resolver):
             # but this is not listed as a condition so we enforce it here
             # TODO: Remove this once python3.7 is retired
             if not any([(d == "uv" or d.startswith("uv==")) for d in conda_deps]):
-                conda_deps.append("uv==<=0.7.8")
+                # Duplicate code from filter_user_reqs_by_markers in EnvsResolver.
+                # Get the minimum python version supported (major.minor) from the requested specifier.
+                spec = Requirement(python_version_requested).specifier
+                candidate_versions = [
+                    "3.5",
+                    "3.6",
+                    "3.7",
+                    "3.8",
+                    "3.9",
+                    "3.10",
+                    "3.11",
+                    "3.12",
+                    "3.13",
+                    "3.14",
+                ]
+                matching_versions = list(spec.filter(candidate_versions))
+                if matching_versions:
+                    min_supported_py = matching_versions[0]
+                else:
+                    # fallback to the requested version (eg, ==3.10.5 → 3.10)
+                    mm = re.match(r"^.*?([0-9]+)\.([0-9]+)", python_version_requested)
+                    if mm:
+                        min_supported_py = f"{mm.group(1)}.{mm.group(2)}"
+                    else:
+                        raise CondaException(
+                            "Could not determine minimum supported Python "
+                            f"version from {python_version_requested}"
+                        )
+                if min_supported_py in ["3.5", "3.6", "3.7"]:
+                    conda_deps.append("uv==<=0.7.8")
+                else:
+                    conda_deps.append("uv")
 
             toml_lines = [
                 "[build-system]\n",
@@ -287,7 +326,7 @@ class CondaLockResolver(Resolver):
                 )
             # At this point, we need to read the explicit dependencies in the file created
             emit = False
-            packages = []  # type: List[PackageSpecification]
+            packages = []  # type: List["PackageSpecification"]
             packages_to_build = {}  # type: Dict[str, PackageToBuild]
             with open(outfile_name, "r", encoding="utf-8") as out:
                 for l in out:
@@ -386,15 +425,15 @@ class CondaLockResolver(Resolver):
                     if architecture == "linux-64":
                         # Get the latest supported GLIBC version so we can generate
                         # the proper tags (only matters on linux)
-                        glibc_version = [
+                        glibc_version_candidates = [
                             d for d in deps.get("sys", []) if d.startswith("__glibc")
                         ]
-                        if len(glibc_version) != 1:
+                        if len(glibc_version_candidates) != 1:
                             raise CondaException(
                                 "Could not determine maximum GLIBC version"
                             )
                         # Get version looking like 2.27=0
-                        glibc_version = glibc_version[0][len("__glibc==") :]
+                        glibc_version = glibc_version_candidates[0][len("__glibc==") :]
                         # Strip =0
                         glibc_version = glibc_version.split("=", 1)[0]
                         # Replace . with _

@@ -4,7 +4,7 @@ import os
 import shutil
 import sys
 import time
-from typing import Any, Callable
+from typing import Any
 
 from metaflow.metaflow_config import DATASTORE_LOCAL_DIR, CONDA_MAGIC_FILE_V2
 
@@ -21,9 +21,9 @@ from .env_descr import EnvID
 from .utils import arch_id, plural_marker
 
 
-def my_echo_always(*args: Any, **kwargs: Any) -> Callable[..., None]:
+def my_echo_always(*args: Any, **kwargs: Any) -> None:
     kwargs["err"] = False
-    return echo_always(*args, **kwargs)
+    echo_always(*args, **kwargs)
 
 
 def bootstrap_environment(

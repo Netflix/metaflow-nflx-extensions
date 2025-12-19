@@ -13,7 +13,7 @@ from metaflow.debug import debug
 
 from ..env_descr import (
     EnvType,
-    PackageSpecification,
+    PackageSpecification,  # noqa
     PypiCachePackage,
     PypiPackageSpecification,
     ResolvedEnvironment,
@@ -26,6 +26,7 @@ from ..utils import (
     arch_id,
     clean_up_double_equal,
     correct_splitext,
+    filter_user_reqs_by_markers,
     get_glibc_version,
     parse_explicit_path_pypi,
     parse_explicit_url_pypi,
@@ -38,16 +39,19 @@ _FAKE_WHEEL = "_fake-1.0-py3-none-any.whl"
 
 class PipResolver(Resolver):
     TYPES = ["pip"]
+    REQUIRES_BUILDER_ENV = True
 
     def resolve(
         self,
         env_type: EnvType,
+        python_version_requested: str,
         deps: Dict[str, List[str]],
         sources: Dict[str, List[str]],
         extras: Dict[str, List[str]],
         architecture: str,
         builder_envs: Optional[List[ResolvedEnvironment]] = None,
         base_env: Optional[ResolvedEnvironment] = None,
+        file_paths: Dict[str, List[str]] = {},
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
         if base_env:
             # For base environments, we may have built packages already so for those
@@ -67,7 +71,7 @@ class PipResolver(Resolver):
                 and (
                     not p.is_downloadable_url()
                     or p.is_derived()
-                    or p.is_external_url(sources)
+                    or p.is_external_url(sources)  # type: ignore[attr-defined]
                 )
             ]
         else:
@@ -88,7 +92,9 @@ class PipResolver(Resolver):
         builder_env = [r for r in builder_envs if r.env_id.arch == arch_id()][0]
         base_conda_env = [r for r in builder_envs if r.env_id.arch == architecture][0]
 
-        real_deps = deps.get("pypi", [])
+        real_deps = filter_user_reqs_by_markers(
+            {"pypi": deps.get("pypi", [])}, python_version_requested, architecture
+        )["pypi"]
         # We get the python version for this builder env
         python_version = None  # type: Optional[str]
         for p in builder_env.packages:
@@ -144,13 +150,13 @@ class PipResolver(Resolver):
             if architecture == "linux-64":
                 # Get the latest supported GLIBC version so we can generate
                 # the proper tags
-                glibc_version = [
+                glibc_versions_list = [
                     d for d in deps.get("sys", []) if d.startswith("__glibc")
                 ]
-                if len(glibc_version) != 1:
+                if len(glibc_versions_list) != 1:
                     raise CondaException("Could not determine maximum GLIBC version")
                 # Get version looking like 2.27=0
-                glibc_version = glibc_version[0][len("__glibc==") :]
+                glibc_version = glibc_versions_list[0][len("__glibc==") :]
                 # Strip =0
                 glibc_version = glibc_version.split("=", 1)[0]
 
@@ -177,7 +183,7 @@ class PipResolver(Resolver):
                     abis.append(tag.abi)
                     platforms.append(tag.platform)
                 implementations = [x.interpreter for x in supported_tags]
-                extra_args = (
+                extra_args = [
                     "--only-binary=:all:",
                     # Seems to overly constrain stuff
                     # *(
@@ -185,11 +191,30 @@ class PipResolver(Resolver):
                     #        product(["--implementation"], set(implementations))
                     #    )
                     # ),
-                    *(chain.from_iterable(product(["--abi"], set(abis)))),
-                    *(chain.from_iterable(product(["--platform"], set(platforms)))),
-                )
+                    *list(chain.from_iterable(product(["--abi"], set(abis)))),
+                    *list(chain.from_iterable(product(["--platform"], set(platforms)))),
+                ]
 
                 args.extend(extra_args)
+
+                # We will also override certain things when running pip -- particularly
+                # platform.machine, etc which are used to compute the default_environment
+                # that pip uses to evaluate markers. If we don't do this, resolving
+                # an environment that needs torch from a mac for a linux box will fail
+                # to include all dependencies because the markers specifying that
+                # these additional packages are needed for linux are skipped as
+                # pip uses the default_environment of the *current* machine and not the
+                # target machine.
+                addl_env["PIP_CUSTOMIZE_OVERRIDES"] = json.dumps(
+                    CONDA_SYS_MARKERS.get(architecture, {})
+                )
+                addl_env["PYTHONPATH"] = os.path.join(
+                    os.path.dirname(__file__), "..", "pip_customize"
+                )
+                debug.conda_exec(
+                    "Launching pip with PYTHONPATH: %s and PIP_CUSTOMIZE_OVERRIDES: %s"
+                    % (addl_env["PYTHONPATH"], addl_env["PIP_CUSTOMIZE_OVERRIDES"])
+                )
 
             # If we have local packages, we download them to a directory and point
             # pip to it using the `--find-links` argument.
@@ -262,8 +287,8 @@ class PipResolver(Resolver):
             # We should now have a json blob in out.json
             with open(
                 os.path.join(pypi_dir, "out.json"), mode="r", encoding="utf-8"
-            ) as f:
-                desc = json.load(f)
+            ) as json_file:
+                desc = json.load(json_file)
 
             to_build_pkg_info = {}  # type: Dict[str, PackageToBuild]
             for package_desc in desc["install"]:
@@ -309,7 +334,7 @@ class PipResolver(Resolver):
                             )
                     else:
                         # Fallback on older "hash" field
-                        file_hash = dl_info["archive_info"]["hash"]
+                        file_hash = dl_info["archive_info"].get("hash")
 
                 if "dir_info" in dl_info or url.startswith("file://"):
                     url = unquote(url)
@@ -474,7 +499,9 @@ class PipResolver(Resolver):
                     )
                 else:
                     # Here we have archive_info
-                    parse_result = parse_explicit_url_pypi("%s#%s" % (url, file_hash))
+                    parse_result = parse_explicit_url_pypi(
+                        "%s#%s" % (url, file_hash) if file_hash is not None else url
+                    )
                     if parse_result.url_format != ".whl":
                         # We need to build non wheel files.
                         url_parse_result = urlparse(cast(str, dl_info["url"]))
