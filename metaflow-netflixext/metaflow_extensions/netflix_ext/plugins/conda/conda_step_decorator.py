@@ -1,19 +1,20 @@
 # pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
 
-import importlib
 import json
 import os
-import shutil
 import sys
 import tempfile
+
+from metaflow._vendor.packaging.utils import canonicalize_version
 
 from typing import (
     Any,
     Callable,
     Dict,
     List,
-    Optional,
-    Union,
+    Optional,  # noqa
+    Set,  # noqa
+    Union,  # noqa
     cast,
 )
 
@@ -37,12 +38,12 @@ from .conda_environment import CondaEnvironment
 from .env_descr import EnvID
 from .utils import arch_id
 
-
 from .conda_common_decorator import (
     CondaRequirementDecoratorMixin,
     NamedEnvRequirementDecoratorMixin,
     PypiRequirementDecoratorMixin,
     SysPackagesRequirementDecoratorMixin,
+    StepRequirementMixin,
 )
 from .conda import Conda
 
@@ -86,6 +87,18 @@ class CondaRequirementStepDecorator(
 
     Parameters
     ----------
+    libraries : Dict[str, str], default {}
+        Libraries to use for this step. The key is the name of the package
+        and the value is the version to use. Note that versions can
+        be specified either as a specific version or as a comma separated string
+        of constraints like "<2.0,>=1.5".
+    channels : List[str], default []
+        Additional channels to search
+    python : str, optional, default None
+        Version of Python to use, e.g. '3.7.4'. If not specified, the current version
+        will be used.
+    disabled : bool, default False
+        If set to True, uses the external environment.
     name : str, optional, default None
         DEPRECATED -- use `@named_env(name=)` instead.
         If specified, can refer to a named environment. The environment referred to
@@ -98,22 +111,12 @@ class CondaRequirementStepDecorator(
         of this referred step will be used here. If specified, nothing else can be
         specified in this decorator. In the pathspec, you can use `@{}` values and
         environment variables will be used to substitute.
-    libraries : Dict[str, str], default {}
-        Libraries to use for this step. The key is the name of the package
-        and the value is the version to use. Note that versions can
-        be specified either as a specific version or as a comma separated string
-        of constraints like "<2.0,>=1.5".
-    channels : List[str], default []
-        Additional channels to search
     pip_packages : Dict[str, str], default {}
         DEPRECATED -- use `@pypi(packages=)` instead.
         Same as libraries but for pip packages.
     pip_sources : List[str], default []
         DEPRECATED -- use `@pypi(extra_indices=)` instead.
         Same as channels but for pip sources.
-    python : str, optional, default None
-        Version of Python to use, e.g. '3.7.4'. If not specified, the current version
-        will be used.
     fetch_at_exec : bool, default False
         DEPRECATED -- use `@named_env(fetch_at_exec=)` instead.
         If set to True, the environment will be fetched when the task is
@@ -122,8 +125,6 @@ class CondaRequirementStepDecorator(
         specified. This is useful, for example, if you want this step to always use
         the latest named environment when it runs as opposed to the latest when it
         is deployed.
-    disabled : bool, default False
-        If set to True, uses the external environment.
     """
 
     name = "conda"
@@ -169,6 +170,24 @@ class PypiRequirementStepDecorator(
 
     Parameters
     ----------
+    packages : Dict[str, str], default {}
+        Packages to use for this step. The key is the name of the package
+        and the value is the version to use (default `{}`).
+    conda_only: Dict[str, str], default {}
+        Packages that are only available in conda. These packages should not depend on
+        any python package (example ffmpeg). Note that this is different than using
+        the `@conda_base` decorator as using `conda_only` will still build a Pypi
+        environment instead of a mixed one.
+    extra_indices : List[str], default []
+        Additional sources to search for
+    extras: List[str], default []
+        Extra arguments to pass to the resolver. For example "pre" to include
+        pre-release packages.
+    python : str, optional, default None
+        Version of Python to use, e.g. '3.7.4'. If not specified, the current python
+        version will be used.
+    disabled : bool, default False
+        If set to True, uses the external environment.
     name : str, optional, default None
         DEPRECATED -- use `@named_env(name=)` instead.
         If specified, can refer to a named environment. The environment referred to
@@ -181,14 +200,6 @@ class PypiRequirementStepDecorator(
         of this referred step will be used here. If specified, nothing else can be
         specified in this decorator. In the name, you can use `@{}` values and
         environment variables will be used to substitute.
-    packages : Dict[str, str], default {}
-        Packages to use for this step. The key is the name of the package
-        and the value is the version to use (default `{}`).
-    extra_indices : List[str], default []
-        Additional sources to search for
-    python : str, optional, default None
-        Version of Python to use, e.g. '3.7.4'. If not specified, the current python
-        version will be used.
     fetch_at_exec : bool, default False
         DEPRECATED -- use `@named_env(name=)` instead.
         If set to True, the environment will be fetched when the task is
@@ -197,8 +208,6 @@ class PypiRequirementStepDecorator(
         specified. This is useful, for example, if you want this step to always use
         the latest named environment when it runs as opposed to the latest when it
         is deployed.
-    disabled : bool, default False
-        If set to True, uses the external environment.
     """
 
     name = "pypi"
@@ -349,6 +358,94 @@ class PipRequirementStepDecorator(PypiRequirementStepDecorator):
         )
 
 
+class PylockTomlInternalDecorator(StepRequirementMixin, StepDecorator):
+    defaults = {
+        "path": None,
+        "disabled": None,
+        # Context for user_deps_for_hash attribute:
+        #
+        # * For reusing hydrated environments, we were using
+        #   env_descr.py::get_req_id() to calculate the id (actually hash) for
+        #   each step's environment
+        # * In this calculation, three dictionaries: deps (user_deps), sources,
+        #   extras, are considered.
+        #
+        # And why we have this attribute here:
+        #
+        # * We chose not to add the hash of file_paths to the environment hash
+        #   (req_id).
+        # * We added a user_deps_for_hash dict parameter for the
+        #   pylock_toml_internal decorator.
+        # * We deliberately named this parameter not to be user_dep to hint this
+        #   passed in dep is only used for hash calculation, not for actual
+        #   dependencies resolution.
+        # * Only the content in passed pylock_toml file is respected to
+        #   determine the actual packages to be resolved.
+        # * Caveat: if there are inconsistencies between the user_dep and
+        #   pylock_toml, such as a user package is in the resulting pylock.toml
+        #   but not specified in user_dep, we could end up reusing the wrong
+        #   hydrated environment. And this kind of bug is very hard to locate.
+        #
+        # Mitigations: 1) we will carefully use this internal decorator with this
+        # knowledge, only for the seed users. 2) We will have robust test on the
+        # upperstream @uv decorator, which will assign the user_deps_for_hash.
+        "user_deps_for_hash": {},
+        # The purpose is similar to user_deps_for_hash.
+        "user_sources_for_hash": [],
+    }
+
+    name = "pylock_toml_internal"
+
+    def step_init(
+        self,
+        flow: FlowSpec,
+        graph: FlowGraph,
+        step_name: str,
+        decorators: List[StepDecorator],
+        environment: MetaflowEnvironment,
+        flow_datastore: FlowDataStore,
+        logger: Callable[..., None],
+    ):
+        if environment.TYPE != "conda":
+            raise InvalidEnvironmentException(
+                "Decorators specifying flow or step dependency environments require --environment=conda",
+            )
+
+        return super().step_init(
+            flow, graph, step_name, decorators, environment, flow_datastore, logger
+        )
+
+    @property
+    def file_paths(self) -> Dict[str, List[str]]:
+        return {
+            # TODO
+            # more robust handling of a missing pylock_toml key in the requirements path.
+            "pylock_toml": [self.attributes["path"]],
+        }
+
+    @property
+    # See the notes at the definition of user_deps_for_hash for more contexts of this.
+    def packages(self) -> Dict[str, Dict[str, str]]:
+        return {
+            "pypi": {
+                k: canonicalize_version(v)
+                for k, v in cast(
+                    Dict[str, str], self.attributes["user_deps_for_hash"]
+                ).items()
+            },
+        }
+
+    @property
+    def sources(self) -> Dict[str, List[str]]:
+        return {
+            "pypi": self.attributes["user_sources_for_hash"],
+        }
+
+    @property
+    def python(self) -> Optional[str]:
+        return self.attributes["user_deps_for_hash"].get("python")
+
+
 class CondaEnvInternalDecorator(StepDecorator):
     name = "conda_env_internal"
     TYPE = "conda"
@@ -435,7 +532,7 @@ class CondaEnvInternalDecorator(StepDecorator):
                         continue
                     self._env_for_fetch[
                         "METAFLOW_INIT_%s" % var.upper().replace("-", "_")
-                    ] = lambda _param=getattr(
+                    ] = lambda _param=getattr(  # type: ignore[misc]
                         self._flow, var
                     ), _var=var, _ds=parent_ds: str(
                         _param.load_parameter(_ds[_var])
@@ -521,7 +618,10 @@ class CondaEnvInternalDecorator(StepDecorator):
                 if key.endswith(":"):
                     addl_env_vars[key[:-1]] = value
                 elif key == "PYTHONPATH":
-                    addl_env_vars[key] = os.pathsep.join([value, python_path])
+                    path_components = [value]
+                    if python_path is not None:
+                        path_components.append(python_path)
+                    addl_env_vars[key] = os.pathsep.join(path_components)
                 else:
                     addl_env_vars[key] = value
         cli_args.env.update(addl_env_vars)
@@ -545,6 +645,13 @@ class CondaEnvInternalDecorator(StepDecorator):
                     ]
                 )
         cli_args.entrypoint[0] = entrypoint
+
+        if os.environ.get("METAFLOW_COVERAGE_S3_PATH"):
+            from metaflow_extensions.netflix_ext.plugins.coverage.setup_coverage import (
+                setup_coverage,
+            )
+
+            setup_coverage(entrypoint)
 
     def task_pre_step(
         self,

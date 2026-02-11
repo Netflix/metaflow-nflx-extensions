@@ -2,14 +2,14 @@
 import copy
 
 from itertools import chain
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, ClassVar, Dict, List, Optional, cast
 
 from metaflow.metaflow_environment import InvalidEnvironmentException
 from metaflow.unbounded_foreach import UBF_CONTROL, UBF_TASK
 
 from metaflow._vendor.packaging.utils import canonicalize_version
 
-from .utils import merge_dep_dicts
+from .utils import dict_to_strlist, merge_dep_dicts
 
 
 class StepRequirementIface:
@@ -41,6 +41,14 @@ class StepRequirementIface:
     def sources(self) -> Dict[str, List[str]]:
         return {}
 
+    @property
+    def file_paths(self) -> Dict[str, List[str]]:
+        return {}
+
+    @property
+    def extras(self) -> Dict[str, List[str]]:
+        return {}
+
     def default_disabled(self, ubf_context: str) -> Optional[bool]:
         return None
 
@@ -50,23 +58,41 @@ class StepRequirementMixin(StepRequirementIface):
         "disabled": None,
     }  # type: Dict[str, Any]
 
+    _derived_classes_fullnames: ClassVar[Dict[str, str]] = {}
+
+    @classmethod
+    def get_derived_classes_fullnames(cls) -> Dict[str, str]:
+        return cls._derived_classes_fullnames
+
+    def __init_subclass__(cls, *args, **kwargs):
+        super().__init_subclass__(*args, **kwargs)
+        # using __name__ not __qualname__ to align with
+        # MutableStep.decorator_specs
+        # Only track the ones that the user will use (with names)
+        cls_user_name: Optional[str] = getattr(cls, "name", None)
+        if cls_user_name is not None:
+            StepRequirementMixin._derived_classes_fullnames[
+                f"{cls.__module__}.{cls.__name__}"
+            ] = cls_user_name
+
     @property
     def is_disabled(self) -> Optional[bool]:
-        if self.attributes["disabled"] is None:
+        if self.attributes["disabled"] is None:  # type: ignore[attr-defined]
             if (
                 self.python
                 or self.from_name
                 or self.from_pathspec
                 or self.packages
                 or self.sources
+                or self.file_paths
             ):
                 return False
             return None
-        return self.attributes["disabled"]
+        return self.attributes["disabled"]  # type: ignore[attr-defined]
 
 
 class StepRequirement(StepRequirementIface):
-    def __init__(self):
+    def __init__(self) -> None:
         self._name = None  # type: Optional[str]
         self._pathspec = None  # type: Optional[str]
         self._python = None  # type: Optional[str]
@@ -74,6 +100,8 @@ class StepRequirement(StepRequirementIface):
         self._disabled = None  # type: Optional[bool]
         self._packages = {}  # type: Dict[str, Dict[str, str]]
         self._sources = {}  # type: Dict[str, List[str]]
+        self._file_paths = {}  # type: Dict[str, List[str]]
+        self._extras = {}  # type: Dict[str, List[str]]
         self._default_disabled = {
             UBF_CONTROL: None,
             UBF_TASK: None,
@@ -88,6 +116,8 @@ class StepRequirement(StepRequirementIface):
         n._disabled = self._disabled
         n._packages = copy.deepcopy(self._packages)
         n._sources = copy.deepcopy(self._sources)
+        n._file_paths = copy.deepcopy(self._file_paths)
+        n._extras = copy.deepcopy(self._extras)
         n._default_disabled = copy.deepcopy(self._default_disabled)
         return n
 
@@ -105,6 +135,7 @@ class StepRequirement(StepRequirementIface):
             return self.from_name
         elif self.from_pathspec:
             return "step:%s" % self.from_pathspec
+        return None
 
     @property
     def python(self) -> Optional[str]:
@@ -141,12 +172,10 @@ class StepRequirement(StepRequirementIface):
     def packages_as_str(self) -> Dict[str, List[str]]:
         result = {}  # type: Dict[str, List[str]]
         for category, values in self.packages.items():
-            result[category] = [
-                "%s==%s" % (k, v) if v else k for k, v in values.items()
-            ]
+            result[category] = dict_to_strlist(values)
         return result
 
-    @packages.setter
+    @packages.setter  # type: ignore[no-redef,attr-defined]
     def packages(self, value: Dict[str, Dict[str, str]]):
         self._packages = value
 
@@ -157,6 +186,22 @@ class StepRequirement(StepRequirementIface):
     @sources.setter
     def sources(self, value: Dict[str, List[str]]):
         self._sources = value
+
+    @property
+    def file_paths(self) -> Dict[str, List[str]]:
+        return copy.deepcopy(self._file_paths)
+
+    @file_paths.setter
+    def file_paths(self, value: Dict[str, List[str]]):
+        self._file_paths = value
+
+    @property
+    def extras(self) -> Dict[str, List[str]]:
+        return copy.deepcopy(self._extras)
+
+    @extras.setter
+    def extras(self, value: Dict[str, List[str]]):
+        self._extras = value
 
     def default_disabled(self, ubf_context: str) -> Optional[bool]:
         return self._default_disabled[ubf_context]
@@ -176,7 +221,7 @@ class StepRequirement(StepRequirementIface):
         from_env_part = "from=%s" % self.from_env_name if self.from_env_name else ""
         packages_part = "packages=%s" % self.packages if self.packages else ""
         sources_part = "sources=%s" % self.sources if self.sources else ""
-
+        extras_part = "extras=%s" % self.extras if self.extras else ""
         return "StepReq[%s]" % "; ".join(
             filter(
                 lambda x: x,
@@ -187,6 +232,7 @@ class StepRequirement(StepRequirementIface):
                     from_env_part,
                     packages_part,
                     sources_part,
+                    extras_part,
                 ],
             )
         )
@@ -249,6 +295,16 @@ class StepRequirement(StepRequirementIface):
                 set(sources + self._sources.get(category, []))
             )
 
+        other_file_paths = other.file_paths
+        for category, paths in other_file_paths.items():
+            self._file_paths[category] = list(
+                set(paths + self._file_paths.get(category, []))
+            )
+
+        other_extras = other.extras
+        for category, extras in other_extras.items():
+            self._extras.setdefault(category, []).extend(extras or [])
+
         # Special handling for pathspec/name
         if other.from_name is not None and other.from_pathspec is not None:
             raise InvalidEnvironmentException(
@@ -276,31 +332,31 @@ class CondaRequirementDecoratorMixin(StepRequirementMixin):
 
     @property
     def python(self) -> Optional[str]:
-        return self.attributes["python"]
+        return self.attributes["python"]  # type: ignore[attr-defined]
 
     @property
     def from_name(self) -> Optional[str]:
-        return self.attributes["name"]
+        return self.attributes["name"]  # type: ignore[attr-defined]
 
     @property
     def pathspec(self) -> Optional[str]:
-        return self.attributes["pathspec"]
+        return self.attributes["pathspec"]  # type: ignore[attr-defined]
 
     @property
     def is_fetch_at_exec(self) -> Optional[bool]:
-        return self.attributes["fetch_at_exec"]
+        return self.attributes["fetch_at_exec"]  # type: ignore[attr-defined]
 
     @property
     def packages(self) -> Dict[str, Dict[str, str]]:
         return {
             "conda": {
                 k: v
-                for k, v in cast(Dict[str, str], self.attributes["libraries"]).items()
+                for k, v in cast(Dict[str, str], self.attributes["libraries"]).items()  # type: ignore[attr-defined]
             },
             "pypi": {
                 k: canonicalize_version(v)
                 for k, v in cast(
-                    Dict[str, str], self.attributes["pip_packages"]
+                    Dict[str, str], self.attributes["pip_packages"]  # type: ignore[attr-defined]
                 ).items()
             },
         }
@@ -308,8 +364,8 @@ class CondaRequirementDecoratorMixin(StepRequirementMixin):
     @property
     def sources(self) -> Dict[str, List[str]]:
         return {
-            "conda": [k for k in cast(List[str], self.attributes["channels"])],
-            "pypi": [k for k in cast(List[str], self.attributes["pip_sources"])],
+            "conda": [k for k in cast(List[str], self.attributes["channels"])],  # type: ignore[attr-defined]
+            "pypi": [k for k in cast(List[str], self.attributes["pip_sources"])],  # type: ignore[attr-defined]
         }
 
 
@@ -317,7 +373,9 @@ class PypiRequirementDecoratorMixin(StepRequirementMixin):
     defaults = {
         "python": None,
         "packages": {},
+        "conda_only": {},
         "extra_indices": [],
+        "extras": [],
         # The next fields are deprecated in favor of @named_env
         "sources": [],
         "name": None,
@@ -328,27 +386,31 @@ class PypiRequirementDecoratorMixin(StepRequirementMixin):
 
     @property
     def python(self) -> Optional[str]:
-        return self.attributes["python"]
+        return self.attributes["python"]  # type: ignore[attr-defined]
 
     @property
     def from_name(self) -> Optional[str]:
-        return self.attributes["name"]
+        return self.attributes["name"]  # type: ignore[attr-defined]
 
     @property
     def pathspec(self) -> Optional[str]:
-        return self.attributes["pathspec"]
+        return self.attributes["pathspec"]  # type: ignore[attr-defined]
 
     @property
     def is_fetch_at_exec(self) -> Optional[bool]:
-        return self.attributes["fetch_at_exec"]
+        return self.attributes["fetch_at_exec"]  # type: ignore[attr-defined]
 
     @property
     def packages(self) -> Dict[str, Dict[str, str]]:
         return {
             "pypi": {
                 k: canonicalize_version(v)
-                for k, v in cast(Dict[str, str], self.attributes["packages"]).items()
-            }
+                for k, v in cast(Dict[str, str], self.attributes["packages"]).items()  # type: ignore[attr-defined]
+            },
+            "npconda": {
+                k: canonicalize_version(v)
+                for k, v in cast(Dict[str, str], self.attributes["conda_only"]).items()  # type: ignore[attr-defined]
+            },
         }
 
     @property
@@ -358,10 +420,14 @@ class PypiRequirementDecoratorMixin(StepRequirementMixin):
                 k
                 for k in cast(
                     List[str],
-                    chain(self.attributes["sources"], self.attributes["extra_indices"]),
+                    chain(self.attributes["sources"], self.attributes["extra_indices"]),  # type: ignore[attr-defined]
                 )
             ]
         }
+
+    @property
+    def extras(self) -> Dict[str, List[str]]:
+        return {"pypi": [f"--{extra}" for extra in self.attributes["extras"]]}  # type: ignore[attr-defined]
 
 
 class NamedEnvRequirementDecoratorMixin(StepRequirementMixin):
@@ -374,15 +440,15 @@ class NamedEnvRequirementDecoratorMixin(StepRequirementMixin):
 
     @property
     def from_name(self) -> Optional[str]:
-        return self.attributes["name"]
+        return self.attributes["name"]  # type: ignore[attr-defined]
 
     @property
     def from_pathspec(self) -> Optional[str]:
-        return self.attributes["pathspec"]
+        return self.attributes["pathspec"]  # type: ignore[attr-defined]
 
     @property
     def is_fetch_at_exec(self) -> Optional[bool]:
-        return self.attributes["fetch_at_exec"]
+        return self.attributes["fetch_at_exec"]  # type: ignore[attr-defined]
 
 
 class SysPackagesRequirementDecoratorMixin(StepRequirementMixin):
@@ -396,6 +462,6 @@ class SysPackagesRequirementDecoratorMixin(StepRequirementMixin):
         return {
             "sys": {
                 k: v
-                for k, v in cast(Dict[str, str], self.attributes["packages"]).items()
+                for k, v in cast(Dict[str, str], self.attributes["packages"]).items()  # type: ignore[attr-defined]
             }
         }

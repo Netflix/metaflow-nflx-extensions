@@ -7,17 +7,22 @@ import tempfile
 from itertools import chain
 from typing import Dict, List, Optional, Tuple, cast
 
+# Consider re-adding if resolving fails weirdly.
+# from metaflow.exception import retry_exp_backoff
+
 from ..env_descr import (
     CondaPackageSpecification,
+    PackageSpecification,  # noqa
     EnvType,
-    PackageSpecification,
     ResolvedEnvironment,
 )
 from ..utils import (
     CondaException,
     channel_or_url,
     clean_up_double_equal,
+    filter_user_reqs_by_markers,
     parse_explicit_url_conda,
+    split_into_dict,
 )
 from . import Resolver
 
@@ -25,15 +30,23 @@ from . import Resolver
 class CondaResolver(Resolver):
     TYPES = ["conda", "mamba", "micromamba"]
 
+    # @retry_exp_backoff(
+    #    (CondaException, OSError),
+    #    "Failed to resolve conda environment",
+    #    tries=3,
+    #    max_delay_per_retry=5,
+    # )
     def resolve(
         self,
         env_type: EnvType,
+        python_version_requested: str,
         deps: Dict[str, List[str]],
         sources: Dict[str, List[str]],
         extras: Dict[str, List[str]],
         architecture: str,
         builder_envs: Optional[List[ResolvedEnvironment]] = None,
         base_env: Optional[ResolvedEnvironment] = None,
+        file_paths: Dict[str, List[str]] = {},
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
         if base_env:
             local_packages = [
@@ -44,7 +57,8 @@ class CondaResolver(Resolver):
                     "Local packages are not allowed in Conda: %s"
                     % ", ".join([p.package_name for p in local_packages])
                 )
-        sys_overrides = {k: v for d in deps.get("sys", []) for k, v in [d.split("==")]}
+        deps = filter_user_reqs_by_markers(deps, python_version_requested, architecture)
+        sys_overrides = split_into_dict(deps.get("sys", []))
         real_deps = clean_up_double_equal(
             chain(deps.get("conda", []), deps.get("npconda", []))
         )

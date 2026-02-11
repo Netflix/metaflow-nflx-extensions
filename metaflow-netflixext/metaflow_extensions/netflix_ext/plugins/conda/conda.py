@@ -18,6 +18,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, Future, as_completed
 from contextlib import closing
 from datetime import datetime
+from http.client import IncompleteRead
 from typing import (
     Any,
     Callable,
@@ -28,23 +29,71 @@ from typing import (
     NamedTuple,
     Optional,
     Sequence,
-    Set,
+    Set,  # noqa
     Tuple,
     Union,
     cast,
-    IO,
+    IO,  # noqa
 )
 from shutil import which
-from io import BufferedReader, TextIOWrapper
+from io import BufferedReader, TextIOWrapper  # noqa
 
 from requests.auth import AuthBase
-from urllib3 import Retry
+from requests.exceptions import ChunkedEncodingError, ConnectionError
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+def create_http_adapter_with_retry(
+    retries=3,
+    backoff_factor=0.3,
+    status_forcelist=(500, 502, 503, 504),
+    pool_connections=10,
+    pool_maxsize=10,
+    max_retries=3,
+    pool_block=False,
+):
+    """
+    Create an HTTP adapter with retry logic.
+
+    Parameters
+    ----------
+    retries : int
+        Number of retries
+    backoff_factor : float
+        Backoff factor for retries
+    status_forcelist : tuple
+        HTTP status codes to retry on
+    pool_connections : int
+        Number of connection pools to cache
+    pool_maxsize : int
+        Maximum number of connections to save in the pool
+    max_retries : int
+        Maximum number of retries
+    pool_block : bool
+        Whether the connection pool should block for connections
+
+    Returns
+    -------
+    HTTPAdapter
+        HTTP adapter with retry logic
+    """
+    adapter = HTTPAdapter(
+        pool_connections=pool_connections,
+        pool_maxsize=pool_maxsize,
+        max_retries=Retry(
+            total=retries,
+            backoff_factor=backoff_factor,
+            status_forcelist=status_forcelist,
+        ),
+        pool_block=pool_block,
+    )
+    return adapter
 
 from metaflow.plugins.datastores.local_storage import LocalStorage
 from metaflow.datastore.datastore_storage import DataStoreStorage
 
 from metaflow.debug import debug
-from metaflow.exception import MetaflowException, MetaflowNotFound
+from metaflow.exception import MetaflowException, MetaflowNotFound, retry_exp_backoff
 from metaflow.metaflow_config import (
     CONDA_DEPENDENCY_RESOLVER,
     CONDA_HACK_CHANNEL_ALIAS,
@@ -61,6 +110,7 @@ from metaflow.metaflow_config import (
     CONDA_TEST,
     CONDA_DEFAULT_PYPI_SOURCE,
     CONDA_USE_REMOTE_LATEST,
+    CONDA_IGNORE_CACHING_DATASTORES,
 )
 from metaflow.metaflow_environment import InvalidEnvironmentException
 
@@ -148,7 +198,7 @@ class Conda(object):
         self._cached_environment = read_conda_manifest(self._local_root)
 
         # Initialize storage
-        if self._datastore_type != "local" or CONDA_TEST:
+        if self._datastore_type not in CONDA_IGNORE_CACHING_DATASTORES or CONDA_TEST:
             # Prevent circular dep
             from metaflow.plugins import DATASTORES
 
@@ -423,7 +473,7 @@ class Conda(object):
 
             _system_logger.log_event(
                 level="info",
-                module="netflix_ext.conda",
+                module="nflx.conda",
                 name="env_create_for_step",
                 payload={
                     "qualifier_name": str(env.env_id),
@@ -445,7 +495,7 @@ class Conda(object):
             with _system_monitor.count("metaflow.conda.create_for_step.error"):
                 _system_logger.log_event(
                     level="error",
-                    module="netflix_ext.conda",
+                    module="nflx.conda",
                     name="env_create_for_step.error",
                     payload={
                         "qualifier_name": str(env.env_id),
@@ -954,7 +1004,7 @@ class Conda(object):
             The list of aliases -- note that you can only update mutable aliases or
             add new ones.
         """
-        if self._datastore_type != "local" or CONDA_TEST:
+        if self._datastore_type not in CONDA_IGNORE_CACHING_DATASTORES or CONDA_TEST:
             # We first fetch any aliases we have remotely because that way
             # we will catch any non-mutable changes
             resolved_aliases = [resolve_env_alias(a) for a in aliases]
@@ -1400,28 +1450,39 @@ class Conda(object):
                         % pkg_spec.package_name
                     )
 
+        @retry_exp_backoff(
+            (IncompleteRead, ChunkedEncodingError, ConnectionError),
+            "Package download failed due to network error",
+            tries=3,
+            delay=1,
+            max_delay_per_retry=2,
+        )
+        def _do_download(pkg_spec, local_path, session):
+            """Perform the actual download with streaming."""
+            base_hash = pkg_spec.base_hash()
+            with open(local_path, "wb") as f:
+                with session.get(pkg_spec.url, stream=True, auth=auth_info) as r:
+                    r.raise_for_status()
+                    for chunk in r.iter_content(chunk_size=None):
+                        base_hash.update(chunk)
+                        f.write(chunk)
+            pkg_spec.add_local_file(
+                pkg_spec.url_format,
+                local_path,
+                pkg_hash=base_hash.hexdigest(),
+                downloaded=True,
+            )
+
         def _download_web(
             session: requests.Session, entry: Tuple[PackageSpecification, str]
         ) -> Tuple[PackageSpecification, Optional[Exception]]:
             pkg_spec, local_path = entry
-            base_hash = pkg_spec.base_hash()
             debug.conda_exec(
                 "%s -> download %s to %s"
                 % (pkg_spec.filename, pkg_spec.url, local_path)
             )
             try:
-                with open(local_path, "wb") as f:
-                    with session.get(pkg_spec.url, stream=True, auth=auth_info) as r:
-                        r.raise_for_status()
-                        for chunk in r.iter_content(chunk_size=None):
-                            base_hash.update(chunk)
-                            f.write(chunk)
-                pkg_spec.add_local_file(
-                    pkg_spec.url_format,
-                    local_path,
-                    pkg_hash=base_hash.hexdigest(),
-                    downloaded=True,
-                )
+                _do_download(pkg_spec, local_path, session)
             except Exception as e:
                 return (pkg_spec, e)
             return (pkg_spec, None)
@@ -1664,10 +1725,9 @@ class Conda(object):
             if web_downloads:
                 with ThreadPoolExecutor() as executor:
                     with requests.Session() as s:
-                        a = requests.adapters.HTTPAdapter(
+                        a = create_http_adapter_with_retry(
                             pool_connections=executor._max_workers,
                             pool_maxsize=executor._max_workers,
-                            max_retries=Retry(total=5, backoff_factor=0.1),
                         )
                         s.mount("https://", a)
                         download_results = [
@@ -1825,11 +1885,24 @@ class Conda(object):
             if self._mode == "local":
                 self._ensure_local_conda()
             else:
-                self._ensure_remote_conda()
-                err = self._validate_conda_installation()
-                if err:
-                    raise err
+                # Encapsulating remote conda installation and verification into a single function call,
+                # to perform retries with exponential backoffs as we are seeing some text file busy errors
+                self._download_validate_remote_conda()
             self._found_binaries = True
+
+    @retry_exp_backoff(
+        (OSError,),
+        "Failed to validate remote conda installation",
+        tries=3,
+        max_delay_per_retry=5,
+    )
+    def _download_validate_remote_conda(self):
+        # Remote mode -- we install a conda environment or make sure we have
+        # one already there
+        self._ensure_remote_conda()
+        err = self._validate_conda_installation()
+        if err:
+            raise err
 
     def _ensure_local_conda(self):
         self._conda_executable_type = cast(str, CONDA_DEPENDENCY_RESOLVER)
@@ -2523,7 +2596,6 @@ class Conda(object):
                 "--offline",
                 "--no-deps",
             ]
-            shutil.copy(explicit_list.name, "/tmp/explicit_list.txt")
             if self.is_non_conda_exec:
                 # Micromamba (some version) seems to have a bug when compiling .py files. In some
                 # circumstances, it just hangs forever. We avoid this by not compiling
@@ -2645,6 +2717,14 @@ class Conda(object):
             " done in %s second%s." % (delta_time, plural_marker(delta_time)),
             timestamp=False,
         )
+
+        entrypoint = os.path.join(env_dir, "bin", "python")
+        if os.environ.get("METAFLOW_COVERAGE_S3_PATH"):
+            from metaflow_extensions.netflix_ext.plugins.coverage.setup_coverage import (
+                setup_coverage,
+            )
+
+            setup_coverage(entrypoint)
         return env_dir
 
     def _remove(self, env_name: str):
