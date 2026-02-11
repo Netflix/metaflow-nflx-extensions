@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Type
 
 if TYPE_CHECKING:
-    import metaflow_extensions.netflix_ext.plugins.conda.conda
-    import metaflow_extensions.netflix_ext.plugins.conda.env_descr
+    import metaflow_extensions.nflx.plugins.conda.conda
+    import metaflow_extensions.nflx.plugins.conda.env_descr
 
 
 from ..utils import CondaException
@@ -14,6 +14,24 @@ from ..utils import CondaException
 
 class Resolver:
     TYPES = ["invalid"]
+
+    # Context:
+    # https://sourcegraph.netflix.net/github.netflix.net/corp/mli-metaflow-custom/- \
+    # /blob/nflx-metaflow/metaflow_extensions/nflx/plugins/conda \
+    # /envsresolver.py?L480
+    # "In PYPI-ONLY scenarios, we actually need a sub-environment to properly
+    # resolve the pypi environment (due to https://github.com/pypa/pip/issues/11664).
+    # We try to mutualize these environments."
+    #
+    # Originally we need only to check whether env_type == PYPI_ONLY to determine
+    # whether a builder env is needed for a resolver.
+    # (https://github.netflix.net/corp/mli-metaflow-custom/blob/ \
+    # 4a2d72e25975d20f609c1c16f811b42805c504f1/nflx-metaflow/ \
+    # metaflow_extensions/nflx/plugins/conda/envsresolver.py#L513)
+    # As we introduce the uv managed environment (triggered by @uv decorator),
+    # it's more convenient we define this flag REQUIRES_BUILDER_ENV to determine
+    # whether a resolver requires a builder environment.
+    REQUIRES_BUILDER_ENV = False
 
     _class_per_type = None  # type: Optional[Dict[str, Type[Resolver]]]
 
@@ -39,32 +57,28 @@ class Resolver:
             )
         return resolver
 
-    def __init__(
-        self, conda: "metaflow_extensions.netflix_ext.plugins.conda.conda.Conda"
-    ):
+    def __init__(self, conda: "metaflow_extensions.nflx.plugins.conda.conda.Conda"):
         self._conda = conda
 
     def resolve(
         self,
-        env_type: "metaflow_extensions.netflix_ext.plugins.conda.env_descr.EnvType",
+        env_type: "metaflow_extensions.nflx.plugins.conda.env_descr.EnvType",
+        python_version_requested: str,
         deps: Dict[str, List[str]],
         sources: Dict[str, List[str]],
         extras: Dict[str, List[str]],
         architecture: str,
         builder_envs: Optional[
-            List[
-                "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"
-            ]
+            List["metaflow_extensions.nflx.plugins.conda.env_descr.ResolvedEnvironment"]
         ] = None,
         base_env: Optional[
-            "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"
+            "metaflow_extensions.nflx.plugins.conda.env_descr.ResolvedEnvironment"
         ] = None,
+        file_paths: Dict[str, List[str]] = {},
     ) -> Tuple[
-        "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment",
+        "metaflow_extensions.nflx.plugins.conda.env_descr.ResolvedEnvironment",
         Optional[
-            List[
-                "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"
-            ]
+            List["metaflow_extensions.nflx.plugins.conda.env_descr.ResolvedEnvironment"]
         ],
     ]:
         """
@@ -107,3 +121,4 @@ class Resolver:
 from .builder_envs_resolver import BuilderEnvsResolver
 from .conda_lock_resolver import CondaLockResolver
 from .pip_resolver import PipResolver
+from .pylock_toml_resolver import PylockTomlResolver
