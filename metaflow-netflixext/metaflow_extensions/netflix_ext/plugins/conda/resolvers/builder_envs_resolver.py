@@ -16,12 +16,14 @@ class BuilderEnvsResolver(Resolver):
     def resolve(
         self,
         env_type: EnvType,
+        python_version_requested: str,
         deps: Dict[str, List[str]],
         sources: Dict[str, List[str]],
         extras: Dict[str, List[str]],
         architecture: str,
         builder_envs: Optional[List[ResolvedEnvironment]] = None,
         base_env: Optional[ResolvedEnvironment] = None,
+        file_paths: Dict[str, List[str]] = {},
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
         conda_only_sources = sources.get("conda", [])
         python_deps = [d for d in deps.get("conda", []) if d.startswith("python==")]
@@ -41,6 +43,7 @@ class BuilderEnvsResolver(Resolver):
             )
             return CondaResolver(self._conda).resolve(
                 EnvType.CONDA_ONLY,
+                python_version_requested,
                 conda_only_deps,
                 {"conda": conda_only_sources},
                 extras,
@@ -53,6 +56,7 @@ class BuilderEnvsResolver(Resolver):
 
         return CondaResolver(self._conda).resolve(
             EnvType.CONDA_ONLY,
+            python_version_requested,
             {"conda": python_deps},
             {"conda": conda_only_sources},
             extras,

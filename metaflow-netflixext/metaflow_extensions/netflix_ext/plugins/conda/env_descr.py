@@ -4,6 +4,7 @@ import errno
 import fcntl
 import json
 import os
+import tempfile
 from enum import Enum
 from hashlib import md5, sha1, sha256
 from itertools import chain
@@ -296,6 +297,28 @@ class PackageSpecification:
         The detailed version of the package
     pkg_hashes : Iterable[Tuple[str, str]]
         The hashes of the package (for various formats if applicable)
+    environment_marker:
+        Environment markers allow a dependency specification to provide a rule that describes when the
+        dependency should be used.
+
+        Examples:
+
+        In requirements.txt:
+            argparse;python_version<"2.7"
+        In uv.lock, it's
+            [[package]]
+            name = "numpy"
+            resolution-markers = [
+                "python_full_version >= '3.12'",
+            ]
+        In pylock.toml:
+            [[packages]]
+            name = "numpy"
+            version = "2.3.4"
+            marker = "python_full_version >= '3.11'"
+
+        https://packaging.python.org/en/latest/specifications/dependency-specifiers/
+
     """
 
     TYPE = "invalid"
@@ -310,6 +333,7 @@ class PackageSpecification:
         url_format: Optional[str] = None,
         hashes: Optional[Dict[str, str]] = None,
         cache_info: Optional[Dict[str, CachePackage]] = None,
+        environment_marker: Optional[str] = None,
     ):
         # Some URLs are fake when the package is built on the fly. We use the URL
         # as a unique identifier for the package so we still have a URL but it is not
@@ -334,6 +358,7 @@ class PackageSpecification:
         self._url_format = url_format
         self._hashes = hashes or {}
         self._cache_info = cache_info or {}
+        self._environment_marker = environment_marker
 
         if not is_real_url:
             # If it is not a real URL, add the FAKEURL_PATHCOMPONENT but only if not
@@ -462,6 +487,10 @@ class PackageSpecification:
             local_path = self._local_path.get(pkg_fmt)
             if local_path:
                 yield (pkg_fmt, local_path)
+
+    @property
+    def environment_marker(self) -> Optional[str]:
+        return self._environment_marker
 
     def is_fetched(self, pkg_format: str) -> bool:
         # Return whether the local tar-ball for this package had to be fetched from
@@ -777,7 +806,9 @@ class ResolvedEnvironment:
 
         if not env_id:
             env_req_id = ResolvedEnvironment.get_req_id(
-                user_dependencies, user_sources or {}, user_extra_args or {}
+                user_dependencies,
+                user_sources or {},
+                user_extra_args or {},
             )
 
             env_full_id = "_unresolved"
@@ -987,6 +1018,10 @@ class ResolvedEnvironment:
         if self._dirty:
             return True
         return any((p.dirty for p in self._all_packages))
+
+    @dirty.setter
+    def dirty(self, value: bool):
+        self._dirty = value
 
     def set_parent(self, parent: "CachedEnvironmentInfo"):
         self._parent = parent
@@ -1684,26 +1719,45 @@ def write_to_conda_manifest(ds_root: str, info: CachedEnvironmentInfo):
     except OSError as x:
         if x.errno != errno.EEXIST:
             raise
-    with os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT), "r+", encoding="utf-8") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            # We first read the file and then update it with the info we have
-            # This makes sure that if the file was updated by another process between
-            # the time we read it and now, we have a sum of all information. This can
-            # happen if multiple runs are running on the same machine from the same
-            # directory.
-            current_content = CachedEnvironmentInfo()
-            if os.path.getsize(path) > 0:
-                # Not a new file
-                f.seek(0)
-                current_content = CachedEnvironmentInfo.from_dict(json.load(f))
-            f.seek(0)
-            f.truncate(0)
-            current_content.update(info)
-            json.dump(current_content.to_dict(), f)
 
-            # Flush data from python file object to OS buffer and eventually to disk.
-            f.flush()
-            os.fsync(f.fileno())
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    # Create temporary file in same directory for atomic rename
+    temp_f = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=os.path.dirname(path), delete=False
+        ) as temp_f:
+            with os.fdopen(
+                os.open(path, os.O_RDWR | os.O_CREAT), "r+", encoding="utf-8"
+            ) as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX)
+                    # We first read the file and then update it with the info we have
+                    # This makes sure that if the file was updated by another process between
+                    # the time we read it and now, we have a sum of all information.
+                    # This can happen if multiple runs are running on the same machine
+                    # from the same directory.
+                    current_content = CachedEnvironmentInfo()
+                    if os.path.getsize(path) > 0:
+                        # Not a new file
+                        f.seek(0)
+                        current_content = CachedEnvironmentInfo.from_dict(json.load(f))
+
+                    # Merge with new info
+                    current_content.update(info)
+
+                    # Write to temporary file first so we can do an atomic swap
+                    # of the file
+                    json.dump(current_content.to_dict(), temp_f)
+                    temp_f.flush()
+                    os.fsync(temp_f.fileno())
+
+                    os.rename(temp_f.name, path)
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+    finally:
+        # Clean up temp file if it still exists (e.g., if rename failed)
+        if temp_f and os.path.exists(temp_f.name):
+            try:
+                os.unlink(temp_f.name)
+            except OSError:
+                pass

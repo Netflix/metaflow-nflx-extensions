@@ -1,9 +1,7 @@
 from setuptools import setup, find_namespace_packages
 
-with open(
-    "metaflow_extensions/netflix_ext/toplevel/netflixext_version.py", mode="r"
-) as f:
-    version = f.read().splitlines()[0].split("=")[1].strip(" \"'")
+with open("VERSION", mode="r") as f:
+    version = f.read().strip()
 
 setup(
     name="metaflow-netflixext",
