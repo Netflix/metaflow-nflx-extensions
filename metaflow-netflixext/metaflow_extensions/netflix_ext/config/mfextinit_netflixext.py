@@ -11,6 +11,11 @@ from metaflow.metaflow_config_funcs import from_conf, get_validate_choice_fn
 # Set to true if running the tests with a local datastore
 CONDA_TEST = from_conf("CONDA_TEST", False)
 
+# Datastores for which caching should be skipped
+CONDA_IGNORE_CACHING_DATASTORES = from_conf(
+    "CONDA_IGNORE_CACHING_DATASTORES", []
+)
+
 # HACK -- work around an issue with micromamba where using a channel_alias
 # causes the packages to be considered invalid (URL verification). This
 # value should be set to the channel_alias prefix that will be replaced by
@@ -128,6 +133,12 @@ CONDA_DEFAULT_PYPI_SOURCE = from_conf("CONDA_DEFAULT_PYPI_SOURCE", None)
 # value: a tuple/list of username and password
 CONDA_SRCS_AUTH_INFO = from_conf("CONDA_SRCS_AUTH_INFO", {})
 
+PYLOCK_TOML_DEPENDENCY_RESOLVER = from_conf(
+    "PYLOCK_TOML_DEPENDENCY_RESOLVER",
+    "pylock_toml",
+    get_validate_choice_fn(["pylock_toml"]),
+)
+
 CONDA_REMOTE_COMMANDS = from_conf("CONDA_REMOTE_COMMANDS", ["batch", "kubernetes"])
 
 # List of system dependencies that are allowed to indicate the system to build on
@@ -153,6 +164,9 @@ CONDA_SYS_DEFAULT_PACKAGES = from_conf(
 #     "__cuda": os.environ.get("CONDA_OVERRIDE_CUDA", "11.8=0")
 # }
 CONDA_SYS_DEFAULT_GPU_PACKAGES = {}
+
+# Markers to assume for different architectures
+CONDA_SYS_MARKERS = from_conf("CONDA_SYS_MARKERS", {})
 
 # Packages that are needed when creating an intermediate conda environment to resolve
 # a pypi environment. This can be used to add packages needed for authentication for
