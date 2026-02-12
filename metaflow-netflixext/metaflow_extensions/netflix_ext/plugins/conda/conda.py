@@ -93,7 +93,8 @@ from metaflow.plugins.datastores.local_storage import LocalStorage
 from metaflow.datastore.datastore_storage import DataStoreStorage
 
 from metaflow.debug import debug
-from metaflow.exception import MetaflowException, MetaflowNotFound, retry_exp_backoff
+from metaflow.exception import MetaflowException, MetaflowNotFound
+from metaflow_extensions.netflix_ext.exceptions.decorators import retry_exp_backoff
 from metaflow.metaflow_config import (
     CONDA_DEPENDENCY_RESOLVER,
     CONDA_HACK_CHANNEL_ALIAS,

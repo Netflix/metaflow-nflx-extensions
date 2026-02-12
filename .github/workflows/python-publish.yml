@@ -34,9 +34,9 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install setuptools wheel twine
-    - name: Build and publish packages
+    - name: Build packages
       run: |
-        for pkg in metaflow-netflixext; do
+        for pkg in metaflow-netflixext metaflow-functions; do
           echo "Building $pkg..."
           cd $pkg
           python setup.py sdist bdist_wheel --universal
@@ -46,3 +46,7 @@ jobs:
       uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # 1.13.0
       with:
         packages-dir: metaflow-netflixext/dist/
+    - name: Publish metaflow-functions
+      uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # 1.13.0
+      with:
+        packages-dir: metaflow-functions/dist/
