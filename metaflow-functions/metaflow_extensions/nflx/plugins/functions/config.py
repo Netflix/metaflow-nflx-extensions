@@ -3,7 +3,7 @@ import os
 
 class Config(object):
     VERSION = "v2"
-    NETFLIX_ENV = os.environ.get("NETFLIX_ENVIRONMENT", "prod")
+    FUNCTIONS_ENV = os.environ.get("FUNCTIONS_ENVIRONMENT", "prod")
     RUNTIME_FUNCTION_DIR_PREFIX = "metaflow-function-"
 
 
