@@ -42,4 +42,4 @@ DEBUG_OPTIONS = ["functions"]
 # This list should match metaflow-functions/setup.py install_requires
 ###
 def get_pinned_conda_libs(python_version, datastore_type):
-    return {"psutil": ">=5.8.0", "cffi": "", "fastavro": ""}
+    return {"psutil": ">=5.8.0", "cffi": "", "fastavro": "", "ray-default": ""}
