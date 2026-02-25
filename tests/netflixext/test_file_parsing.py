@@ -29,7 +29,7 @@ from metaflow.metaflow_config import CONDA_DEFAULT_PYPI_SOURCE, get_pinned_conda
 
 # Get the test data directory
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_DIR = os.path.join(TEST_DIR, "..", "..", "environments", "env_specs")
+ENV_DIR = os.path.join(TEST_DIR, "..", "environments")
 
 FOO_PKG_DIR = os.path.join(ENV_DIR, "..", "foo_pkg")
 
