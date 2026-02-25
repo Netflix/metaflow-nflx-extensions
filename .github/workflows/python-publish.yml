@@ -1,11 +1,7 @@
-# Publish individual packages to PyPI when a release is created.
+# Publish packages to PyPI when a release is created.
 #
-# Release tag conventions:
-#   netflixext/vX.Y.Z  - publishes metaflow-netflixext
-#   functions/vX.Y.Z   - publishes metaflow-functions
-#
-# The workflow parses the tag to determine which package to build and publish.
-# Only the package matching the tag prefix is published.
+# Builds all packages and publishes them with skip-existing, so only
+# packages with new versions (not yet on PyPI) are actually uploaded.
 
 name: Publish
 
@@ -26,21 +22,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Determine which package to publish
-      id: detect
-      run: |
-        TAG="${{ github.event.release.tag_name }}"
-        echo "Release tag: $TAG"
-
-        if [[ "$TAG" == netflixext/* ]]; then
-          echo "package=metaflow-netflixext" >> $GITHUB_OUTPUT
-        elif [[ "$TAG" == functions/* ]]; then
-          echo "package=metaflow-functions" >> $GITHUB_OUTPUT
-        else
-          echo "::error::Unknown release tag format '$TAG'. Use 'netflixext/vX.Y.Z' or 'functions/vX.Y.Z'."
-          exit 1
-        fi
-
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -51,12 +32,23 @@ jobs:
         python -m pip install --upgrade pip
         pip install setuptools wheel twine
 
-    - name: Build package
+    - name: Build packages
       run: |
-        cd ${{ steps.detect.outputs.package }}
-        python setup.py sdist bdist_wheel --universal
+        for pkg_dir in metaflow-netflixext metaflow-functions; do
+          echo "Building $pkg_dir..."
+          cd "$pkg_dir"
+          python setup.py sdist bdist_wheel --universal
+          cd ..
+        done
 
-    - name: Publish to PyPI
+    - name: Publish metaflow-netflixext
       uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # 1.13.0
       with:
-        packages-dir: ${{ steps.detect.outputs.package }}/dist/
+        packages-dir: metaflow-netflixext/dist/
+        skip-existing: true
+
+    - name: Publish metaflow-functions
+      uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # 1.13.0
+      with:
+        packages-dir: metaflow-functions/dist/
+        skip-existing: true
