@@ -1,0 +1,6 @@
+dependencies:
+  - pandas = >=0.24.0
+  - platformdirs
+  - pip:
+    - cbl_tools = >=2.12.6
+    - polars <= 0.19
