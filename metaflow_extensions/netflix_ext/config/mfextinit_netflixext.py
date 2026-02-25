@@ -128,7 +128,7 @@ CONDA_DEFAULT_PYPI_SOURCE = from_conf("CONDA_DEFAULT_PYPI_SOURCE", None)
 # value: a tuple/list of username and password
 CONDA_SRCS_AUTH_INFO = from_conf("CONDA_SRCS_AUTH_INFO", {})
 
-CONDA_REMOTE_COMMANDS = from_conf("CONDA_REMOTE_COMMANDS", ("batch", "kubernetes"))
+CONDA_REMOTE_COMMANDS = from_conf("CONDA_REMOTE_COMMANDS", ["batch", "kubernetes"])
 
 # List of system dependencies that are allowed to indicate the system to build on
 CONDA_SYS_DEPENDENCIES = ("__cuda", "__glibc")
