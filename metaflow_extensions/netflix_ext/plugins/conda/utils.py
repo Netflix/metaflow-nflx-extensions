@@ -242,9 +242,10 @@ def pypi_tags_from_arch(
     # This is inspired by what pip does:
     # https://github.com/pypa/pip/blob/0442875a68f19b0118b0b88c747bdaf6b24853ba/src/pip/_internal/utils/compatibility_tags.py
     py_version = tuple(map(int, python_version.split(".")[:2]))
-    if arch == "linux-64":
+    if arch in ("linux-64", "linux-aarch64"):
         max_glibc = "_%s" % glibc_version
         platforms = []  # type: List[str]
+        suffix = "x86_64" if arch == "linux-64" else "aarch64"
         for s in (
             "1",
             "2010",
@@ -271,11 +272,11 @@ def pypi_tags_from_arch(
             "_2_37",
             "_2_38",
         ):
-            platforms.append("manylinux%s_x86_64" % s)
+            platforms.append("manylinux%s_%s" % (s, suffix))
             if s == max_glibc:
                 break
 
-        platforms.append("linux_x86_64")
+        platforms.append("linux_%s" % suffix)
     elif arch == "osx-64":
         platforms = mac_platforms((11, 0), "x86_64")
     elif arch == "osx-arm64":
