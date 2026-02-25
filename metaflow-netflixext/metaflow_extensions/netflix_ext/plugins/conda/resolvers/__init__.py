@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Type
 
 if TYPE_CHECKING:
-    import metaflow_extensions.nflx.plugins.conda.conda
-    import metaflow_extensions.nflx.plugins.conda.env_descr
+    import metaflow_extensions.netflix_ext.plugins.conda.conda
+    import metaflow_extensions.netflix_ext.plugins.conda.env_descr
 
 
 from ..utils import CondaException
@@ -57,28 +57,28 @@ class Resolver:
             )
         return resolver
 
-    def __init__(self, conda: "metaflow_extensions.nflx.plugins.conda.conda.Conda"):
+    def __init__(self, conda: "metaflow_extensions.netflix_ext.plugins.conda.conda.Conda"):
         self._conda = conda
 
     def resolve(
         self,
-        env_type: "metaflow_extensions.nflx.plugins.conda.env_descr.EnvType",
+        env_type: "metaflow_extensions.netflix_ext.plugins.conda.env_descr.EnvType",
         python_version_requested: str,
         deps: Dict[str, List[str]],
         sources: Dict[str, List[str]],
         extras: Dict[str, List[str]],
         architecture: str,
         builder_envs: Optional[
-            List["metaflow_extensions.nflx.plugins.conda.env_descr.ResolvedEnvironment"]
+            List["metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"]
         ] = None,
         base_env: Optional[
-            "metaflow_extensions.nflx.plugins.conda.env_descr.ResolvedEnvironment"
+            "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"
         ] = None,
         file_paths: Dict[str, List[str]] = {},
     ) -> Tuple[
-        "metaflow_extensions.nflx.plugins.conda.env_descr.ResolvedEnvironment",
+        "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment",
         Optional[
-            List["metaflow_extensions.nflx.plugins.conda.env_descr.ResolvedEnvironment"]
+            List["metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"]
         ],
     ]:
         """

@@ -2,7 +2,7 @@ import configparser
 import coverage
 import re
 import os
-from metaflow_extensions.netflix_ext.plugins.coverage.setup_coverage import COVERAGE_RCFILE
+from metaflow_extensions.netflix_ext.plugins.coverage.setup_coverage import get_coverage_rcfile
 
 
 def get_tmp_dirs(pattern, coverage_rcfile, data_file=".coverage"):
@@ -91,6 +91,6 @@ def save_updated_coveragerc(config, coverage_rcfile, output_file):
 
 
 if __name__ == "__main__":
-    cov = coverage.Coverage(data_file=".coverage", config_file=COVERAGE_RCFILE)
-    remap_tmp_dirs(cov, COVERAGE_RCFILE, ".coverage")
-    save_updated_coveragerc(cov.config, COVERAGE_RCFILE, ".coveragerc")
+    cov = coverage.Coverage(data_file=".coverage", config_file=get_coverage_rcfile())
+    remap_tmp_dirs(cov, get_coverage_rcfile(), ".coverage")
+    save_updated_coveragerc(cov.config, get_coverage_rcfile(), ".coveragerc")
