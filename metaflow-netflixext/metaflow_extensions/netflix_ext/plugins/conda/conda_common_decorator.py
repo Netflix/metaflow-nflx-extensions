@@ -46,6 +46,10 @@ class StepRequirementIface:
         return {}
 
     @property
+    def full_id_unique_keys(self) -> Dict[str, str]:
+        return {}
+
+    @property
     def extras(self) -> Dict[str, List[str]]:
         return {}
 
@@ -102,6 +106,7 @@ class StepRequirement(StepRequirementIface):
         self._sources = {}  # type: Dict[str, List[str]]
         self._file_paths = {}  # type: Dict[str, List[str]]
         self._extras = {}  # type: Dict[str, List[str]]
+        self._full_id_unique_keys = {}  # type: Dict[str, str]
         self._default_disabled = {
             UBF_CONTROL: None,
             UBF_TASK: None,
@@ -117,6 +122,7 @@ class StepRequirement(StepRequirementIface):
         n._packages = copy.deepcopy(self._packages)
         n._sources = copy.deepcopy(self._sources)
         n._file_paths = copy.deepcopy(self._file_paths)
+        n._full_id_unique_keys = copy.deepcopy(self._full_id_unique_keys)
         n._extras = copy.deepcopy(self._extras)
         n._default_disabled = copy.deepcopy(self._default_disabled)
         return n
@@ -194,6 +200,14 @@ class StepRequirement(StepRequirementIface):
     @file_paths.setter
     def file_paths(self, value: Dict[str, List[str]]):
         self._file_paths = value
+
+    @property
+    def full_id_unique_keys(self) -> Dict[str, str]:
+        return copy.deepcopy(self._full_id_unique_keys)
+
+    @full_id_unique_keys.setter
+    def full_id_unique_keys(self, value: Dict[str, str]):
+        self._full_id_unique_keys = value
 
     @property
     def extras(self) -> Dict[str, List[str]]:
@@ -304,6 +318,13 @@ class StepRequirement(StepRequirementIface):
         other_extras = other.extras
         for category, extras in other_extras.items():
             self._extras.setdefault(category, []).extend(extras or [])
+
+        other_full_id_unique_keys = other.full_id_unique_keys
+        for key, value in other_full_id_unique_keys.items():
+            # We use override rather than list extension here for same keys,
+            # as we assume it rare that different decorators will have same
+            # full_id_unique_keys.
+            self._full_id_unique_keys[key] = value
 
         # Special handling for pathspec/name
         if other.from_name is not None and other.from_pathspec is not None:

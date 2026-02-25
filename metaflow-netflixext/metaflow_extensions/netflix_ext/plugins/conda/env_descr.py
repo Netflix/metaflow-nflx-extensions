@@ -793,6 +793,8 @@ class ResolvedEnvironment:
         co_resolved: Optional[List[str]] = None,
         env_type: EnvType = EnvType.MIXED,
         accurate_source: bool = True,
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
+        # Sample format: {'uv_lock_content': '33746974cb80adfea6047b5c5713c59c0dbc721da3179501c1bad261241cd3d3'}
     ):
         self._env_type = env_type
         self._user_dependencies = dict_to_tstr(user_dependencies)
@@ -803,6 +805,7 @@ class ResolvedEnvironment:
         self._user_extra_args = dict_to_tstr(user_extra_args) if user_extra_args else []
 
         self._accurate_source = accurate_source
+        self._full_id_unique_keys = full_id_unique_keys or {}
 
         if not env_id:
             env_req_id = ResolvedEnvironment.get_req_id(
@@ -813,13 +816,10 @@ class ResolvedEnvironment:
 
             env_full_id = "_unresolved"
             if all_packages is not None:
-                env_full_id = self._compute_hash(
-                    [
-                        "%s#%s" % (p.filename, p.pkg_hash(p.url_format))
-                        for p in sorted(all_packages, key=lambda p: p.filename)
-                    ]
-                    + [arch or arch_id()]
+                env_full_id = self._compute_full_id(
+                    all_packages, arch or arch_id(), self._full_id_unique_keys
                 )
+
             self._env_id = EnvID(
                 req_id=env_req_id, full_id=env_full_id, arch=arch or arch_id()
             )
@@ -937,10 +937,12 @@ class ResolvedEnvironment:
             Unique identifier for this environment.
         """
         if self._env_id.full_id in ("_default", "_unresolved") and self._all_packages:
-            all_packages = sorted(self._all_packages, key=lambda p: p.filename)
-            env_full_id = self._compute_hash(
-                [p.filename for p in all_packages] + [self._env_id.arch or arch_id()]
+            env_full_id = self._compute_full_id(
+                self._all_packages,
+                self._env_id.arch or arch_id(),
+                self._full_id_unique_keys,
             )
+
             self._env_id = self._env_id._replace(full_id=env_full_id)
         return self._env_id
 
@@ -1225,6 +1227,7 @@ class ResolvedEnvironment:
             "resolved_archs": self._co_resolved,
             "env_type": self._env_type.value,
             "accurate_source": self._accurate_source,
+            "full_id_unique_keys": self._full_id_unique_keys,
         }
 
     @classmethod
@@ -1267,11 +1270,53 @@ class ResolvedEnvironment:
             co_resolved=d["resolved_archs"],
             env_type=env_type,
             accurate_source=d.get("accurate_source", True),
+            full_id_unique_keys=d.get("full_id_unique_keys", None),
         )
 
     @staticmethod
-    def _compute_hash(inputs: Iterable[str]):
+    def _compute_hash(inputs: Iterable[str]) -> str:
         return sha1(b" ".join([s.encode("ascii") for s in inputs])).hexdigest()
+
+    @staticmethod
+    def _unique_keys_to_list(
+        unique_keys: Dict[str, str],
+    ) -> List[str]:
+        # Using "{k}:{v}" not "{k}#{v}" to avoid mixing with package filename#hash,
+        # in case this helps debuggability.
+        return [f"{k}:{v}" for k, v in sorted(unique_keys.items())]
+
+    # There are two levels of hashing for the environment:
+    # * the req_id which is based on the user-requested dependencies and sources.
+    # * the full_id which is based on the resolved user dependencies.
+    #
+    # Originally, full_id is composed of only the resolved dependencies and the
+    # architecture, and a req_id can be mapped to a recently resolved full_id.
+    # This justifies the caching mechanism such as the "_default" key under the
+    # req_id entry in the environment manifest.
+    #
+    # However, as we introduced uv,
+    # we found operations such as `uv lock --upgrade` can introduce different
+    # resolved dependencies while keeping the same user-requested dependencies.
+    # As a result, full_id needs to take into consideration full_id_unique_keys
+    # as well.
+    @staticmethod
+    def _compute_full_id(
+        all_packages: Sequence[PackageSpecification],
+        arch: str,
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
+    ) -> str:
+        to_hash_list = [
+            "%s#%s" % (p.filename, p.pkg_hash(p.url_format))
+            for p in sorted(all_packages, key=lambda p: p.filename)
+        ] + [arch]
+        to_hash_list.extend(
+            ResolvedEnvironment._unique_keys_to_list(full_id_unique_keys)
+            if full_id_unique_keys
+            else []
+        )
+
+        env_full_id = ResolvedEnvironment._compute_hash(to_hash_list)
+        return env_full_id
 
 
 class MetaflowResolvedEnvironment:
@@ -1511,7 +1556,11 @@ class CachedEnvironmentInfo:
         # Missing AliasType.REQ_FULL_ID but we don't record aliases for that.
 
     def env_for(
-        self, req_id: str, full_id: str = "_default", arch: Optional[str] = None
+        self,
+        req_id: str,
+        full_id: str = "_default",
+        arch: Optional[str] = None,
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
     ) -> Optional[ResolvedEnvironment]:
         arch = arch or arch_id()
         per_arch_envs = self._resolved_environments.get(arch)
@@ -1520,7 +1569,16 @@ class CachedEnvironmentInfo:
             if per_req_id_envs:
                 if full_id == "_default":
                     full_id = per_req_id_envs.get("_default", "_invalid")  # type: ignore
-                return per_req_id_envs.get(full_id)  # type: ignore
+                env = per_req_id_envs.get(full_id)  # type: ignore
+
+                if (
+                    env
+                    and isinstance(env, ResolvedEnvironment)
+                    and env._full_id_unique_keys != full_id_unique_keys
+                ):
+                    env = None
+                return env  # type: ignore
+
         return None
 
     def envs_for(

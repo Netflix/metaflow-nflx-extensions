@@ -1415,6 +1415,18 @@ def filter_user_reqs_by_markers(
     return new_deps
 
 
+def compute_file_hash(file_path: str) -> str:
+    if not file_path:
+        return ""
+
+    try:
+        with open(file_path, "rb") as f:
+            file_content_hash = hashlib.sha256(f.read()).hexdigest()
+            return file_content_hash
+    except (IOError, OSError):
+        raise IOError(f"Could not read file '{file_path}' for hashing") from None
+
+
 class WithDir:
     # WARNING: os.chdir is not compatible with thread processing so do not use in
     # a context where multiple threads can exist.

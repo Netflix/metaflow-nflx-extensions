@@ -135,6 +135,7 @@ class CondaEnvironment(MetaflowEnvironment):
                 step.name,
                 base_env,
                 base_from_full_id=base_from_full_id,
+                full_id_unique_keys=req.full_id_unique_keys,
             )
 
         resolver.resolve_environments(echo)
@@ -372,7 +373,11 @@ class CondaEnvironment(MetaflowEnvironment):
         elif step_info[2]:
             # In this case, we should know about the environment -- it will have
             # _default flag at this time
-            resolved_env = conda.environment(step_info[2][0], local_only=True)
+            resolved_env = conda.environment(
+                step_info[2][0],
+                local_only=True,
+                full_id_unique_keys=step_info[1].full_id_unique_keys,
+            )
             if resolved_env:
                 return resolved_env.env_id
             return None
