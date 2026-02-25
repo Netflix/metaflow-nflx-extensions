@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import uuid
 
-from .setup_coverage import get_local_coverage_dir, COVERAGE_RCFILE
+from .setup_coverage import get_local_coverage_dir, get_coverage_rcfile
 
 
 def hash_file(file_path: str) -> str:
@@ -45,7 +45,7 @@ def combine_coverage_files(local_dir):
     if not files:
         return
     cov = coverage.Coverage(
-        data_file=combined_coverage_file, config_file=COVERAGE_RCFILE
+        data_file=combined_coverage_file, config_file=get_coverage_rcfile()
     )
     try:
         cov.combine(data_paths=files, keep=True)

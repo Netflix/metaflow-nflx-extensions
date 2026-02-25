@@ -9,8 +9,18 @@ if TYPE_CHECKING:
     import sh
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-COVERAGE_RCFILE = os.path.join(MODULE_DIR, "coveragerc.py")
 SITECUSTOMIZE_FILE = os.path.join(MODULE_DIR, "sitecustomize.py")
+
+
+def get_coverage_rcfile() -> str:
+    """Return the coveragerc path, allowing extensions to override via env var."""
+    return os.environ.get("METAFLOW_COVERAGE_RCFILE_PATH") or os.path.join(
+        MODULE_DIR, "coveragerc.py"
+    )
+
+
+# Backwards-compatible alias — resolved at call time via get_coverage_rcfile()
+COVERAGE_RCFILE = os.path.join(MODULE_DIR, "coveragerc.py")
 
 
 def get_local_coverage_dir():
@@ -44,7 +54,7 @@ def setup_sitecustomize(python_binary: str):
     # so that when the env is saved and restored we will have both.
     coverage_rcfile = os.path.join(site_packages_dir, ".coveragerc")
     if not os.path.exists(coverage_rcfile):
-        shutil.copy(COVERAGE_RCFILE, coverage_rcfile)
+        shutil.copy(get_coverage_rcfile(), coverage_rcfile)
 
     # We harden out the environment variables as the fallback so that it will work with
     # subprocesses that are launched without inheriting the environment.
