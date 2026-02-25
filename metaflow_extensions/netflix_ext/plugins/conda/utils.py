@@ -168,12 +168,14 @@ def get_conda_root(datastore_type: str) -> str:
 
 
 def arch_id() -> str:
-    bit = "32"
-    if platform.machine().endswith("64"):
-        bit = "64"
     if platform.system() == "Linux":
+        machine = platform.machine().lower()
+        if machine in ("aarch64", "arm64"):
+            return "linux-aarch64"
+        bit = "64" if machine.endswith("64") else "32"
         return "linux-%s" % bit
     elif platform.system() == "Darwin":
+        bit = "64" if platform.machine().endswith("64") else "32"
         # Support M1 Mac
         if platform.machine() == "arm64":
             return "osx-arm64"
