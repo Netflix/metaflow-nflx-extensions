@@ -2743,7 +2743,7 @@ class Conda(object):
 
         entrypoint = os.path.join(env_dir, "bin", "python")
         if os.environ.get("METAFLOW_COVERAGE_S3_PATH"):
-            from metaflow_extensions.netflix_ext.plugins.coverage.setup_coverage import (
+            from metaflow_extensions.nflx.plugins.coverage.setup_coverage import (
                 setup_coverage,
             )
 
