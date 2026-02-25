@@ -1,7 +1,20 @@
+import os
+
 from setuptools import setup, find_namespace_packages
 
 with open("VERSION", mode="r") as f:
     version = f.read().strip()
+
+# Write version file so the metaflow extension system reports the correct version
+_version_file = os.path.join(
+    os.path.dirname(__file__),
+    "metaflow_extensions",
+    "nflx",
+    "toplevel",
+    "functions_version.py",
+)
+with open(_version_file, "wt") as f:
+    f.write('_ext_version = "%s"\n' % version)
 
 setup(
     name="metaflow-functions",
