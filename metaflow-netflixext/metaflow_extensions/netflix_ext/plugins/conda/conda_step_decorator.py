@@ -392,6 +392,16 @@ class PylockTomlInternalDecorator(StepRequirementMixin, StepDecorator):
         "user_deps_for_hash": {},
         # The purpose is similar to user_deps_for_hash.
         "user_sources_for_hash": [],
+        # When a pylock_internal decorator is generated, the originating
+        # ResolvedUvEnvFlowDecorator calculates the hash of uv.lock, assigns it
+        # to the decorator's attributes["full_id_unique_keys"]["uv_content_hash"],
+        # and eventually this uv content hash value will be passed to
+        # PylockTomlInternalDecorator.resolve()'s parameters.
+        #
+        # This is used to detect a uv.lock change with unchanged user
+        # dependencies in pyproject.toml, caused by design by uv's non-determinism
+        # in resolution when ">=version" specifiers are involved.
+        "full_id_unique_keys": {},
     }
 
     name = "pylock_toml_internal"
@@ -444,6 +454,10 @@ class PylockTomlInternalDecorator(StepRequirementMixin, StepDecorator):
     @property
     def python(self) -> Optional[str]:
         return self.attributes["user_deps_for_hash"].get("python")
+
+    @property
+    def full_id_unique_keys(self) -> Dict[str, str]:
+        return cast(Dict[str, str], self.attributes["full_id_unique_keys"])
 
 
 class CondaEnvInternalDecorator(StepDecorator):

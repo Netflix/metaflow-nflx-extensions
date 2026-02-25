@@ -685,6 +685,7 @@ class Conda(object):
         env_id: EnvID,
         local_only: bool = False,
         use_latest: str = CONDA_USE_REMOTE_LATEST,
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
     ) -> Optional[ResolvedEnvironment]:
         """
         Returns the resolved environment for a given environment ID.
@@ -712,7 +713,9 @@ class Conda(object):
             The ResolvedEnvironment corresponding to the input EnvID
         """
         # First look if we have from_env_id locally
-        env = self._cached_environment.env_for(*env_id)
+        env = self._cached_environment.env_for(
+            *env_id, full_id_unique_keys=full_id_unique_keys
+        )
 
         debug.conda_exec("%s%sfound locally" % (str(env_id), " " if env else " not "))
         if env:
@@ -760,6 +763,25 @@ class Conda(object):
                         "%s found as latest remotely: %s"
                         % (str(env_id), str(env.env_id))
                     )
+
+        # In case the resolved files changed but the user dependency stays the same,
+        # which happens when pyproject.toml stays the same but the user does
+        # `uv lock --upgrade` -- the full_id_unique_keys which includes information
+        # from the resolved files hash will be different, and the cache environment
+        # will be invalidated.
+        if full_id_unique_keys and env:
+            if env._full_id_unique_keys != full_id_unique_keys:
+                debug.conda_exec(
+                    "%s found remotely but unique keys do not match, unique key in cache is %s"
+                    " unique key in request is %s"
+                    % (
+                        str(env.env_id),
+                        str(env._full_id_unique_keys),
+                        str(full_id_unique_keys),
+                    )
+                )
+                return None
+
         return env
 
     def environments(
