@@ -1,0 +1,25 @@
+# Hand written toml file just for unit testing.
+# modified toml to make no match for "macosx_11_0_arm64"
+
+lock-version = "1.0"
+created-by = "uv"
+requires-python = ">=3.10.18"
+[[packages]]
+name = "charset-normalizer"
+version = "3.4.3"
+sdist = { url = "https://pypi.netflix.net/packages/18953203074/charset_normalizer-3.4.3.tar.gz", upload-time = 2025-08-09T07:57:28Z, size = 122371, hashes = { sha256 = "6fce4b8500244f6fcb71465d4a4930d132ba9ab8e71a7859e6a5d59851068d14" } }
+wheels = [
+    { url = "https://pypi.netflix.net/packages/18653672681/charset_normalizer-3.4.2-cp310-cp310-macosx_10_9_universal2.whl", upload-time = 2025-05-02T08:31:46Z, size = 201818, hashes = { sha256 = "7c48ed483eb946e6c04ccbe02c6b4d1d48e51944b6db70f697e089c193404941" } },
+    { url = "https://pypi.netflix.net/packages/18653672682/charset_normalizer-3.4.2-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", upload-time = 2025-05-02T08:31:48Z, size = 144649, hashes = { sha256 = "b2d318c11350e10662026ad0eb71bb51c7812fc8590825304ae0bdd4ac283acd" } },
+    { url = "https://pypi.netflix.net/packages/18653672683/charset_normalizer-3.4.2-cp310-cp310-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", upload-time = 2025-05-02T08:31:50Z, size = 155045, hashes = { sha256 = "9cbfacf36cb0ec2897ce0ebc5d08ca44213af24265bd56eca54bee7923c48fd6" } },
+    { url = "https://pypi.netflix.net/packages/18653672684/charset_normalizer-3.4.2-cp310-cp310-manylinux_2_17_s390x.manylinux2014_s390x.whl", upload-time = 2025-05-02T08:31:52Z, size = 147356, hashes = { sha256 = "18dd2e350387c87dabe711b86f83c9c78af772c748904d372ade190b5c7c9d4d" } },
+    { url = "https://pypi.netflix.net/packages/18653672685/charset_normalizer-3.4.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", upload-time = 2025-05-02T08:31:56Z, size = 149471, hashes = { sha256 = "8075c35cd58273fee266c58c0c9b670947c19df5fb98e7b66710e04ad4e9ff86" } },
+    { url = "https://pypi.netflix.net/packages/18653672686/charset_normalizer-3.4.2-cp310-cp310-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", upload-time = 2025-05-02T08:31:57Z, size = 151317, hashes = { sha256 = "5bf4545e3b962767e5c06fe1738f951f77d27967cb2caa64c28be7c4563e162c" } },
+    { url = "https://pypi.netflix.net/packages/18653672687/charset_normalizer-3.4.2-cp310-cp310-musllinux_1_2_aarch64.whl", upload-time = 2025-05-02T08:31:59Z, size = 146368, hashes = { sha256 = "7a6ab32f7210554a96cd9e33abe3ddd86732beeafc7a28e9955cdf22ffadbab0" } },
+    { url = "https://pypi.netflix.net/packages/18653672688/charset_normalizer-3.4.2-cp310-cp310-musllinux_1_2_i686.whl", upload-time = 2025-05-02T08:32:01Z, size = 154491, hashes = { sha256 = "b33de11b92e9f75a2b545d6e9b6f37e398d86c3e9e9653c4864eb7e89c5773ef" } },
+    { url = "https://pypi.netflix.net/packages/18653673789/charset_normalizer-3.4.2-cp310-cp310-musllinux_1_2_ppc64le.whl", upload-time = 2025-05-02T08:32:03Z, size = 157695, hashes = { sha256 = "8755483f3c00d6c9a77f490c17e6ab0c8729e39e6390328e42521ef175380ae6" } },
+    { url = "https://pypi.netflix.net/packages/18653673790/charset_normalizer-3.4.2-cp310-cp310-musllinux_1_2_s390x.whl", upload-time = 2025-05-02T08:32:04Z, size = 154849, hashes = { sha256 = "68a328e5f55ec37c57f19ebb1fdc56a248db2e3e9ad769919a58672958e8f366" } },
+    { url = "https://pypi.netflix.net/packages/18653673791/charset_normalizer-3.4.2-cp310-cp310-musllinux_1_2_x86_64.whl", upload-time = 2025-05-02T08:32:06Z, size = 150091, hashes = { sha256 = "21b2899062867b0e1fde9b724f8aecb1af14f2778d69aacd1a5a1853a597a5db" } },
+    { url = "https://pypi.netflix.net/packages/18653673792/charset_normalizer-3.4.2-cp310-cp310-win32.whl", upload-time = 2025-05-02T08:32:08Z, size = 98445, hashes = { sha256 = "e8082b26888e2f8b36a042a58307d5b917ef2b1cacab921ad3323ef91901c71a" } },
+    { url = "https://pypi.netflix.net/packages/18653673794/charset_normalizer-3.4.2-cp311-cp311-macosx_10_9_universal2.whl", upload-time = 2025-05-02T08:32:11Z, size = 198794, hashes = { sha256 = "be1e352acbe3c78727a16a455126d9ff83ea2dfdcbc83148d2982305a04714c2" } },
+]
