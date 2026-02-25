@@ -425,6 +425,15 @@ class CondaEnvironment(MetaflowEnvironment):
                 req.merge_update(step_deco)
         return req
 
+    @staticmethod
+    def _remote_step_arch(decorators: List[Any]) -> str:
+        for deco in decorators:
+            if deco.name in CONDA_REMOTE_COMMANDS:
+                target_platform = getattr(deco, "target_platform", None)
+                if isinstance(target_platform, str) and target_platform:
+                    return target_platform
+        return "linux-64"
+
     @classmethod
     def extract_merged_reqs_for_step(
         cls,
@@ -465,7 +474,10 @@ class CondaEnvironment(MetaflowEnvironment):
         if override_arch:
             step_arch = override_arch
         else:
-            step_arch = "linux-64" if step_is_remote else arch_id()
+            if step_is_remote:
+                step_arch = cls._remote_step_arch(resources_deco)
+            else:
+                step_arch = arch_id()
 
         final_req = cls.extract_reqs_for_flow(flow)
         step_req = cls.extract_reqs_for_step(step)
