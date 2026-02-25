@@ -62,6 +62,7 @@ class PipResolver(Resolver):
         builder_envs: Optional[List[ResolvedEnvironment]] = None,
         base_env: Optional[ResolvedEnvironment] = None,
         file_paths: Dict[str, List[str]] = {},
+        full_id_unique_keys: Dict[str, str] = {},
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
         if base_env:
             # For base environments, we may have built packages already so for those
@@ -594,6 +595,10 @@ class PipResolver(Resolver):
                 architecture,
                 all_packages=packages,
                 env_type=env_type,
+                # full_id_unique_keys is a uv specific cache invalidation mechanism,
+                # and PipResolver shouldn't need it. We still pass this along as {}
+                # to make code consistent.
+                full_id_unique_keys=full_id_unique_keys,
             ),
             builder_envs,
         )
