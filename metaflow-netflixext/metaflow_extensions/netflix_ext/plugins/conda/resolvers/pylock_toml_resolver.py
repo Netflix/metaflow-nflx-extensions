@@ -18,7 +18,7 @@ from metaflow._vendor.packaging.tags import (
     Tag,
 )
 
-from metaflow_extensions.netflix_ext.plugins.conda.conda import CondaException
+from ..utils import CondaException
 
 from . import Resolver
 from typing import Callable, Dict, Iterable, List, Any, Optional, Tuple
