@@ -9,16 +9,8 @@ if TYPE_CHECKING:
     import sh
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+COVERAGE_RCFILE = os.path.join(MODULE_DIR, "coveragerc.py")
 SITECUSTOMIZE_FILE = os.path.join(MODULE_DIR, "sitecustomize.py")
-
-# Allow internal extensions to provide their own coveragerc override
-try:
-    import metaflow_extensions.nflx.plugins.coverage as _nflx_cov
-
-    _nflx_coveragerc = os.path.join(os.path.dirname(_nflx_cov.__file__), "coveragerc.py")
-    COVERAGE_RCFILE = _nflx_coveragerc if os.path.exists(_nflx_coveragerc) else os.path.join(MODULE_DIR, "coveragerc.py")
-except ImportError:
-    COVERAGE_RCFILE = os.path.join(MODULE_DIR, "coveragerc.py")
 
 
 def get_local_coverage_dir():
