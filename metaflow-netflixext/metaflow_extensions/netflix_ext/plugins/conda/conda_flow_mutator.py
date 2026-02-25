@@ -9,7 +9,11 @@ from metaflow import FlowMutator
 from .conda_common_decorator import StepRequirementMixin
 from .conda_flow_decorator import PackageRequirementFlowDecorator
 from .parsers import req_parser, toml_parser
-from .utils import call_binary, determine_uv_env_python_version
+from .utils import (
+    call_binary,
+    determine_uv_env_python_version,
+    compute_file_hash,
+)
 
 
 if TYPE_CHECKING:
@@ -171,6 +175,9 @@ class ResolvedEnvironmentBaseFlowMutator(FlowMutator):
         # See _parse_requirements_txt() for the format of this dict.
         user_deps: Dict[str, str],
         user_sources: List[str],
+        # takes a full_id_unique_keys dict rather than uv_content_hash
+        # to allow more flexibility in the future.
+        full_id_unique_keys: Dict[str, str],
     ):
         ResolvedEnvironmentBaseFlowMutator._verify_no_conflict_step_decorators(
             step_name, step
@@ -181,6 +188,7 @@ class ResolvedEnvironmentBaseFlowMutator(FlowMutator):
                 "path": pylock_toml_path,
                 "user_deps_for_hash": user_deps,
                 "user_sources_for_hash": user_sources,
+                "full_id_unique_keys": full_id_unique_keys,
             },
         )
 
@@ -290,14 +298,23 @@ class ResolvedUVEnvFlowDecorator(ResolvedEnvironmentBaseFlowMutator):
                 f"must exist in the specified path {proj_config_dir}"
             )
 
-        temp_toml_file_path, user_deps, user_sources = self._handle_uv_lock_scenario(
-            os.path.join(proj_config_dir, "uv.lock"),
-            os.path.join(proj_config_dir, "pyproject.toml"),
+        temp_toml_file_path, user_deps, user_sources, uv_lock_file_content_hash = (
+            self._handle_uv_lock_scenario(
+                os.path.join(proj_config_dir, "uv.lock"),
+                os.path.join(proj_config_dir, "pyproject.toml"),
+            )
         )
 
         for step_name, step in mutable_flow.steps:
             ResolvedEnvironmentBaseFlowMutator._mutate_step(
-                step_name, step, temp_toml_file_path, user_deps, user_sources
+                step_name,
+                step,
+                temp_toml_file_path,
+                user_deps,
+                user_sources,
+                full_id_unique_keys={
+                    "uv_lock_content_hash": uv_lock_file_content_hash,
+                },
             )
 
     # @staticmethod
@@ -306,10 +323,11 @@ class ResolvedUVEnvFlowDecorator(ResolvedEnvironmentBaseFlowMutator):
     # ) -> tuple[Optional[str], Dict[str, str]]:
     #     raise NotImplementedError("This will be supported in a stacked PR soon.")
 
+    # Returns: (temp_pylock_toml_path, user_deps_dict, user_sources_list, uv_lock_content_hash)
     @staticmethod
     def _handle_uv_lock_scenario(
         uv_lock_path: str, pyproject_toml_path: str
-    ) -> Tuple[Optional[str], Dict[str, str], List[str]]:
+    ) -> Tuple[str, Dict[str, str], List[str], str]:
         # 1. read pyproject.toml
         user_deps, user_srcs = (
             ResolvedUVEnvFlowDecorator._parse_pyproject_toml_to_user_deps_dict(
@@ -337,7 +355,12 @@ class ResolvedUVEnvFlowDecorator(ResolvedEnvironmentBaseFlowMutator):
             cwd=cwd,
         )
 
-        return temp_path, user_deps, user_srcs
+        # Calculate uv lock file content hash, to be passed to PylockToml Resolver,
+        # and eventually ResolvedEnvironment, to be a component of full_id hash calculation,
+        # and will be used to invalidate the cache if pyproject.toml is the same but uv.lock changes.
+        uv_lock_content_hash = compute_file_hash(uv_lock_path)
+
+        return temp_path, user_deps, user_srcs, uv_lock_content_hash
 
     @staticmethod
     def _parse_pyproject_toml_to_user_deps_dict(

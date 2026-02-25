@@ -97,6 +97,7 @@ class EnvsResolver(object):
         force: bool = False,
         local_only: bool = False,
         use_latest: str = CONDA_USE_REMOTE_LATEST,
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
     ) -> Tuple[
         EnvType,
         EnvID,
@@ -184,11 +185,14 @@ class EnvsResolver(object):
                 co_resolved=base_env.co_resolved_archs,
                 env_type=base_env.env_type,
                 accurate_source=base_env.is_info_accurate,
+                full_id_unique_keys=full_id_unique_keys,
             )
             resolved_env.dirty = True
         else:
             resolved_env = (
-                conda.environment(env_id, local_only, use_latest) if not force else None
+                conda.environment(env_id, local_only, use_latest, full_id_unique_keys)
+                if not force
+                else None
             )
 
         return (
@@ -216,6 +220,7 @@ class EnvsResolver(object):
         use_latest: str = CONDA_USE_REMOTE_LATEST,
         force: bool = False,
         force_co_resolve: bool = False,
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
     ):
         """
         Add an environment to resolve to this EnvsResolver. The EnvsResolver will resolve
@@ -306,6 +311,7 @@ class EnvsResolver(object):
             force=force,
             local_only=local_only,
             use_latest=use_latest,
+            full_id_unique_keys=full_id_unique_keys,
         )
 
         # Check if we have already requested this environment
@@ -331,6 +337,7 @@ class EnvsResolver(object):
                 "sources": user_sources,
                 "extras": extras,
                 "file_paths": file_paths,
+                "full_id_unique_keys": full_id_unique_keys,
                 "conda_format": (
                     [CONDA_PREFERRED_FORMAT]
                     if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none"
@@ -764,6 +771,7 @@ class EnvsResolver(object):
                         "resolved": builder_env,
                         "need_caching": builder_env is None,
                         "env_type": EnvType.CONDA_ONLY,
+                        "full_id_unique_keys": {},
                     }
                 self._builder_envs[builder_env_id] = builder_env_info
                 builders_by_req_id.setdefault(env_id.req_id, []).append(builder_env_id)
@@ -926,6 +934,7 @@ class EnvsResolver(object):
                 builder_envs,
                 env_desc["base"],
                 env_desc["file_paths"],
+                env_desc["full_id_unique_keys"],
             )
 
             if env_desc["base"]:
