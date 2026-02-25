@@ -342,6 +342,7 @@ def test_parse_corner_cases_txt(cli_runner, mock_resolver_add_environment):
     )
 
 
+@pytest.mark.skip(reason="Requires Netflix-internal pinned dependency (nflx-python-eureq)")
 def test_parse_only_src_txt(cli_runner, mock_resolver_add_environment):
     """Test that only-src.txt correctly parses multiple PyPI packages."""
     runner, env_vars = cli_runner
@@ -393,6 +394,7 @@ def test_parse_only_src_txt(cli_runner, mock_resolver_add_environment):
     )
 
 
+@pytest.mark.skip(reason="Requires Netflix-internal pinned dependency (nflx-python-eureq)")
 def test_parse_only_src_yml(cli_runner, mock_resolver_add_environment):
     """Test that only-src.yml correctly parses mixed conda and pip dependencies."""
     runner, env_vars = cli_runner
@@ -567,6 +569,7 @@ def test_multiple_architectures(cli_runner, mock_resolver_add_environment):
         assert "python==3.10" in deps.get("conda", [])
 
 
+@pytest.mark.skip(reason="Requires --skip-metaflow-deps flag (not yet in OSS release)")
 def test_skip_metaflow_deps(cli_runner, mock_resolver_add_environment):
     """Test that --skip-metaflow-deps results in no pinned metaflow dependencies."""
     runner, env_vars = cli_runner

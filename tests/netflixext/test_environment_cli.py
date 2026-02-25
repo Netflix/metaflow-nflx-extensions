@@ -19,6 +19,7 @@ def no_cached_env():
         os.chdir(current_dir)
 
 
+@pytest.mark.skip(reason="Requires Netflix-internal named environment (mlp/metaflow/romain/test_pandas_env)")
 def test_show_envs(no_cached_env):
     api = FlowAPI(no_cached_env[1], environment="conda")
     res = api.environment().show()
@@ -83,6 +84,7 @@ def test_resolve_one_env(no_cached_env):
     assert start_res[0]  # There is a resolved environment
 
 
+@pytest.mark.skip(reason="Requires Netflix-internal named environment (mlp/metaflow/romain/test_pandas_env)")
 def test_resolve_all_envs(no_cached_env):
     api = FlowAPI(no_cached_env[1], environment="conda")
     res = api.environment().resolve(timeout=2400)
