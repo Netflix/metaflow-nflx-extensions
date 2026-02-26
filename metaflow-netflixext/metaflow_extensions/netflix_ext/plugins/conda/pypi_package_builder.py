@@ -354,6 +354,18 @@ def _build_with_pip(
     debug.conda_exec("%s: building from '%s' in '%s'" % (key, src, dest_path))
 
     addl_env = {"PATH": os.path.dirname(binary) + ":" + os.environ["PATH"]}
+
+    # Constrain setuptools<82 in pip's build isolation subprocesses.
+    # The top-level pip uses --isolated (ignores env vars), but the build
+    # isolation subprocess that installs build deps does NOT, so it honors
+    # PIP_CONSTRAINT. This prevents setuptools>=82 (which removed
+    # pkg_resources) from being installed in the build environment.
+    constraint_file = os.path.join(dest_path, "constraints.txt")
+    os.makedirs(dest_path, exist_ok=True)
+    with open(constraint_file, "w") as cf:
+        cf.write("setuptools<82\n")
+    addl_env["PIP_CONSTRAINT"] = constraint_file
+
     conda.call_binary(
         [
             "-m",

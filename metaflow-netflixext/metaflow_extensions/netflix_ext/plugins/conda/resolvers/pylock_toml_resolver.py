@@ -116,6 +116,7 @@ class PylockTomlResolver(Resolver):
             architecture,
             supported_tags,
             filter_func,
+            full_id_unique_keys,
         )
 
         return (resolved_env, builder_envs)
@@ -220,6 +221,7 @@ class PylockTomlResolver(Resolver):
                 Dict[str, List[PackageSpecification]],
             ]
         ] = None,
+        full_id_unique_keys: Dict[str, str] = {},
     ) -> ResolvedEnvironment:
 
         packages_dict = PylockTomlResolver._pylock_toml_root_obj_to_packages(
@@ -244,6 +246,7 @@ class PylockTomlResolver(Resolver):
             sources,
             extras,
             architecture,
+            full_id_unique_keys=full_id_unique_keys,
         )
 
         return resolved_env
@@ -363,6 +366,7 @@ class PylockTomlResolver(Resolver):
         sources: Optional[Dict[str, List[str]]],
         extras: Optional[Dict[str, List[str]]],
         architecture: Optional[str] = None,
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
     ):
         resolved_env = ResolvedEnvironment(
             deps,
@@ -371,6 +375,7 @@ class PylockTomlResolver(Resolver):
             architecture,
             all_packages=packages,
             env_type=env_type,
+            full_id_unique_keys=full_id_unique_keys,
         )
 
         return resolved_env

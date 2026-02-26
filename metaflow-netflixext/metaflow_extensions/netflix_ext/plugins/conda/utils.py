@@ -79,7 +79,7 @@ _BUILDER_ENVS_PACKAGES = (
     "pip",
     "wheel",
     "tomli",
-    "setuptools",
+    "setuptools<82",  # pkg_resources removed in setuptools 82; many packages still need it
     "uv<=0.7.8; python_version<'3.8'",
     "uv ; python_version>='3.8'",
 )
