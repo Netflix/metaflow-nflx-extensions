@@ -48,6 +48,7 @@ class PylockTomlResolver(Resolver):
         builder_envs: Optional[List[ResolvedEnvironment]] = None,
         base_env: Optional[ResolvedEnvironment] = None,
         file_paths: Dict[str, List[str]] = {},
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
         # Checks on len(tom_path_list) >= 1 skiped due to get_resolver_cls()
         # only triggers this class's resolve() call when its len >= 1

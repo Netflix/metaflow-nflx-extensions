@@ -15,12 +15,15 @@ class CondaLockResolver(Resolver):
     def resolve(
         self,
         env_type: EnvType,
+        python_version_requested: str,
         deps: Dict[str, List[str]],
         sources: Dict[str, List[str]],
         extras: Dict[str, List[str]],
         architecture: str,
         builder_envs: Optional[List[ResolvedEnvironment]] = None,
         base_env: Optional[ResolvedEnvironment] = None,
+        file_paths: Dict[str, List[str]] = {},
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
         raise NotImplementedError
 
