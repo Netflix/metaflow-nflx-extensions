@@ -2097,10 +2097,9 @@ class Conda(object):
                 )
                 del self._bins["pip"]
 
-        if "micromamba version" in self._info_no_lock:
-            if parse_version(self._info_no_lock["micromamba version"]) < parse_version(
-                "1.4.0"
-            ):
+        micromamba_version = self._micromamba_version(self._info_no_lock)
+        if micromamba_version is not None:
+            if parse_version(micromamba_version) < parse_version("1.4.0"):
                 return InvalidEnvironmentException(
                     self._install_message_for_resolver("micromamba")
                 )
@@ -2753,6 +2752,18 @@ class Conda(object):
             )
         else:
             return "Unknown resolver '%s'" % resolver
+
+    @staticmethod
+    def _micromamba_version(info: Mapping[str, Any]) -> Optional[str]:
+        # Some micromamba builds expose platform-qualified keys, e.g.
+        # "micromamba-linux-aarch64 version", instead of "micromamba version".
+        micromamba_version = info.get("micromamba version")
+        if micromamba_version is not None:
+            return cast(str, micromamba_version)
+        for info_key, info_val in info.items():
+            if info_key.startswith("micromamba") and info_key.endswith(" version"):
+                return cast(str, info_val)
+        return None
 
     def _envars_for_conda_exec(self, env_vars: Dict[str, str]):
         def _update_if_not_present(d: Dict[str, str]):
