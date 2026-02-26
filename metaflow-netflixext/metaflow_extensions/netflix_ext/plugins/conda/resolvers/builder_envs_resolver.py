@@ -24,6 +24,7 @@ class BuilderEnvsResolver(Resolver):
         builder_envs: Optional[List[ResolvedEnvironment]] = None,
         base_env: Optional[ResolvedEnvironment] = None,
         file_paths: Dict[str, List[str]] = {},
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
         conda_only_sources = sources.get("conda", [])
         python_deps = [d for d in deps.get("conda", []) if d.startswith("python==")]

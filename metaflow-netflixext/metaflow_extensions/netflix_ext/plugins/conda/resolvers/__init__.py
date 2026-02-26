@@ -75,6 +75,7 @@ class Resolver:
             "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"
         ] = None,
         file_paths: Dict[str, List[str]] = {},
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
     ) -> Tuple[
         "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment",
         Optional[
