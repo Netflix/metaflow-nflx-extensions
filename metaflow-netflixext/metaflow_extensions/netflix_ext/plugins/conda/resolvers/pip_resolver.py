@@ -144,6 +144,20 @@ class PipResolver(Resolver):
             ]
             args.extend(extra_args)
 
+            # Constrain setuptools<82 so that build isolation environments
+            # retain pkg_resources (removed in setuptools 82). Many third-party
+            # packages still use pkg_resources in their setup.py.
+            constraint_file = os.path.join(pypi_dir, "constraints.txt")
+            with open(constraint_file, "w") as cf:
+                cf.write("setuptools<82\n")
+            args.extend(["--constraint", constraint_file])
+            # Also set PIP_CONSTRAINT env var so the constraint propagates to
+            # pip's build isolation subprocesses (--constraint only applies to
+            # the top-level resolution, not to build dependency installation).
+            # The main pip command uses --isolated which ignores env vars, but
+            # build isolation subprocesses do not, so they will honor this.
+            addl_env["PIP_CONSTRAINT"] = constraint_file
+
             pypi_sources = sources.get("pypi", [])
             # The first source is always the index
             args.extend(["-i", pypi_sources[0]])
