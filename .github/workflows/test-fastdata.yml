@@ -36,6 +36,14 @@ jobs:
         working-directory: metaflow-fastdata
         run: pytest -m "not integration" -v --html=report.html --self-contained-html --junit-xml=junit.xml
 
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Unit Tests (py${{ matrix.python-version }})
+          path: metaflow-fastdata/junit.xml
+          reporter: java-junit
+
       - name: Upload test report
         uses: actions/upload-artifact@v4
         if: always()
@@ -88,6 +96,14 @@ jobs:
           AWS_DEFAULT_REGION: us-east-1
           AWS_ENDPOINT_URL: http://localhost:9000
         run: pytest -m integration -v --html=report.html --self-contained-html --junit-xml=junit.xml
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Integration Tests
+          path: metaflow-fastdata/junit.xml
+          reporter: java-junit
 
       - name: Upload test report
         uses: actions/upload-artifact@v4
