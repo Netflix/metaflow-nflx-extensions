@@ -30,7 +30,7 @@ jobs:
     - name: Install build dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install setuptools wheel twine
+        pip install setuptools wheel twine build
 
     - name: Build packages
       run: |
@@ -40,6 +40,10 @@ jobs:
           python setup.py sdist bdist_wheel --universal
           cd ..
         done
+        echo "Building metaflow-fastdata..."
+        cd metaflow-fastdata
+        python -m build
+        cd ..
 
     - name: Publish metaflow-netflixext
       uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # 1.13.0
@@ -51,4 +55,10 @@ jobs:
       uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # 1.13.0
       with:
         packages-dir: metaflow-functions/dist/
+        skip-existing: true
+
+    - name: Publish metaflow-fastdata
+      uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # 1.13.0
+      with:
+        packages-dir: metaflow-fastdata/dist/
         skip-existing: true
