@@ -53,10 +53,15 @@ jobs:
           condarc: |
             channels:
               - conda-forge
-            channel_alias: https://prefix.dev
           create-args: >-
             python=${{ matrix.python-version }}
             ${{ matrix.mamba-version }}
+
+      - name: Configure channel alias for tests
+        shell: bash -eo pipefail -l {0}
+        run: |
+          echo "channel_alias: https://prefix.dev" >> ~/.condarc
+
       - name: install nflx-extension
         shell: bash -eo pipefail -l {0}
         run: |
