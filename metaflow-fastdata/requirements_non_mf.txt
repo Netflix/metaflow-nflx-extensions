@@ -1,0 +1,6 @@
+cffi
+pandas
+pyarrow
+pytz
+fastavro
+requests
