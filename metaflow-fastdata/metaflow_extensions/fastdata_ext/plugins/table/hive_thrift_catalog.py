@@ -346,6 +346,12 @@ class HiveThriftCatalog(MetadataCatalog):
                 for name, htype in column_schema
             ]
 
+            # Build partition key FieldSchema list
+            part_keys = [
+                FieldSchema(name=name, type=htype, comment="")
+                for name, htype in partition_schema
+            ]
+
             if table_type == "iceberg":
                 in_fmt = "org.apache.iceberg.mr.hive.HiveIcebergInputFormat"
                 out_fmt = "org.apache.iceberg.mr.hive.HiveIcebergOutputFormat"
@@ -384,7 +390,7 @@ class HiveThriftCatalog(MetadataCatalog):
                     ),
                     parameters={},
                 ),
-                partitionKeys=[],
+                partitionKeys=part_keys,
             )
             client.create_table(hms_table)
         except (MetaflowTableException,):
