@@ -1,0 +1,21 @@
+Metadata-Version: 2.1
+Name: metaflow-fastdata
+Version: 0.1.0.dev0
+Summary: Metaflow FastData - OSS high-performance data access for Hive/Iceberg tables
+Author: Netflix Metaflow Developers
+Author-email: metaflow-dev@netflix.com
+License: Apache Software License
+Project-URL: Source, https://github.com/Netflix/metaflow-nflx-extensions
+Project-URL: Tracker, https://github.com/Netflix/metaflow-nflx-extensions/issues
+Classifier: Development Status :: 3 - Alpha
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Operating System :: MacOS :: MacOS X
+Classifier: Operating System :: POSIX :: Linux
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown

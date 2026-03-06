@@ -1480,7 +1480,9 @@ class MetaflowDataFrame(Generic[T_MDF_co]):
     @property
     def columns(
         self,
-    ) -> List["metaflow_extensions.fastdata_ext.plugins.datatools.column.MetaflowColumn"]:
+    ) -> List[
+        "metaflow_extensions.fastdata_ext.plugins.datatools.column.MetaflowColumn"
+    ]:
         """
         Returns a list of MetaflowColumn objects corresponding to this dataframe.
 

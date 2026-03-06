@@ -153,7 +153,9 @@ class HiveTable(object):
 
         uris = []
         for partition_spec in partition_specs:
-            filter_expr = " AND ".join(parts(partition_spec)) if partition_spec else None
+            filter_expr = (
+                " AND ".join(parts(partition_spec)) if partition_spec else None
+            )
             partition_uris = self._catalog.get_partition_uris(
                 self._table_info.db,
                 self._table_info.table,
