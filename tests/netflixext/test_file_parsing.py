@@ -24,7 +24,11 @@ from metaflow_extensions.netflix_ext.plugins.conda.utils import (
     split_into_dict,
 )
 
-from metaflow.metaflow_config import CONDA_DEFAULT_PYPI_SOURCE, get_pinned_conda_libs
+from metaflow.metaflow_config import (
+    CONDA_DEFAULT_PYPI_SOURCE,
+    DEFAULT_DATASTORE,
+    get_pinned_conda_libs,
+)
 
 
 # Get the test data directory
@@ -85,7 +89,7 @@ def add_environment_basic_checks(
                 value2
             ), f"Dicts are not equal for key {key}"
 
-    pinned_deps = get_pinned_conda_libs(expected_python_version, "s3")
+    pinned_deps = get_pinned_conda_libs(expected_python_version, DEFAULT_DATASTORE)
     expected_deps[env_type_mapping[expected_env_type]] = dict_to_strlist(
         merge_dep_dicts(
             pinned_deps,

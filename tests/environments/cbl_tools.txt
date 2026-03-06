@@ -1,1 +1,1 @@
-cbl_tools>=2.12.6
+requests>=2.21.0
