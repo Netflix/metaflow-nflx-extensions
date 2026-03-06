@@ -344,6 +344,7 @@ class TestHiveThriftCatalogUnit:
 class TestHiveThriftCatalogIntegration:
     TEST_DB = "default"
     TEST_TABLE = "mf_fastdata_test_hive"
+    TEST_LOCATION = "s3://metaflow-fastdata-test/default/mf_fastdata_test_hive"
 
     def test_create_and_read_table(self, hive_catalog):
         info = hive_catalog.create_table(
@@ -352,6 +353,7 @@ class TestHiveThriftCatalogIntegration:
             catalog_name="hive",
             column_schema=[("id", "int"), ("name", "string")],
             partition_schema=[("dt", "string")],
+            location=self.TEST_LOCATION,
         )
         assert info.db == self.TEST_DB
         assert info.table == self.TEST_TABLE
