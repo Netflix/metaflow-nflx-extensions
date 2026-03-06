@@ -17,7 +17,7 @@ def test_functions_simple_avro_json():
     flows_dir = os.path.join(current_dir, "flows")
     user_environment = {"PYTHONPATH": flows_dir + ":" + os.getenv("PYTHONPATH", "")}
 
-    with Runner(flow_path, env=user_environment, environment="conda").run() as running:
+    with Runner(flow_path, env=user_environment).run() as running:
         assert (
             running.status == "successful"
         ), f"Run failed with status {running.status}"

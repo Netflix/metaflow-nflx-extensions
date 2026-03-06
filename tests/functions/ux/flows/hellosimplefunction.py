@@ -1,9 +1,7 @@
-from metaflow import current, FlowSpec, step, project, conda, Flow
+from metaflow import current, FlowSpec, step, Flow
 
 
-@project(name="test_functions")
 class HelloSimpleFunction(FlowSpec):
-    @conda(libraries={"pydash": "5.1.0"})
     @step
     def start(self):
         # Set parameters - these will be used by the functions
@@ -31,7 +29,6 @@ class HelloSimpleFunction(FlowSpec):
 
         self.next(self.test_functions)
 
-    @conda
     @step
     def test_functions(self):
         from metaflow_extensions.nflx.plugins.functions.core.function import (

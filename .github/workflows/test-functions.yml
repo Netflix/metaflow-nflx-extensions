@@ -13,6 +13,15 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
+
+    env:
+      AWS_ENDPOINT_URL: http://localhost:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+      METAFLOW_DEFAULT_DATASTORE: s3
+      METAFLOW_DATASTORE_SYSROOT_S3: s3://metaflow-test
+
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
@@ -20,16 +29,40 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Start MinIO
+        run: |
+          docker run -d \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio server /data
+          until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done
+
       - name: Install metaflow-functions + test deps
         run: |
           pip install metaflow
           pip install -e metaflow-netflixext/
           pip install -e metaflow-functions/
-          pip install pytest pytest-xdist fastavro psutil pandas pyarrow
+          pip install pytest pytest-xdist fastavro psutil pandas pyarrow pydash pytest-mock
+
+      - name: Create minio bucket
+        run: |
+          python -c "
+          import boto3, botocore
+          s3 = boto3.client(
+              's3',
+              endpoint_url='http://localhost:9000',
+              aws_access_key_id='minioadmin',
+              aws_secret_access_key='minioadmin',
+              region_name='us-east-1',
+              config=botocore.config.Config(signature_version='s3v4'),
+          )
+          s3.create_bucket(Bucket='metaflow-test')
+          print('Bucket metaflow-test created')
+          "
 
       - name: Run unit tests
-        # Exclude ux/ tests — they require conda + S3 (devstack only)
-        run: pytest tests/functions/ --ignore=tests/functions/ux -v --junit-xml=junit.xml
+        run: pytest tests/functions/ -v --junit-xml=junit.xml
 
       - name: Publish test results
         uses: dorny/test-reporter@v1
