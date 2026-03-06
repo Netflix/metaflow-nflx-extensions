@@ -5,8 +5,13 @@ import uuid
 import pytest
 
 pytestmark = pytest.mark.memory_only
-from metaflow_extensions.nflx.plugins.functions.exceptions import MetaflowFunctionMemoryException
-from metaflow_extensions.nflx.plugins.functions.memory.memory import ReadBuffer, WriteBuffer
+from metaflow_extensions.nflx.plugins.functions.exceptions import (
+    MetaflowFunctionMemoryException,
+)
+from metaflow_extensions.nflx.plugins.functions.memory.memory import (
+    ReadBuffer,
+    WriteBuffer,
+)
 
 
 def _write_loop(wb, ITERS, WORDS):

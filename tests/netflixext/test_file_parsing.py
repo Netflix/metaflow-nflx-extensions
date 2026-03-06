@@ -342,7 +342,6 @@ def test_parse_corner_cases_txt(cli_runner, mock_resolver_add_environment):
     )
 
 
-
 def test_error_multiple_file_types(cli_runner, mock_resolver_add_environment):
     """Test that specifying multiple file types (-r and -f) is handled."""
     runner, env_vars = cli_runner

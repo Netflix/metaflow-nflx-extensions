@@ -61,7 +61,7 @@ jobs:
         shell: bash -eo pipefail -l {0}
         run: |
           which pip
-          pip install -e . --force-reinstall -U
+          pip install -e metaflow-netflixext/ --force-reinstall -U
 
       - name: install bash
         if: runner.os == 'macOS'
@@ -73,7 +73,7 @@ jobs:
           set -x
           which pytest
           mkdir .metaflow
-          pytest -n 4 tests --junit-xml=junit.xml
+          pytest -n 4 tests/netflixext tests/test_env_create.py --junit-xml=junit.xml
 
       - name: Publish test results
         uses: dorny/test-reporter@v1

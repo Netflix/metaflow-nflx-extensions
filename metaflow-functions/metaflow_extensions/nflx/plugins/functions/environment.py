@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from metaflow import S3
 
 from metaflow.plugins.env_escape import generate_trampolines
+
 try:
     from metaflow_extensions.nflx.plugins.conda.conda import Conda  # type: ignore
 except ImportError:

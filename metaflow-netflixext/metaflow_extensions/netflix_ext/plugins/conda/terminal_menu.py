@@ -146,7 +146,7 @@ def wcswidth(text: str) -> int:
             user_locale = get_locale()
             # First replace any null characters with the unicode replacement character (U+FFFD) since they cannot be
             # passed in a `c_wchar_p`
-            encoded_text = text.replace("\0", "\uFFFD").encode(
+            encoded_text = text.replace("\0", "\ufffd").encode(
                 encoding=user_locale, errors="replace"
             )
             return wcswidth.libc.wcswidth(  # type: ignore
@@ -866,7 +866,7 @@ class TerminalMenu:
                         menu_entries_cols[-1].append("")
                     else:
                         unit_separated_entry = escaped_separator_pattern.sub(
-                            "|", separator_pattern.sub("\\1\x1F", entry)
+                            "|", separator_pattern.sub("\\1\x1f", entry)
                         )
                         match_obj = menu_entry_pattern.match(unit_separated_entry)
                         # this is none in case the entry was an emtpy string which
@@ -924,7 +924,7 @@ class TerminalMenu:
             )
 
         def convert_preselected_entries_to_indices(
-            preselected_indices_or_entries: Iterable[Union[str, int]]
+            preselected_indices_or_entries: Iterable[Union[str, int]],
         ) -> Set[int]:
             menu_entry_to_indices = {}  # type: Dict[str, Set[int]]
             for menu_index, menu_entry in enumerate(self._menu_entries):
@@ -1763,7 +1763,7 @@ class TerminalMenu:
                         else:
                             # It looks like an escape code (starts with escape), but it is something else
                             # -> skip the escape character and continue the loop
-                            string_parts.append("\x1B")
+                            string_parts.append("\x1b")
                             string = string[1:]
                 return "".join(string_parts), string_len
 
@@ -2137,7 +2137,7 @@ class TerminalMenu:
             signal.signal(signal.SIGWINCH, signal.SIG_DFL)
 
         def remove_letter_keys(
-            menu_action_to_keys: Dict[str, Set[Optional[str]]]
+            menu_action_to_keys: Dict[str, Set[Optional[str]]],
         ) -> None:
             letter_keys = frozenset(string.ascii_lowercase) | frozenset(" ")
             for keys in menu_action_to_keys.values():

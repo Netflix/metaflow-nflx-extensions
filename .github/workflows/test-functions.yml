@@ -24,7 +24,7 @@ jobs:
         run: |
           pip install metaflow
           pip install -e metaflow-functions/
-          pip install pytest pytest-xdist fastavro psutil
+          pip install pytest pytest-xdist fastavro psutil pandas pyarrow
 
       - name: Run unit tests
         # Exclude ux/ tests — they require conda + S3 (devstack only)

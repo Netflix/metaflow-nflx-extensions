@@ -98,7 +98,7 @@ class PylockTomlResolver(Resolver):
         )
 
         def filter_func(
-            package_dict: Dict[str, List[PackageSpecification]]
+            package_dict: Dict[str, List[PackageSpecification]],
         ) -> Dict[str, List[PackageSpecification]]:
             return PylockTomlResolver._filter_packages(
                 package_dict,

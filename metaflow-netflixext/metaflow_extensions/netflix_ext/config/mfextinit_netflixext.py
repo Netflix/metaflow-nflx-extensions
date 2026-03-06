@@ -12,9 +12,7 @@ from metaflow.metaflow_config_funcs import from_conf, get_validate_choice_fn
 CONDA_TEST = from_conf("CONDA_TEST", False)
 
 # Datastores for which caching should be skipped
-CONDA_IGNORE_CACHING_DATASTORES = from_conf(
-    "CONDA_IGNORE_CACHING_DATASTORES", []
-)
+CONDA_IGNORE_CACHING_DATASTORES = from_conf("CONDA_IGNORE_CACHING_DATASTORES", [])
 
 # HACK -- work around an issue with micromamba where using a channel_alias
 # causes the packages to be considered invalid (URL verification). This

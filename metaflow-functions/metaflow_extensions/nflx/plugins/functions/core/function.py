@@ -483,7 +483,9 @@ class MetaflowFunction(ABC):
             A fully instantiated function class derived from MetaflowFunction
         """
         if not base_path:
-            from metaflow_extensions.nflx.config.mfextinit_functions import FUNCTION_RUNTIME_PATH
+            from metaflow_extensions.nflx.config.mfextinit_functions import (
+                FUNCTION_RUNTIME_PATH,
+            )
 
             base_path = FUNCTION_RUNTIME_PATH
         func_spec = cls.function_spec_cls.from_json(reference)
@@ -523,7 +525,9 @@ class MetaflowFunction(ABC):
             A fully instantiated function class with runtime environment prepared
         """
         if not base_path:
-            from metaflow_extensions.nflx.config.mfextinit_functions import FUNCTION_RUNTIME_PATH
+            from metaflow_extensions.nflx.config.mfextinit_functions import (
+                FUNCTION_RUNTIME_PATH,
+            )
 
             base_path = FUNCTION_RUNTIME_PATH
 

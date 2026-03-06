@@ -57,7 +57,9 @@ class Resolver:
             )
         return resolver
 
-    def __init__(self, conda: "metaflow_extensions.netflix_ext.plugins.conda.conda.Conda"):
+    def __init__(
+        self, conda: "metaflow_extensions.netflix_ext.plugins.conda.conda.Conda"
+    ):
         self._conda = conda
 
     def resolve(
@@ -69,7 +71,9 @@ class Resolver:
         extras: Dict[str, List[str]],
         architecture: str,
         builder_envs: Optional[
-            List["metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"]
+            List[
+                "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"
+            ]
         ] = None,
         base_env: Optional[
             "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"
@@ -79,7 +83,9 @@ class Resolver:
     ) -> Tuple[
         "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment",
         Optional[
-            List["metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"]
+            List[
+                "metaflow_extensions.netflix_ext.plugins.conda.env_descr.ResolvedEnvironment"
+            ]
         ],
     ]:
         """

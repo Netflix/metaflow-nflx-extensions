@@ -4,8 +4,13 @@ import time
 import os
 from random import random
 
-from metaflow_extensions.nflx.plugins.functions.exceptions import MetaflowFunctionMemoryException
-from metaflow_extensions.nflx.plugins.functions.memory.concurrency import Semaphore, Lock
+from metaflow_extensions.nflx.plugins.functions.exceptions import (
+    MetaflowFunctionMemoryException,
+)
+from metaflow_extensions.nflx.plugins.functions.memory.concurrency import (
+    Semaphore,
+    Lock,
+)
 
 import pytest
 

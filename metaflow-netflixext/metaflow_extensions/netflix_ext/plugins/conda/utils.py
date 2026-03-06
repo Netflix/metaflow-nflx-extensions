@@ -955,7 +955,7 @@ version_maps = {
 def sanitize_python_version(v: str) -> str:
     # Use major.minor version only to avoid OS-specific patch version constraints
     mapped_version = version_maps.get(v, v)
-    version_parts = mapped_version.split('.')
+    version_parts = mapped_version.split(".")
     return f"{version_parts[0]}.{version_parts[1]}"
 
 

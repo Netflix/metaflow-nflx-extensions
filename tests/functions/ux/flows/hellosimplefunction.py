@@ -23,7 +23,7 @@ class HelloSimpleFunction(FlowSpec):
         # Get the completed start task to bind functions from
         flow = Flow(current.flow_name)
         run = flow[current.run_id]
-        start_task = run['start'].task
+        start_task = run["start"].task
 
         # Bind functions using the completed start task
         self.avro_string_function = AvroFunction(avro_transform_string, task=start_task)

@@ -13,7 +13,9 @@ import pytest
 from metaflow._vendor.packaging.markers import default_environment
 from metaflow.metaflow_environment import InvalidEnvironmentException
 
-from metaflow_extensions.netflix_ext.plugins.conda.utils import filter_user_reqs_by_markers
+from metaflow_extensions.netflix_ext.plugins.conda.utils import (
+    filter_user_reqs_by_markers,
+)
 
 
 @pytest.fixture

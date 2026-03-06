@@ -10,11 +10,12 @@ from dataclasses import dataclass, field, asdict
 from metaflow_extensions.nflx.plugins.functions.core.function import MetaflowFunction
 
 
-
 def _lazy_get_username():
     from metaflow.util import get_username
 
     return get_username()
+
+
 from metaflow_extensions.nflx.plugins.functions.config import Config
 
 from metaflow_extensions.nflx.plugins.functions.core.function_spec import FunctionSpec
@@ -401,7 +402,9 @@ class FunctionPipeline(MetaflowFunction):
 
         # Set default base_path if not provided
         if not base_path:
-            from metaflow_extensions.nflx.config.mfextinit_functions import FUNCTION_RUNTIME_PATH
+            from metaflow_extensions.nflx.config.mfextinit_functions import (
+                FUNCTION_RUNTIME_PATH,
+            )
 
             base_path = FUNCTION_RUNTIME_PATH
 
@@ -483,7 +486,9 @@ class FunctionPipeline(MetaflowFunction):
     ) -> "FunctionPipeline":
         """Create fully populated pipeline from FunctionSpec."""
         if not base_path:
-            from metaflow_extensions.nflx.config.mfextinit_functions import FUNCTION_RUNTIME_PATH
+            from metaflow_extensions.nflx.config.mfextinit_functions import (
+                FUNCTION_RUNTIME_PATH,
+            )
 
             base_path = FUNCTION_RUNTIME_PATH
 

@@ -43,6 +43,7 @@ from requests.exceptions import ChunkedEncodingError, ConnectionError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+
 def create_http_adapter_with_retry(
     retries=3,
     backoff_factor=0.3,
@@ -88,6 +89,7 @@ def create_http_adapter_with_retry(
         pool_block=pool_block,
     )
     return adapter
+
 
 from metaflow.plugins.datastores.local_storage import LocalStorage
 from metaflow.datastore.datastore_storage import DataStoreStorage

@@ -6,10 +6,7 @@ from urllib3.util.retry import Retry
 
 
 def create_http_adapter_with_retry(
-    retries=3,
-    backoff_factor=0.3,
-    status_forcelist=(500, 502, 503, 504),
-    **kwargs
+    retries=3, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504), **kwargs
 ):
     """
     Create an HTTP adapter with retry logic.
