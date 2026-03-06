@@ -1,0 +1,104 @@
+name: test-fastdata
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Unit tests — no external services required
+  # -------------------------------------------------------------------------
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install metaflow-fastdata + test deps
+        working-directory: metaflow-fastdata
+        run: |
+          pip install metaflow
+          pip install -e .
+          pip install pytest pytest-html
+
+      - name: Run unit tests
+        working-directory: metaflow-fastdata
+        run: pytest -m "not integration" -v --html=report.html --self-contained-html --junit-xml=junit.xml
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-report-py${{ matrix.python-version }}
+          path: |
+            metaflow-fastdata/report.html
+            metaflow-fastdata/junit.xml
+
+  # -------------------------------------------------------------------------
+  # Integration tests — Hive Metastore + MinIO via docker compose
+  # -------------------------------------------------------------------------
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
+        with:
+          python-version: "3.11"
+
+      - name: Start Hive Metastore + MinIO
+        working-directory: metaflow-fastdata
+        run: |
+          docker compose up -d hive-metastore minio minio-init
+          # Wait up to 3 minutes for HMS to be ready
+          echo "Waiting for Hive Metastore on port 9083..."
+          for i in $(seq 1 36); do
+            nc -z localhost 9083 && echo "HMS ready after ${i}x5s" && break
+            [ $i -eq 36 ] && echo "Timed out waiting for HMS" && docker compose logs hive-metastore && exit 1
+            sleep 5
+          done
+
+      - name: Install metaflow-fastdata + test deps + PyHive
+        working-directory: metaflow-fastdata
+        run: |
+          pip install metaflow
+          pip install -e .
+          pip install pytest pytest-html "PyHive[thrift]" hmsclient boto3
+
+      - name: Run integration tests
+        working-directory: metaflow-fastdata
+        env:
+          METAFLOW_HIVE_METASTORE_URI: thrift://localhost:9083
+          MINIO_ENDPOINT: http://localhost:9000
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ENDPOINT_URL: http://localhost:9000
+        run: pytest -m integration -v --html=report.html --self-contained-html --junit-xml=junit.xml
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-report
+          path: |
+            metaflow-fastdata/report.html
+            metaflow-fastdata/junit.xml
+
+      - name: Stop services
+        if: always()
+        working-directory: metaflow-fastdata
+        run: docker compose down -v

@@ -1,0 +1,6 @@
+[submodule "metaflow-fastdata/metaflow_extensions/fastdata_ext/plugins/datatools/cpp/vendor/arrow"]
+	path = metaflow-fastdata/metaflow_extensions/fastdata_ext/plugins/datatools/cpp/vendor/arrow
+	url = https://github.com/apache/arrow.git
+[submodule "metaflow-fastdata/metaflow_extensions/fastdata_ext/plugins/datatools/cpp/vendor/avro"]
+	path = metaflow-fastdata/metaflow_extensions/fastdata_ext/plugins/datatools/cpp/vendor/avro
+	url = https://github.com/apache/avro.git
