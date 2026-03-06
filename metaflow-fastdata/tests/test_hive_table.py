@@ -356,6 +356,7 @@ class TestHiveThriftCatalogIntegration:
             column_schema=[("id", "int"), ("name", "string")],
             partition_schema=[("dt", "string")],
             location=self.TEST_LOCATION,
+            table_type="hive",
         )
         assert info.db == self.TEST_DB
         assert info.table == self.TEST_TABLE
