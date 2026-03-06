@@ -1,7 +1,0 @@
-cffi
-pandas
-pyarrow
-pytz
-fastavro
-requests
-metaflow>=2.16.0
