@@ -44,7 +44,8 @@ jobs:
 
       - name: Configure channel alias for tests
         shell: bash -eo pipefail -l {0}
-        run: echo "channel_alias: https://prefix.dev" >> ~/.condarc
+        run: |
+          echo "channel_alias: https://prefix.dev" >> ~/.condarc
 
       - name: Install metaflow-functions + test deps
         shell: bash -eo pipefail -l {0}
