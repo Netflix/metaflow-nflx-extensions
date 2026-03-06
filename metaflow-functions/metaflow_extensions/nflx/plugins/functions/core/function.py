@@ -222,8 +222,19 @@ class MetaflowFunction(ABC):
             func_spec.name = self._func.deco_spec.name
 
         func_spec.task_pathspec = self.task.pathspec
-        # With local packaging, all flows have code packaging
-        func_spec.task_code_path = self.task.code.path
+        # Use the task's code package path; fall back to the current run's code URL
+        # (the first task in a local run may register metadata before the async
+        # code-package upload completes, leaving task.code as None)
+        if self.task.code is not None:
+            func_spec.task_code_path = self.task.code.path
+        elif os.environ.get("METAFLOW_CODE_URL"):
+            func_spec.task_code_path = os.environ["METAFLOW_CODE_URL"]
+        else:
+            raise MetaflowFunctionException(
+                "Cannot determine code package path: task '%s' has no code package "
+                "and METAFLOW_CODE_URL is not set. Ensure code packaging is enabled."
+                % self.task.pathspec
+            )
         from metaflow.util import get_username
 
         func_spec.user = get_username()
