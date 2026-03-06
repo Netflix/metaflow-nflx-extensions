@@ -1,7 +1,8 @@
-from metaflow import current, FlowSpec, step, Flow
+from metaflow import current, FlowSpec, step, conda, Flow
 
 
 class HelloSimpleFunction(FlowSpec):
+    @conda
     @step
     def start(self):
         # Set parameters - these will be used by the functions
@@ -29,6 +30,7 @@ class HelloSimpleFunction(FlowSpec):
 
         self.next(self.test_functions)
 
+    @conda
     @step
     def test_functions(self):
         from metaflow_extensions.nflx.plugins.functions.core.function import (

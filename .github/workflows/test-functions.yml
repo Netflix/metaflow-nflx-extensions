@@ -25,10 +25,6 @@ jobs:
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
-      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
-        with:
-          python-version: ${{ matrix.python-version }}
-
       - name: Start MinIO
         run: |
           docker run -d \
@@ -38,14 +34,28 @@ jobs:
             minio/minio server /data
           until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done
 
+      - uses: mamba-org/setup-micromamba@b09ef9b599704322748535812ca03efb2625677b # v2.0.5
+        with:
+          environment-name: nflxext-dev
+          condarc: |
+            channels:
+              - conda-forge
+          create-args: python=${{ matrix.python-version }}
+
+      - name: Configure channel alias for tests
+        shell: bash -eo pipefail -l {0}
+        run: echo "channel_alias: https://prefix.dev" >> ~/.condarc
+
       - name: Install metaflow-functions + test deps
+        shell: bash -eo pipefail -l {0}
         run: |
           pip install metaflow
           pip install -e metaflow-netflixext/
           pip install -e metaflow-functions/
-          pip install pytest pytest-xdist fastavro psutil pandas pyarrow pydash pytest-mock
+          pip install pytest pytest-xdist fastavro psutil pandas pyarrow pytest-mock
 
       - name: Create minio bucket
+        shell: bash -eo pipefail -l {0}
         run: |
           python -c "
           import boto3, botocore
@@ -62,6 +72,7 @@ jobs:
           "
 
       - name: Run unit tests
+        shell: bash -eo pipefail -l {0}
         run: pytest tests/functions/ -v --junit-xml=junit.xml
 
       - name: Publish test results
