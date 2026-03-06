@@ -45,7 +45,9 @@ class TableInfo:
     # Identifying info
     db: str
     table: str
-    catalog_name: str  # e.g. "prodhive" — the logical catalog name, not the Python object
+    catalog_name: (
+        str  # e.g. "prodhive" — the logical catalog name, not the Python object
+    )
 
     # Table type and format
     type: str  # "hive" or "iceberg"

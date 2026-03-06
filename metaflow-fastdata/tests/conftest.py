@@ -20,6 +20,7 @@ import pytest
 # Environment markers
 # ---------------------------------------------------------------------------
 
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: marks tests that require docker-compose services"
@@ -52,6 +53,7 @@ def _services_available():
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="session")
 def hive_catalog():
     """Return a HiveThriftCatalog connected to the local test metastore.
@@ -74,9 +76,7 @@ def minio_env(monkeypatch_session):
     monkeypatch_session.setenv("AWS_ACCESS_KEY_ID", "minioadmin")
     monkeypatch_session.setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
     monkeypatch_session.setenv("AWS_DEFAULT_REGION", "us-east-1")
-    monkeypatch_session.setenv(
-        "AWS_ENDPOINT_URL", _minio_endpoint()
-    )
+    monkeypatch_session.setenv("AWS_ENDPOINT_URL", _minio_endpoint())
 
 
 @pytest.fixture(scope="session")

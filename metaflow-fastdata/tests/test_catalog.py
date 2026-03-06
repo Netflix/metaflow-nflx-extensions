@@ -14,6 +14,7 @@ import pytest
 # TableInfo
 # ---------------------------------------------------------------------------
 
+
 class TestTableInfo:
     def test_path_property(self):
         from metaflow_extensions.fastdata_ext.plugins.table.catalog import TableInfo
@@ -43,26 +44,33 @@ class TestTableInfo:
     def test_schema_defaults_to_empty_ordered_dict(self):
         from metaflow_extensions.fastdata_ext.plugins.table.catalog import TableInfo
 
-        info = TableInfo(db="d", table="t", catalog_name="c", type="hive", format="parquet")
+        info = TableInfo(
+            db="d", table="t", catalog_name="c", type="hive", format="parquet"
+        )
         assert isinstance(info.schema, OrderedDict)
         assert len(info.schema) == 0
 
     def test_metadata_location_default_is_empty(self):
         from metaflow_extensions.fastdata_ext.plugins.table.catalog import TableInfo
 
-        info = TableInfo(db="d", table="t", catalog_name="c", type="iceberg", format="parquet")
+        info = TableInfo(
+            db="d", table="t", catalog_name="c", type="iceberg", format="parquet"
+        )
         assert info.metadata_location == ""
 
     def test_secure_default_is_false(self):
         from metaflow_extensions.fastdata_ext.plugins.table.catalog import TableInfo
 
-        info = TableInfo(db="d", table="t", catalog_name="c", type="hive", format="parquet")
+        info = TableInfo(
+            db="d", table="t", catalog_name="c", type="hive", format="parquet"
+        )
         assert info.secure is False
 
 
 # ---------------------------------------------------------------------------
 # WriterInfo
 # ---------------------------------------------------------------------------
+
 
 class TestWriterInfo:
     def test_defaults(self):
@@ -97,15 +105,20 @@ class TestWriterInfo:
 # MetadataCatalog ABC
 # ---------------------------------------------------------------------------
 
+
 class TestMetadataCatalogABC:
     def test_cannot_instantiate_directly(self):
-        from metaflow_extensions.fastdata_ext.plugins.table.catalog import MetadataCatalog
+        from metaflow_extensions.fastdata_ext.plugins.table.catalog import (
+            MetadataCatalog,
+        )
 
         with pytest.raises(TypeError):
             MetadataCatalog()
 
     def test_concrete_subclass_needs_all_abstract_methods(self):
-        from metaflow_extensions.fastdata_ext.plugins.table.catalog import MetadataCatalog
+        from metaflow_extensions.fastdata_ext.plugins.table.catalog import (
+            MetadataCatalog,
+        )
 
         class Incomplete(MetadataCatalog):
             pass  # missing implementations
@@ -127,13 +140,22 @@ class TestMetadataCatalogABC:
             def get_partition_uris(self, db, table, catalog_name, filter_expr=None):
                 return []
 
-            def create_table(self, db, table, catalog_name, column_schema, partition_schema, **kwargs):
+            def create_table(
+                self, db, table, catalog_name, column_schema, partition_schema, **kwargs
+            ):
                 pass
 
             def delete_table(self, db, table, catalog_name, must_exist=True):
                 pass
 
-            def update_metadata_location(self, db, table, catalog_name, new_metadata_location, previous_metadata_location=None):
+            def update_metadata_location(
+                self,
+                db,
+                table,
+                catalog_name,
+                new_metadata_location,
+                previous_metadata_location=None,
+            ):
                 pass
 
         cat = MinimalCatalog()
@@ -148,6 +170,7 @@ class TestMetadataCatalogABC:
 # _get_default_catalog factory
 # ---------------------------------------------------------------------------
 
+
 class TestGetDefaultCatalog:
     def test_returns_hive_thrift_catalog_by_default(self, monkeypatch):
         """Without any config, should return HiveThriftCatalog."""
@@ -160,7 +183,11 @@ class TestGetDefaultCatalog:
             _make_import_raiser(
                 "metaflow.metaflow_config",
                 "DEFAULT_METADATA_CATALOG",
-                original_import=__builtins__["__import__"] if isinstance(__builtins__, dict) else __import__,
+                original_import=(
+                    __builtins__["__import__"]
+                    if isinstance(__builtins__, dict)
+                    else __import__
+                ),
             ),
             raising=False,
         )
@@ -169,7 +196,9 @@ class TestGetDefaultCatalog:
         from metaflow_extensions.fastdata_ext.plugins.table.hive_thrift_catalog import (
             HiveThriftCatalog,
         )
-        from metaflow_extensions.fastdata_ext.plugins.table.catalog import MetadataCatalog
+        from metaflow_extensions.fastdata_ext.plugins.table.catalog import (
+            MetadataCatalog,
+        )
 
         assert issubclass(HiveThriftCatalog, MetadataCatalog)
 
@@ -182,7 +211,9 @@ class TestGetDefaultCatalog:
         fake_config.DEFAULT_METADATA_CATALOG = "nonexistent_backend"
         monkeypatch.setitem(sys.modules, "metaflow.metaflow_config", fake_config)
 
-        from metaflow_extensions.fastdata_ext.plugins.table.catalog import _get_default_catalog
+        from metaflow_extensions.fastdata_ext.plugins.table.catalog import (
+            _get_default_catalog,
+        )
 
         with pytest.raises(ValueError, match="Unknown metadata catalog backend"):
             _get_default_catalog()
@@ -190,8 +221,10 @@ class TestGetDefaultCatalog:
 
 def _make_import_raiser(module_name, attr_name, original_import):
     """Helper: returns an __import__ that raises ImportError for a specific module."""
+
     def _import(name, *args, **kwargs):
         if name == module_name:
             raise ImportError("mocked")
         return original_import(name, *args, **kwargs)
+
     return _import

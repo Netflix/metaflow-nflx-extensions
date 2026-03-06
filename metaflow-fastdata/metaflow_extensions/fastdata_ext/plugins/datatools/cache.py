@@ -62,6 +62,7 @@ def _get_default_backend() -> CacheBackend:
     """Return the configured cache backend instance."""
     try:
         from metaflow.metaflow_config import DEFAULT_CACHE_BACKEND  # type: ignore
+
         backend_name = DEFAULT_CACHE_BACKEND
     except (ImportError, AttributeError):
         backend_name = "null"

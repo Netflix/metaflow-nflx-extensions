@@ -108,7 +108,9 @@ class TestCache:
 
 class TestCacheBackendABC:
     def test_cannot_instantiate_directly(self):
-        from metaflow_extensions.fastdata_ext.plugins.datatools.cache import CacheBackend
+        from metaflow_extensions.fastdata_ext.plugins.datatools.cache import (
+            CacheBackend,
+        )
 
         with pytest.raises(TypeError):
             CacheBackend()

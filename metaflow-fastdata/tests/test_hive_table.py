@@ -15,6 +15,7 @@ import pytest
 # HiveTable unit tests
 # ---------------------------------------------------------------------------
 
+
 class TestHiveTableUnit:
     def _make_hive_info(self, **kwargs):
         from metaflow_extensions.fastdata_ext.plugins.table.catalog import TableInfo
@@ -212,6 +213,7 @@ class TestHiveTableUnit:
 # HiveThriftCatalog unit tests (mocked Thrift)
 # ---------------------------------------------------------------------------
 
+
 class TestHiveThriftCatalogUnit:
     def _make_thrift_table(self, table_type="hive"):
         """Build a minimal fake Thrift Table object."""
@@ -301,7 +303,9 @@ class TestHiveThriftCatalogUnit:
             mock_conn.return_value = (mock_client, mock_transport)
             mock_client.get_partitions_by_filter.return_value = [part]
 
-            uris = cat.get_partition_uris("mydb", "mytable", "hive", filter_expr="dateint=20230101")
+            uris = cat.get_partition_uris(
+                "mydb", "mytable", "hive", filter_expr="dateint=20230101"
+            )
 
         assert uris == ["s3://bucket/mydb/mytable/dateint=20230101"]
         mock_client.get_partitions_by_filter.assert_called_once_with(
@@ -335,6 +339,7 @@ class TestHiveThriftCatalogUnit:
 # Integration tests (require docker-compose)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 class TestHiveThriftCatalogIntegration:
     TEST_DB = "default"
@@ -359,7 +364,9 @@ class TestHiveThriftCatalogIntegration:
         assert info.format == "parquet"
 
     def test_delete_table(self, hive_catalog):
-        hive_catalog.delete_table(self.TEST_DB, self.TEST_TABLE, "hive", must_exist=False)
+        hive_catalog.delete_table(
+            self.TEST_DB, self.TEST_TABLE, "hive", must_exist=False
+        )
         from metaflow_extensions.fastdata_ext.plugins.table.exception import (
             MetaflowTableNotFound,
         )

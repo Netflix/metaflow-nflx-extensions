@@ -145,7 +145,10 @@ class HiveThriftCatalog(MetadataCatalog):
             return client.get_table(db, table)
         except Exception as exc:
             exc_name = type(exc).__name__
-            if "NoSuchObjectException" in exc_name or "TApplicationException" in exc_name:
+            if (
+                "NoSuchObjectException" in exc_name
+                or "TApplicationException" in exc_name
+            ):
                 raise MetaflowTableNotFound(
                     "Table %s/%s not found in Hive Metastore at %s"
                     % (db, table, self._uri)

@@ -106,18 +106,17 @@ class Table(object):
             self._s3_config = None
             if self._info.secure and self._info.type == "iceberg":
                 creds = self._catalog_obj.get_credentials(
-                    ".".join(
-                        filter(
-                            None, [self._info.catalog_name, db, table]
-                        )
-                    )
+                    ".".join(filter(None, [self._info.catalog_name, db, table]))
                 )
                 self._s3_config = creds if creds else None
 
             # Choose iceberg or hive table implementation
             if self._info.type == "hive":
                 self._table = HiveTable(
-                    self._info, self._catalog_obj, self._stats, session_vars=self._s3_config
+                    self._info,
+                    self._catalog_obj,
+                    self._stats,
+                    session_vars=self._s3_config,
                 )
             elif self._info.type == "iceberg":
                 self._table = IcebergTable(
@@ -129,8 +128,7 @@ class Table(object):
                 )
             else:
                 raise MetaflowTableException(
-                    "Unknown table type '%s' for %s/%s"
-                    % (self._info.type, db, table)
+                    "Unknown table type '%s' for %s/%s" % (self._info.type, db, table)
                 )
 
         self._reload = reload
@@ -720,7 +718,12 @@ class Table(object):
                     # pull metadata path from the last IcebergTable state
                     getattr(self._table, "metadata_path", "")
                 ):
-                    debug_("Confirmed the previous commit was successful.", attempt, conflict, rate_limit)
+                    debug_(
+                        "Confirmed the previous commit was successful.",
+                        attempt,
+                        conflict,
+                        rate_limit,
+                    )
                     break
                 raise MetaflowTableException(
                     "We tried to commit the Iceberg table change to the catalog, "
