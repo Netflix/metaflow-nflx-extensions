@@ -73,4 +73,12 @@ jobs:
           set -x
           which pytest
           mkdir .metaflow
-          pytest -n 4 tests
+          pytest -n 4 tests --junit-xml=junit.xml
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Tests (${{ matrix.os }}, py${{ matrix.python-version }}, ${{ matrix.resolver }})
+          path: junit.xml
+          reporter: java-junit
