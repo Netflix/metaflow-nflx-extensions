@@ -53,5 +53,5 @@ class CacheError(MetaflowException):
     headline = "Cache operation failed"
 
 
-class CacheNotFound(MetaflowException):
+class CacheNotFound(CacheError):
     headline = "cache data not found"
