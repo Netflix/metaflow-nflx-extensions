@@ -17,7 +17,8 @@ permissions:
 
 jobs:
   deploy:
-
+    # Skip releases tagged for sub-packages (e.g. fastdata-v*)
+    if: "!startsWith(github.event.release.tag_name, 'fastdata-v')"
     runs-on: ubuntu-latest
     # Specifying a GitHub environment is optional, but strongly encouraged
     environment: pypi

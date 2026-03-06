@@ -1,0 +1,36 @@
+name: Publish metaflow-fastdata
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # Only run when the release tag starts with "fastdata-v"
+    if: startsWith(github.event.release.tag_name, 'fastdata-v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Required for OIDC trusted publishing
+      id-token: write
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
+        with:
+          python-version: "3.x"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build package
+        working-directory: metaflow-fastdata
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # 1.13.0
+        with:
+          packages-dir: metaflow-fastdata/dist/
