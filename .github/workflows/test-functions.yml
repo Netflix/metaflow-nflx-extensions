@@ -23,6 +23,7 @@ jobs:
       - name: Install metaflow-functions + test deps
         run: |
           pip install metaflow
+          pip install -e metaflow-netflixext/
           pip install -e metaflow-functions/
           pip install pytest pytest-xdist fastavro psutil pandas pyarrow
 
