@@ -61,6 +61,14 @@ jobs:
           python -m coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        if: always()
+        with:
+          files: metaflow-fastdata/coverage.xml
+          flags: unit-py${{ matrix.python-version }}
+          name: fastdata-unit-py${{ matrix.python-version }}
+
       - name: Upload test report
         uses: actions/upload-artifact@v4
         if: always()
@@ -141,6 +149,14 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           python -m coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        if: always()
+        with:
+          files: metaflow-fastdata/coverage.xml
+          flags: integration
+          name: fastdata-integration
 
       - name: Upload test report
         uses: actions/upload-artifact@v4
