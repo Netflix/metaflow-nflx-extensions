@@ -53,7 +53,7 @@ jobs:
           pip install metaflow
           pip install -e metaflow-netflixext/
           pip install -e metaflow-functions/
-          pip install pytest pytest-xdist fastavro psutil pandas pyarrow pytest-mock
+          pip install pytest pytest-xdist pytest-cov fastavro psutil pandas pyarrow pytest-mock
 
       - name: Create minio bucket
         shell: bash -eo pipefail -l {0}
@@ -74,7 +74,14 @@ jobs:
 
       - name: Run unit tests
         shell: bash -eo pipefail -l {0}
-        run: pytest tests/functions/ -v --junit-xml=junit.xml
+        run: |
+          pytest tests/functions/ -v \
+            --junit-xml=junit.xml \
+            --cov=metaflow_functions \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --cov-branch
 
       - name: Publish test results
         uses: dorny/test-reporter@v1
@@ -84,9 +91,21 @@ jobs:
           path: junit.xml
           reporter: java-junit
 
+      - name: Post coverage summary
+        if: always()
+        run: |
+          echo "## Coverage — Functions Unit Tests (py${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python -m coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
       - name: Upload test report
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: functions-unit-test-report-py${{ matrix.python-version }}
-          path: junit.xml
+          path: |
+            junit.xml
+            coverage.xml
+            htmlcov/
+          include-hidden-files: true
