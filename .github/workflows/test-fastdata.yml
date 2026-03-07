@@ -65,6 +65,7 @@ jobs:
         uses: codecov/codecov-action@v5
         if: always()
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: metaflow-fastdata/coverage.xml
           flags: unit-py${{ matrix.python-version }}
           name: fastdata-unit-py${{ matrix.python-version }}
@@ -154,6 +155,7 @@ jobs:
         uses: codecov/codecov-action@v5
         if: always()
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: metaflow-fastdata/coverage.xml
           flags: integration
           name: fastdata-integration

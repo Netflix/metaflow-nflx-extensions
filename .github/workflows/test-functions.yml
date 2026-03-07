@@ -103,6 +103,7 @@ jobs:
         uses: codecov/codecov-action@v5
         if: always()
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
           flags: functions-py${{ matrix.python-version }}
           name: functions-py${{ matrix.python-version }}
