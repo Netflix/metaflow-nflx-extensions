@@ -745,7 +745,11 @@ def channel_or_url(url: str) -> str:
     up = urlparse(url)
     if up.hostname == "conda.anaconda.org":
         return up.path.split("/", 2)[1]
-    if CONDA_HACK_CHANNEL_ALIAS and up.hostname and CONDA_HACK_CHANNEL_ALIAS in up.hostname:
+    if (
+        CONDA_HACK_CHANNEL_ALIAS
+        and up.hostname
+        and CONDA_HACK_CHANNEL_ALIAS in up.hostname
+    ):
         return up.path.split("/", 2)[1]
     return url
 
