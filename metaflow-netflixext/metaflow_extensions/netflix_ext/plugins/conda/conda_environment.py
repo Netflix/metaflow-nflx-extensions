@@ -700,7 +700,7 @@ class CondaEnvironment(MetaflowEnvironment):
         has_conda = len(final_req._packages.get("conda", {})) > 0
         has_pypi = len(final_req._packages.get("pypi", {})) > 0
 
-        mapping = dict[EnvType, bool](
+        mapping = Dict[EnvType, bool](
             {
                 EnvType.CONDA_ONLY: has_conda,
                 EnvType.PYPI_ONLY: has_pypi,

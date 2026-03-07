@@ -52,6 +52,7 @@ from metaflow.metaflow_config import CONDA_SYS_DEFAULT_GPU_PACKAGES  # type: ign
 from metaflow.metaflow_config import CONDA_SYS_DEFAULT_PACKAGES  # type: ignore
 from metaflow.metaflow_config import CONDA_SYS_DEPENDENCIES  # type: ignore
 from metaflow.metaflow_config import CONDA_SYS_MARKERS  # type: ignore
+from metaflow.metaflow_config import CONDA_HACK_CHANNEL_ALIAS  # type: ignore
 from metaflow.metaflow_environment import InvalidEnvironmentException
 from metaflow.util import walk_without_cycles
 
@@ -743,6 +744,8 @@ def channel_from_url(url: str) -> Optional[str]:
 def channel_or_url(url: str) -> str:
     up = urlparse(url)
     if up.hostname == "conda.anaconda.org":
+        return up.path.split("/", 2)[1]
+    if CONDA_HACK_CHANNEL_ALIAS and up.hostname and CONDA_HACK_CHANNEL_ALIAS in up.hostname:
         return up.path.split("/", 2)[1]
     return url
 
