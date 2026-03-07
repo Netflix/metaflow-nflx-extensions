@@ -30,11 +30,19 @@ jobs:
         run: |
           pip install metaflow
           pip install -e .
-          pip install pytest pytest-html
+          pip install pytest pytest-html pytest-cov
 
       - name: Run unit tests
         working-directory: metaflow-fastdata
-        run: pytest -m "not integration" -v --html=report.html --self-contained-html --junit-xml=junit.xml
+        run: |
+          pytest -m "not integration" -v \
+            --html=report.html --self-contained-html \
+            --junit-xml=junit.xml \
+            --cov=metaflow_fastdata \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --cov-branch
 
       - name: Publish test results
         uses: dorny/test-reporter@v1
@@ -44,6 +52,15 @@ jobs:
           path: metaflow-fastdata/junit.xml
           reporter: java-junit
 
+      - name: Post coverage summary
+        if: always()
+        working-directory: metaflow-fastdata
+        run: |
+          echo "## Coverage — Unit Tests (py${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python -m coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
       - name: Upload test report
         uses: actions/upload-artifact@v4
         if: always()
@@ -52,6 +69,9 @@ jobs:
           path: |
             metaflow-fastdata/report.html
             metaflow-fastdata/junit.xml
+            metaflow-fastdata/coverage.xml
+            metaflow-fastdata/htmlcov/
+          include-hidden-files: true
 
   # -------------------------------------------------------------------------
   # Integration tests — Hive Metastore + MinIO via docker compose
@@ -84,7 +104,7 @@ jobs:
         run: |
           pip install metaflow
           pip install -e .
-          pip install pytest pytest-html "PyHive[thrift]" hmsclient boto3
+          pip install pytest pytest-html pytest-cov "PyHive[thrift]" hmsclient boto3
 
       - name: Run integration tests
         working-directory: metaflow-fastdata
@@ -95,7 +115,15 @@ jobs:
           AWS_SECRET_ACCESS_KEY: minioadmin
           AWS_DEFAULT_REGION: us-east-1
           AWS_ENDPOINT_URL: http://localhost:9000
-        run: pytest -m integration -v --html=report.html --self-contained-html --junit-xml=junit.xml
+        run: |
+          pytest -m integration -v \
+            --html=report.html --self-contained-html \
+            --junit-xml=junit.xml \
+            --cov=metaflow_fastdata \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --cov-branch
 
       - name: Publish test results
         uses: dorny/test-reporter@v1
@@ -105,6 +133,15 @@ jobs:
           path: metaflow-fastdata/junit.xml
           reporter: java-junit
 
+      - name: Post coverage summary
+        if: always()
+        working-directory: metaflow-fastdata
+        run: |
+          echo "## Coverage — Integration Tests" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python -m coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
       - name: Upload test report
         uses: actions/upload-artifact@v4
         if: always()
@@ -113,6 +150,9 @@ jobs:
           path: |
             metaflow-fastdata/report.html
             metaflow-fastdata/junit.xml
+            metaflow-fastdata/coverage.xml
+            metaflow-fastdata/htmlcov/
+          include-hidden-files: true
 
       - name: Stop services
         if: always()
