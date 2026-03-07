@@ -61,15 +61,6 @@ jobs:
           python -m coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        if: always()
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: metaflow-fastdata/coverage.xml
-          flags: unit-py${{ matrix.python-version }}
-          name: fastdata-unit-py${{ matrix.python-version }}
-
       - name: Upload test report
         uses: actions/upload-artifact@v4
         if: always()
@@ -80,6 +71,7 @@ jobs:
             metaflow-fastdata/junit.xml
             metaflow-fastdata/coverage.xml
             metaflow-fastdata/htmlcov/
+            metaflow-fastdata/.coverage
           include-hidden-files: true
 
   # -------------------------------------------------------------------------
@@ -151,15 +143,6 @@ jobs:
           python -m coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        if: always()
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: metaflow-fastdata/coverage.xml
-          flags: integration
-          name: fastdata-integration
-
       - name: Upload test report
         uses: actions/upload-artifact@v4
         if: always()
@@ -170,9 +153,82 @@ jobs:
             metaflow-fastdata/junit.xml
             metaflow-fastdata/coverage.xml
             metaflow-fastdata/htmlcov/
+            metaflow-fastdata/.coverage
           include-hidden-files: true
 
       - name: Stop services
         if: always()
         working-directory: metaflow-fastdata
         run: docker compose down -v
+
+  # -------------------------------------------------------------------------
+  # Combined coverage report
+  # -------------------------------------------------------------------------
+  coverage-report:
+    name: "Coverage Report"
+    needs: [unit, integration]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
+        with:
+          python-version: "3.11"
+
+      - name: Install coverage
+        run: pip install coverage[toml]
+
+      - name: Download coverage data from all jobs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-test-report*"
+          path: coverage-artifacts/
+
+      - name: Combine coverage data
+        run: |
+          for dir in coverage-artifacts/*/; do
+            label=$(basename "$dir" | sed 's/-test-report//')
+            src="$dir/metaflow-fastdata/.coverage"
+            if [ -f "$src" ]; then
+              cp "$src" ".coverage.$label"
+              echo "Copied $src → .coverage.$label"
+            fi
+          done
+          coverage combine
+          echo "Combined data sources:"
+          coverage debug data
+
+      - name: Generate combined report
+        working-directory: metaflow-fastdata
+        run: |
+          cd ..
+          coverage xml -o combined-coverage.xml
+          coverage html -d combined-htmlcov/ --title="metaflow-fastdata Coverage"
+
+      - name: Post coverage summary
+        run: |
+          echo "## Coverage — metaflow-fastdata (combined)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          total=$(coverage report | tail -1 | awk '{print $NF}')
+          echo "**Total coverage: $total**" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: combined-coverage.xml
+          name: fastdata-combined
+
+      - name: Upload combined coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-combined
+          path: |
+            combined-htmlcov/
+            combined-coverage.xml
