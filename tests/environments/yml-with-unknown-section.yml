@@ -3,6 +3,5 @@ unknown_section:
   - another_value
 
 dependencies:
-  - python=3.10
   - pandas
   - numpy
