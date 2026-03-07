@@ -198,16 +198,14 @@ jobs:
               echo "Copied $src → .coverage.$label"
             fi
           done
-          coverage combine
+          coverage combine || echo "No coverage data to combine"
           echo "Combined data sources:"
-          coverage debug data
+          coverage debug data || true
 
       - name: Generate combined report
-        working-directory: metaflow-fastdata
         run: |
-          cd ..
-          coverage xml -o combined-coverage.xml
-          coverage html -d combined-htmlcov/ --title="metaflow-fastdata Coverage"
+          coverage xml -o combined-coverage.xml || echo "No coverage data to generate XML"
+          coverage html -d combined-htmlcov/ --title="metaflow-fastdata Coverage" || echo "No coverage data to generate HTML"
 
       - name: Post coverage summary
         run: |
@@ -215,8 +213,8 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
-          total=$(coverage report | tail -1 | awk '{print $NF}')
-          echo "**Total coverage: $total**" >> $GITHUB_STEP_SUMMARY
+          total=$(coverage report 2>/dev/null | tail -1 | awk '{print $NF}') || true
+          echo "**Total coverage: ${total:-N/A}**" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
