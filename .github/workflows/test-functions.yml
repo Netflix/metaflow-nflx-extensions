@@ -77,7 +77,7 @@ jobs:
         run: |
           pytest tests/functions/ -v \
             --junit-xml=junit.xml \
-            --cov=metaflow_functions \
+            --cov=metaflow-functions/metaflow_extensions \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
             --cov-report=html:htmlcov \
@@ -149,8 +149,8 @@ jobs:
 
       - name: Generate combined report
         run: |
-          coverage xml -o combined-coverage.xml
-          coverage html -d combined-htmlcov/ --title="metaflow-functions Coverage"
+          coverage xml -o combined-coverage.xml || echo "No coverage data to generate XML"
+          coverage html -d combined-htmlcov/ --title="metaflow-functions Coverage" || echo "No coverage data to generate HTML"
 
       - name: Post coverage summary
         run: |
