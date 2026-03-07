@@ -83,3 +83,4 @@ jobs:
           name: Tests (${{ matrix.os }}, py${{ matrix.python-version }}, ${{ matrix.resolver }})
           path: junit.xml
           reporter: java-junit
+          fail-on-empty: true
