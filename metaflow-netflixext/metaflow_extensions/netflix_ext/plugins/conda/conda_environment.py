@@ -700,12 +700,10 @@ class CondaEnvironment(MetaflowEnvironment):
         has_conda = len(final_req._packages.get("conda", {})) > 0
         has_pypi = len(final_req._packages.get("pypi", {})) > 0
 
-        mapping = Dict[EnvType, bool](
-            {
-                EnvType.CONDA_ONLY: has_conda,
-                EnvType.PYPI_ONLY: has_pypi,
-            }
-        )
+        mapping: Dict[EnvType, bool] = {
+            EnvType.CONDA_ONLY: has_conda,
+            EnvType.PYPI_ONLY: has_pypi,
+        }
 
         env_hits = sum(
             # from_env env_type is the same as "has__", then that counts as one hit (bool true->1)
