@@ -1,0 +1,234 @@
+name: test-fastdata
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - npow/fastdata-oss-clean
+  workflow_dispatch:
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Unit tests — no external services required
+  # -------------------------------------------------------------------------
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install metaflow-fastdata + test deps
+        working-directory: metaflow-fastdata
+        run: |
+          pip install metaflow
+          pip install -e .
+          pip install pytest pytest-html pytest-cov
+
+      - name: Run unit tests
+        working-directory: metaflow-fastdata
+        run: |
+          pytest -m "not integration" -v \
+            --html=report.html --self-contained-html \
+            --junit-xml=junit.xml \
+            --cov=metaflow_fastdata \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --cov-branch
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Unit Tests (py${{ matrix.python-version }})
+          path: metaflow-fastdata/junit.xml
+          reporter: java-junit
+
+      - name: Post coverage summary
+        if: always()
+        working-directory: metaflow-fastdata
+        run: |
+          echo "## Coverage — Unit Tests (py${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python -m coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-report-py${{ matrix.python-version }}
+          path: |
+            metaflow-fastdata/report.html
+            metaflow-fastdata/junit.xml
+            metaflow-fastdata/coverage.xml
+            metaflow-fastdata/htmlcov/
+            metaflow-fastdata/.coverage
+          include-hidden-files: true
+
+  # -------------------------------------------------------------------------
+  # Integration tests — Hive Metastore + MinIO via docker compose
+  # -------------------------------------------------------------------------
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
+        with:
+          python-version: "3.11"
+
+      - name: Start Hive Metastore + MinIO
+        working-directory: metaflow-fastdata
+        run: |
+          docker compose up -d hive-metastore minio minio-init
+          # Wait up to 3 minutes for HMS to be ready
+          echo "Waiting for Hive Metastore on port 9083..."
+          for i in $(seq 1 36); do
+            nc -z localhost 9083 && echo "HMS ready after ${i}x5s" && break
+            [ $i -eq 36 ] && echo "Timed out waiting for HMS" && docker compose logs hive-metastore && exit 1
+            sleep 5
+          done
+
+      - name: Install metaflow-fastdata + test deps + PyHive
+        working-directory: metaflow-fastdata
+        run: |
+          pip install metaflow
+          pip install -e .
+          pip install pytest pytest-html pytest-cov "PyHive[thrift]" hmsclient boto3
+
+      - name: Run integration tests
+        working-directory: metaflow-fastdata
+        env:
+          METAFLOW_HIVE_METASTORE_URI: thrift://localhost:9083
+          MINIO_ENDPOINT: http://localhost:9000
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ENDPOINT_URL: http://localhost:9000
+        run: |
+          pytest -m integration -v \
+            --html=report.html --self-contained-html \
+            --junit-xml=junit.xml \
+            --cov=metaflow_fastdata \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --cov-branch
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Integration Tests
+          path: metaflow-fastdata/junit.xml
+          reporter: java-junit
+
+      - name: Post coverage summary
+        if: always()
+        working-directory: metaflow-fastdata
+        run: |
+          echo "## Coverage — Integration Tests" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python -m coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-report
+          path: |
+            metaflow-fastdata/report.html
+            metaflow-fastdata/junit.xml
+            metaflow-fastdata/coverage.xml
+            metaflow-fastdata/htmlcov/
+            metaflow-fastdata/.coverage
+          include-hidden-files: true
+
+      - name: Stop services
+        if: always()
+        working-directory: metaflow-fastdata
+        run: docker compose down -v
+
+  # -------------------------------------------------------------------------
+  # Combined coverage report
+  # -------------------------------------------------------------------------
+  coverage-report:
+    name: "Coverage Report"
+    needs: [unit, integration]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
+        with:
+          python-version: "3.11"
+
+      - name: Install coverage
+        run: pip install coverage[toml]
+
+      - name: Download coverage data from all jobs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-test-report*"
+          path: coverage-artifacts/
+
+      - name: Combine coverage data
+        run: |
+          for dir in coverage-artifacts/*/; do
+            label=$(basename "$dir" | sed 's/-test-report//')
+            src="$dir/metaflow-fastdata/.coverage"
+            if [ -f "$src" ]; then
+              cp "$src" ".coverage.$label"
+              echo "Copied $src → .coverage.$label"
+            fi
+          done
+          coverage combine || echo "No coverage data to combine"
+          echo "Combined data sources:"
+          coverage debug data || true
+
+      - name: Generate combined report
+        run: |
+          coverage xml -o combined-coverage.xml || echo "No coverage data to generate XML"
+          coverage html -d combined-htmlcov/ --title="metaflow-fastdata Coverage" || echo "No coverage data to generate HTML"
+
+      - name: Post coverage summary
+        run: |
+          echo "## Coverage — metaflow-fastdata (combined)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          total=$(coverage report 2>/dev/null | tail -1 | awk '{print $NF}') || true
+          echo "**Total coverage: ${total:-N/A}**" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: combined-coverage.xml
+          name: fastdata-combined
+
+      - name: Upload combined coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-combined
+          path: |
+            combined-htmlcov/
+            combined-coverage.xml

@@ -1,0 +1,1452 @@
+# pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
+from __future__ import annotations
+
+import email.parser
+import email.policy
+import hashlib
+import os
+import platform
+import re
+import shutil
+import subprocess
+import tempfile
+from enum import Enum
+from itertools import chain
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
+from urllib.parse import unquote, urlparse
+
+import metaflow.metaflow_config as mf_config
+from metaflow._vendor.packaging.markers import Marker, default_environment
+from metaflow._vendor.packaging.requirements import Requirement
+from metaflow._vendor.packaging.specifiers import SpecifierSet
+from metaflow._vendor.packaging.tags import (
+    Tag,
+    _cpython_abis,
+    compatible_tags,
+    cpython_tags,
+    mac_platforms,
+)
+from metaflow._vendor.packaging.utils import BuildTag, parse_wheel_filename
+from metaflow._vendor.packaging.version import Version, InvalidVersion
+from metaflow.debug import debug
+from metaflow.exception import MetaflowException
+from metaflow.metaflow_config import CONDA_BUILDER_ENV_PACKAGES  # type: ignore
+from metaflow.metaflow_config import CONDA_MAGIC_FILE_V2  # type: ignore
+from metaflow.metaflow_config import CONDA_PREFERRED_FORMAT  # type: ignore
+from metaflow.metaflow_config import CONDA_SRCS_AUTH_INFO  # type: ignore
+from metaflow.metaflow_config import CONDA_SYS_DEFAULT_GPU_PACKAGES  # type: ignore
+from metaflow.metaflow_config import CONDA_SYS_DEFAULT_PACKAGES  # type: ignore
+from metaflow.metaflow_config import CONDA_SYS_DEPENDENCIES  # type: ignore
+from metaflow.metaflow_config import CONDA_SYS_MARKERS  # type: ignore
+from metaflow.metaflow_config import CONDA_HACK_CHANNEL_ALIAS  # type: ignore
+from metaflow.metaflow_environment import InvalidEnvironmentException
+from metaflow.util import walk_without_cycles
+
+from requests import PreparedRequest, Response, Session
+from requests.auth import AuthBase, HTTPBasicAuth
+
+if TYPE_CHECKING:
+    import metaflow_extensions.netflix_ext.plugins.conda.env_descr
+    from metaflow_extensions.netflix_ext.plugins.conda.env_descr import (
+        PackageSpecification,
+        ResolvedEnvironment,
+    )
+
+# NOTA: Most of the code does not assume that there are only two formats BUT the
+# transmute code does (since you can only specify the infile -- the outformat and file
+# are inferred)
+_ALL_CONDA_FORMATS: Tuple[str, ...] = (".tar.bz2", ".conda")
+# NOTE: Order is important as it is a preference order
+_ALL_PYPI_FORMATS = (".whl", ".tar.gz", ".zip")
+_VALID_IMAGE_NAME = "[^-a-z0-9_/]"
+_VALID_TAG_NAME = "[^-a-z0-9_]"
+
+# Things that need to be put in any of the builder environments
+_BUILDER_ENVS_PACKAGES = (
+    "pip",
+    "wheel",
+    "tomli",
+    "setuptools<82",  # pkg_resources removed in setuptools 82; many packages still need it
+    "uv<=0.7.8; python_version<'3.8'",
+    "uv ; python_version>='3.8'",
+)
+
+
+class AliasType(Enum):
+    PATHSPEC = "pathspec"
+    FULL_ID = "full-id"
+    REQ_FULL_ID = "both-id"
+    GENERIC = "generic"
+
+
+# List of formats that guarantees the preferred format is first. This is important as
+# functions that rely on selecting the "preferred" source of a package rely on the
+# preferred format being first.
+if CONDA_PREFERRED_FORMAT and CONDA_PREFERRED_FORMAT != "none":
+    CONDA_FORMATS = (
+        CONDA_PREFERRED_FORMAT,
+        *[x for x in _ALL_CONDA_FORMATS if x != CONDA_PREFERRED_FORMAT],
+    )  # type: Tuple[str, ...]
+else:
+    CONDA_FORMATS = _ALL_CONDA_FORMATS  # noqa: F811
+FAKEURL_PATHCOMPONENT = "_fake"
+
+_double_equal_match = re.compile(r"(==\*(?=\s|;|,|$))|(==(?=[<=>!~]))")
+_build_marker_match = re.compile(r"([^;]*?)([-=][a-zA-Z0-9_]+)(?=\s|;|,|$)")
+
+
+class CondaException(MetaflowException):
+    headline = "Conda ran into an error while setting up environment."
+
+    def __init__(self, error: Union[Sequence[Exception], str]):
+        if isinstance(error, list):
+            error = "\n".join([str(x) for x in error])
+        super(CondaException, self).__init__(error)  # type: ignore
+
+
+class CondaStepException(CondaException):
+    def __init__(self, exception: CondaException, steps: Sequence[str]):
+        msg = "Step(s): {steps}, Error: {error}".format(
+            steps=steps, error=exception.message
+        )
+        super(CondaStepException, self).__init__(msg)
+
+
+def get_builder_envs_dep(orig_deps: List[str]) -> List[str]:
+    builder_packages = {}  # type: Dict[str, Dict[Optional["Marker"], SpecifierSet]]
+    for pkg_req in chain(_BUILDER_ENVS_PACKAGES, CONDA_BUILDER_ENV_PACKAGES, orig_deps):
+        r = get_requirement(pkg_req)
+        builder_packages.setdefault(r.name, {})[r.marker] = (
+            builder_packages.setdefault(r.name, {}).setdefault(r.marker, SpecifierSet())
+            & r.specifier
+        )
+    to_return: List[str] = []
+    for pkg_name, pkg_markers in builder_packages.items():
+        for marker, version_spec in pkg_markers.items():
+            marker_str = ";" + str(marker) if marker else ""
+            if version_spec == SpecifierSet():
+                to_return.append(f"{pkg_name}{marker_str}")
+            else:
+                to_return.append(
+                    f"{pkg_name}=={str(version_spec).lstrip('=')}{marker_str}"
+                )
+    return to_return
+
+
+def convert_filepath(path: str, file_format: Optional[str] = None) -> Tuple[str, str]:
+    if file_format and not path.endswith(file_format):
+        path, cur_ext = correct_splitext(path)
+        if cur_ext not in _ALL_CONDA_FORMATS:
+            raise ValueError(
+                "URL '%s' does not end with a supported file format %s"
+                % (path, str(_ALL_CONDA_FORMATS))
+            )
+        path = "%s%s" % (path, file_format)
+    return os.path.split(path)
+
+
+def get_conda_manifest_path(ds_root: str) -> str:
+    return os.path.join(ds_root, CONDA_MAGIC_FILE_V2)  # type: ignore
+
+
+def get_conda_root(datastore_type: str) -> str:
+    conda_root = getattr(mf_config, "CONDA_%sROOT" % datastore_type.upper())
+    if conda_root is None:
+        # We error on METAFLOW_DATASTORE_SYSROOT_<ds> because that is the default used
+        raise MetaflowException(
+            msg="METAFLOW_DATASTORE_SYSROOT_%s must be set!" % datastore_type.upper()
+        )
+    debug.conda_exec("Conda root is at %s" % conda_root)
+    return conda_root  # type: ignore
+
+
+def arch_id() -> str:
+    if platform.system() == "Linux":
+        machine = platform.machine().lower()
+        if machine in ("aarch64", "arm64"):
+            return "linux-aarch64"
+        bit = "64" if machine.endswith("64") else "32"
+        return "linux-%s" % bit
+    elif platform.system() == "Darwin":
+        bit = "64" if platform.machine().endswith("64") else "32"
+        # Support M1 Mac
+        if platform.machine() == "arm64":
+            return "osx-arm64"
+        else:
+            return "osx-%s" % bit
+    else:
+        raise InvalidEnvironmentException(
+            "The *@conda* decorator is not supported "
+            "outside of Linux and Darwin platforms"
+        )
+
+
+_global_python_versions: Optional[List[str]] = None
+
+
+# Dynamically generate acceptable Python versions as major.minor.patch format.
+
+
+def _generate_python_versions() -> List[str]:
+    min_major: int = 3
+    max_major: int = 3
+    min_minor: int = 7
+    max_minor: int = 15
+    min_patch: int = 0
+    max_patch: int = 25
+
+    global _global_python_versions
+    if _global_python_versions is not None:
+        return _global_python_versions
+    versions: List[str] = []
+    for major in range(min_major, max_major + 1):
+        minor_range = range(min_minor, max_minor + 1)
+        for minor in minor_range:
+            for patch in range(min_patch, max_patch + 1):
+                versions.append(f"{major}.{minor}.{patch}")
+    _global_python_versions = versions
+    return versions
+
+
+def get_sys_packages(
+    virtual_packages: Dict[str, str],
+    arch_requested: str,
+    gpu_requested: bool,
+) -> Dict[str, str]:
+    # For now we handle __cuda and __glibc.
+
+    # The goal of this function is to take the list of virtual_packages and to return
+    # the sys packages we need to add to the user dependencies (so packages that start with
+    # sys::). The reason for having them as part of user packages is that we can then
+    # use them in computing the user request hash (since these will impact the packages
+    # that are installed). The sys:: packages will then be properly added when resolving
+    # the environment as virtual packages (either through CONDA_OVERRIDE_XXX or directly
+    # as part of a virtual_packages.yml for conda-lock)
+    if virtual_packages and arch_requested == arch_id():
+        result = dict(virtual_packages)
+    else:
+        result = dict(CONDA_SYS_DEFAULT_PACKAGES.get(arch_requested, {}))
+
+    if gpu_requested:
+        result.update(CONDA_SYS_DEFAULT_GPU_PACKAGES)
+
+    # Clean up
+    result = {
+        k: v[:-2] if v.endswith("=0=0") else (v + "=0" if not v.endswith("=0") else v)
+        for k, v in result.items()
+        if k in CONDA_SYS_DEPENDENCIES
+    }
+    return result
+
+
+def get_glibc_version() -> Optional[str]:
+    # Uses ldd which prints the glibc version on the system and has the version
+    # as the last element in the first line.
+    try:
+        output = subprocess.check_output("ldd --version", shell=True)
+        vers_line = output.splitlines()[0]
+        version = vers_line.split(b" ")[-1]
+        return version.decode("utf-8")
+    except Exception:
+        return None
+
+
+# TODO: refactor pip_resolver and conda_lock_resolver into using this method.
+def get_maximum_glibc_version(architecture: str, deps: Dict[str, List[str]]) -> str:
+    # The upstream source for the architecture is arch_id(), which only returns
+    # "linux-64", "linux-32", "osx-arm64", or "osx-64". Note that "linux-aarch64" is mapped
+    # to "linux-64" by arch_id().
+    #
+    # The downstream function pypi_tags_from_arch() further refines the architecture and may
+    # handle cases like "linux-aarch64". For example outputs of pypi_tags_from_arch(), see:
+    # https://github.netflix.net/gist/shuishiy/af1f3287731931b443fddecb005fb7a6 (Linux)
+    # https://github.netflix.net/gist/shuishiy/e78e7004369cca43a14f1efd266bdc0a (macOS)
+    if architecture != "linux-64":
+        return ""
+
+    glibc_version_list = [d for d in deps.get("sys", []) if d.startswith("__glibc")]
+
+    if len(glibc_version_list) != 1:
+        raise CondaException("Could not determine maximum GLIBC version")
+    # Get version looking like 2.27=0
+    glibc_version = glibc_version_list[0][len("__glibc==") :]
+    # Strip =0
+    glibc_version = glibc_version.split("=", 1)[0]
+    glibc_version = glibc_version.replace(".", "_")
+    return glibc_version
+
+
+def get_python_full_version_from_builder_envs(
+    builder_envs: Optional[List["ResolvedEnvironment"]] = None,
+    architecture: Optional[str] = None,
+) -> Optional[str]:
+    if not architecture:
+        raise ValueError(
+            "Architecture must be specified in get_python_full_version_from_builder_envs."
+        )
+
+    if not builder_envs:
+        raise ValueError(
+            "Builder environments must be specified in get_python_full_version_from_builder_envs."
+        )
+
+    builder_env = [r for r in builder_envs if r.env_id.arch == architecture][0]
+
+    python_full_version = None
+    for p in builder_env.packages:
+        if p.filename.startswith("python-"):
+            python_full_version = p.package_version
+            break
+
+    # Verify this is the full version.
+    # Since the package name should be from Conda, it should always be a full version.
+    # This gist https://github.netflix.net/gist/e9bd9c1624ad9de8c3dfbd956c2fd295 is
+    # the result of "conda search python".
+    if python_full_version and python_full_version.count(".") != 2:
+        raise ValueError(
+            f"Python version {python_full_version} is not a full version (missing patch version)"
+        )
+
+    return python_full_version
+
+
+def pypi_tags_from_arch(
+    python_version: str, arch: str, glibc_version: str
+) -> List[Tag]:
+    # Converts a Conda architecture to a tuple containing (implementation, platforms, abis)
+    # This function will assume a CPython implementation
+
+    # This is inspired by what pip does:
+    # https://github.com/pypa/pip/blob/0442875a68f19b0118b0b88c747bdaf6b24853ba/src/pip/_internal/utils/compatibility_tags.py
+    py_version = tuple(map(int, python_version.split(".")[:2]))
+    if arch in ("linux-64", "linux-aarch64"):
+        max_glibc = "_%s" % glibc_version
+        platforms = []  # type: List[str]
+        suffix = "x86_64" if arch == "linux-64" else "aarch64"
+        for s in (
+            "1",
+            "2010",
+            "2014",
+            "_2_17",
+            "_2_18",
+            "_2_19",
+            "_2_20",
+            "_2_21",
+            "_2_23",
+            "_2_24",
+            "_2_25",
+            "_2_26",
+            "_2_27",
+            "_2_28",
+            "_2_29",
+            "_2_30",
+            "_2_31",
+            "_2_32",
+            "_2_33",
+            "_2_34",
+            "_2_35",
+            "_2_36",
+            "_2_37",
+            "_2_38",
+        ):
+            platforms.append("manylinux%s_%s" % (s, suffix))
+            if s == max_glibc:
+                break
+
+        platforms.append("linux_%s" % suffix)
+    elif arch == "osx-64":
+        platforms = mac_platforms((12, 0), "x86_64")
+    elif arch == "osx-arm64":
+        platforms = mac_platforms((12, 0), "arm64")
+    else:
+        raise InvalidEnvironmentException("Unsupported platform: %s" % arch)
+
+    interpreter = "cp%s" % ("".join(map(str, py_version)))
+
+    abis = _cpython_abis(py_version)
+
+    supported = []  # type: List[Tag]
+    supported.extend(cpython_tags(py_version, abis, platforms))
+    supported.extend(compatible_tags(py_version, interpreter, platforms))
+
+    return supported
+
+
+ParseExplicitResult = NamedTuple(
+    "ParseExplicitResult",
+    [("filename", str), ("url", str), ("url_format", str), ("hash", Optional[str])],
+)
+
+
+def parse_explicit_url_conda(url: str) -> ParseExplicitResult:
+    # Takes a URL in the form url#hash and returns:
+    #  - the filename
+    #  - the URL (without the hash)
+    #  - the format for the URL
+    #  - the hash
+    url_clean, url_hash = url.rsplit("#", 1)
+    filename, url_format = correct_splitext(os.path.split(urlparse(url_clean).path)[1])
+    if url_format not in _ALL_CONDA_FORMATS:
+        raise CondaException(
+            "URL '%s' is not a supported format (%s)" % (url, CONDA_FORMATS)
+        )
+    filename = unquote(filename)
+    return ParseExplicitResult(
+        filename=filename, url=url_clean, url_format=url_format, hash=url_hash
+    )
+
+
+def parse_explicit_path_pypi(
+    path: str, hash_value: Optional[str] = None
+) -> ParseExplicitResult:
+    # Prevent circular import
+    from .env_descr import PypiPackageSpecification
+
+    # Takes a filename in the form file://<path> and returns:
+    #  - the filename
+    #  - the URL (always file://local-<hash>/<filename> so there is no way another
+    #    build/user conflicts. We consider them to be all distinct.
+    #  - the format of the URL
+    #  - the hash will be set to None
+    if not path.startswith("file://"):
+        raise CondaException("Local path '%s' does not start with file://" % path)
+    path = path[7:]
+    orig_filename, url_format = correct_splitext(os.path.basename(path))
+    if url_format not in _ALL_PYPI_FORMATS:
+        raise CondaException(
+            "Path '%s' is not a supported format (%s)" % (path, str(_ALL_PYPI_FORMATS))
+        )
+    if hash_value is None:
+        if not os.path.isfile(path):
+            # This is not a file so we can't get a hash. Instead, we will compute
+            # the last modified time for files within the directory containing it. This only happens
+            # when the user has a local directory and is trying to build a package
+            # from there. The modified time will act a bit like a hash to determine
+            # if the package being built has changed. If it has, the hash will be different
+            # and the "fake URL" will be different so we won't find the package
+            # in the cache. If it hasn't changed, the hash will be the same and we will
+            # avoid randomly rebuilding the package.
+            hash_value = hash_directory(os.path.dirname(path))
+        else:
+            hash_value = PypiPackageSpecification.hash_pkg(path)
+    return ParseExplicitResult(
+        filename=unquote(orig_filename),
+        url="file://local-%s/%s" % (hash_value, orig_filename),
+        url_format=url_format,
+        hash=hash_value,
+    )
+
+
+def parse_explicit_url_pypi(url: str) -> ParseExplicitResult:
+    # Takes a URL in the form url#hash or url and returns:
+    #  - the filename
+    #  - the URL (without the hash)
+    #  - the format for the URL
+    #  - the hash
+    # NOTE: The URL may not have a hash in some cases in which case we need to account
+    # for the fact that the rsplit below produces only ONE element.
+    parts = url.rsplit("#", 1)
+    url_clean = parts[0]
+    url_hash = parts[1] if len(parts) == 2 else None
+    if url_hash:
+        if not url_hash.startswith("sha256="):
+            raise CondaException("URL '%s' has a SHA type which is not supported" % url)
+        url_hash = url_hash[7:]
+    else:
+        # Standardize to None in the off-chance that the url is <url># without anything
+        # after the #.
+        url_hash = None
+
+    # TODO: refactor: call parse_explicit_url_pypi_no_hash() instead.
+    filename, url_format = correct_splitext(os.path.split(urlparse(url_clean).path)[1])
+    if url_format not in _ALL_PYPI_FORMATS:
+        raise CondaException(
+            "URL '%s' is not a supported format (%s)" % (url, str(_ALL_PYPI_FORMATS))
+        )
+    filename = unquote(filename)
+    return ParseExplicitResult(
+        filename=filename, url=url_clean, url_format=url_format, hash=url_hash
+    )
+
+
+def parse_explicit_url_pypi_no_hash(url: str) -> ParseExplicitResult:
+    filename, url_format = correct_splitext(os.path.split(urlparse(url).path)[1])
+
+    if url_format not in _ALL_PYPI_FORMATS:
+        raise CondaException(
+            "URL '%s' is not a supported format (%s)" % (url, str(_ALL_PYPI_FORMATS))
+        )
+
+    filename = unquote(filename)
+    return ParseExplicitResult(
+        filename=filename,
+        url=url,
+        url_format=url_format,
+        hash=None,
+    )
+
+
+def plural_marker(count: int) -> str:
+    return "s" if count != 1 else ""
+
+
+def is_hexadecimal(s: str) -> bool:
+    return not re.search("[^0-9a-f]", s)
+
+
+def resolve_env_alias(env_alias: str) -> Tuple[AliasType, str]:
+    if env_alias.startswith("step:"):
+        # Pathspec environment alias
+        env_alias = env_alias[5:]
+        env_alias_splits = env_alias.split("/")
+        if len(env_alias_splits) in (3, 4):
+            return AliasType.PATHSPEC, "/".join(env_alias_splits[:3])
+    elif len(env_alias) == 81 and env_alias[40] == ":":
+        # Full environment hashes are:
+        #  - a 40 character requirement hash
+        #  - a colon
+        #  - a 40 character full environment hash
+        # thus a total size of 81 characters with the 40th character being a ":"
+        req_id, full_id = env_alias.split(":", 1)
+        if is_hexadecimal(req_id) and is_hexadecimal(full_id):
+            return AliasType.REQ_FULL_ID, env_alias
+    elif len(env_alias) == 40 and is_hexadecimal(env_alias):
+        # Just a full ID environment hash
+        # For now we do not support this -- remove if you want to support
+        # The issue with supporting this is that a full-id can refer to multiple req-id
+        # so it is impossible to unambiguously identify the source environment (ie:
+        # the user requested dependencies, etc)
+        raise MetaflowException(
+            "Invalid format for environment alias: '%s'" % env_alias
+        )
+        # return AliasType.FULL_ID, env_alias
+    else:
+        # An alias in the form <name>:<tag> (where <tag> is optional and assumed to
+        # be "latest" if not present)
+        splits = env_alias.rsplit(":", 1)
+        if len(splits) == 2:
+            image_name = splits[0]
+            image_tag = splits[1]
+        else:
+            image_name = env_alias
+            image_tag = "latest"
+        if re.search(_VALID_IMAGE_NAME, image_name):
+            raise MetaflowException(
+                "An environment name must contain only "
+                "lowercase alphanumeric characters, dashes, underscores and forward slashes."
+            )
+        if image_name[0] == "/" or image_name[-1] == "/":
+            raise MetaflowException(
+                "An environment name must not start or end with '/'"
+            )
+        if re.search(_VALID_TAG_NAME, image_tag):
+            raise MetaflowException(
+                "An environment tag name must contain only "
+                "lowercase alphanumeric characters, dashes and underscores."
+            )
+        return AliasType.GENERIC, "/".join([image_name, image_tag])
+    raise MetaflowException("Invalid format for environment alias: '%s'" % env_alias)
+
+
+def is_alias_mutable(alias_type: AliasType, resolved_alias: str) -> bool:
+    if alias_type != AliasType.GENERIC:
+        return False
+    splits = resolved_alias.rsplit("/", 1)
+    return len(splits) == 2 and splits[1] in ("latest", "candidate", "stable")
+
+
+def dict_to_tstr(
+    deps: Dict[str, List[str]],
+) -> List["metaflow_extensions.netflix_ext.plugins.conda.env_descr.TStr"]:
+    from .env_descr import TStr  # Avoid circular import
+
+    result = []  # type: List[TStr]
+    for category, values in deps.items():
+        result.extend([TStr(category, v) for v in values])
+    return result
+
+
+def tstr_to_dict(
+    deps: List["metaflow_extensions.netflix_ext.plugins.conda.env_descr.TStr"],
+) -> Dict[str, List[str]]:
+    result = {}  # type: Dict[str, List[str]]
+    for dep in deps:
+        result.setdefault(dep.category, []).append(dep.value)
+    return result
+
+
+def split_into_dict(deps: List[str]) -> Dict[str, str]:
+    result = {}  # type: Dict[str, str]
+    for dep in deps:
+        s = dep.split("==", 1)
+        if len(s) == 1 or s[1] == "*":
+            result[s[0]] = ""
+        else:
+            result[s[0]] = s[1]
+    return result
+
+
+def dict_to_strlist(deps: Dict[str, str]) -> List[str]:
+    to_return: List[str] = []
+    for dep_name, dep_specifier in deps.items():
+        dep_specifier = dep_specifier.lstrip()
+        if dep_specifier:
+            if dep_specifier[0] == ";":
+                # Marker only
+                to_return.append(f"{dep_name}{dep_specifier}")
+            else:
+                to_return.append(f"{dep_name}=={dep_specifier}")
+        else:
+            to_return.append(dep_name)
+    return to_return
+
+
+def get_requirement(dep_str: str) -> Requirement:
+    # Conda packages contain extra information in the version_string and we can
+    # also have double equals and channel information. We need to remove all this to
+    # get a valid requirement string.
+    # For example:
+    # - channel::package==version -> package==version
+    # - package==<=version => package<=version
+    # - package==version=foo -> package==version
+    dep_str = dep_str.split("::", 1)[-1]  # Remove channel information
+    dep_str = _double_equal_match.sub("", dep_str)  # Remove double equals
+    # Note that if no match, the sub is a no-op which is what we want.
+    dep_str = _build_marker_match.sub(r"\1", dep_str)  # Remove build marker
+    return Requirement(dep_str)
+
+
+def clean_up_double_equal(deps: Iterable[str]) -> List[str]:
+    return [_double_equal_match.sub("", d) for d in deps]
+
+
+def merge_dep_dicts(
+    d1: Dict[str, str], d2: Dict[str, str], only_last_deps: bool = False
+) -> Dict[str, str]:
+    # Merge dictionaries of version constraints taking *all* constraints
+    # into account instead of replacing them.
+    # Order will be preserved based on the order of the first dict
+    # only_last_deps will only return things that are already in d2. This is to merge with
+    # anything in d1 but only return things that are in d2. This is used to compute
+    # the new set of dependencies introduced by the user.
+    result = {}  # type: Dict[str, str]
+    for key in set(d2.keys() if only_last_deps else chain(d1.keys(), d2.keys())):
+        v1 = [v for v in d1.get(key, "").split(",") if v and v != "*"]
+        v2 = [v for v in d2.get(key, "").split(",") if v and v != "*"]
+        sv1 = set([v.lstrip("=") for v in v1])
+        # We dedup so that if we have the exact same constraints, we don't change
+        # things. We try to keep the order of the first dict
+        v2 = [v for v in v2 if v.lstrip("=") not in sv1]
+
+        # We need to make sure that things that don't start with ~, <, >, ! or = get
+        # == if they are not first.
+        resulting_versions = list(chain(v1, v2))
+        if resulting_versions:
+            resulting_versions = [resulting_versions[0]] + [
+                v if v[0] in ("~", "<", ">", "!", "=") else "==%s" % v
+                for v in resulting_versions[1:]
+            ]
+        result[key] = ",".join(resulting_versions)
+    return result
+
+
+def reform_pypi_filename(
+    name: str, version: Version, build: BuildTag, tags: FrozenSet[Tag]
+) -> str:
+    if build:
+        build_str = "%d%s" % (build[0], build[1])
+    else:
+        build_str = None
+    # We need to iterate over all the tags to form the string
+    # interp1.interp2-abi1.abi2-platform1.platform2
+    interpreters, abis, platforms = zip(
+        *map(lambda x: (x.interpreter, x.abi, x.platform), tags)
+    )
+    tag_str = "-".join(
+        [
+            ".".join(sorted(interpreters)),
+            ".".join(sorted(abis)),
+            ".".join(sorted(platforms)),
+        ]
+    )
+
+    if build_str:
+        return "-".join([str(name), str(version), build_str, tag_str])
+    return "-".join([str(name), str(version), tag_str])
+
+
+def correct_splitext(filename_with_ext: str) -> Tuple[str, str]:
+    # This handles .tar.gz and .tar.bz2 which is what we care about.
+    # Tried with pathlib too but that has other issues since . is a valid character
+    # in conda packages
+    all_splits = filename_with_ext.rsplit(".", 2)
+    if len(all_splits) > 2:
+        if ".".join(all_splits[1:]) in ("tar.gz", "tar.bz2"):
+            return all_splits[0], ".".join([""] + all_splits[1:])
+        return ".".join(all_splits[:-1]), "." + all_splits[2]
+    if len(all_splits) == 2:
+        return all_splits[0], "." + all_splits[1]
+    if len(all_splits) == 1:
+        return filename_with_ext, ""
+    # Should never happen
+    return "", ""
+
+
+def conda_deps_to_pypi_deps(d: Dict[str, str]) -> Dict[str, str]:
+    # This is a hack for now -- real fix would be to specify get_pinned_pypi_libs
+    # but at least for now this allows channels to be specified in the conda_libs
+    # but still work with pip
+    r = {}  # type: Dict[str, str]
+    for k, v in d.items():
+        s = k.split("::")
+        if len(s) > 1:
+            package_name = s[1]
+        else:
+            package_name = k
+
+        # HACK: ray package name differs between conda (ray-default) and pip (ray)
+        # Convert ray-default to ray when using pip
+        if package_name == "ray-default":
+            package_name = "ray"
+
+        r[package_name] = v
+    return r
+
+
+_UNDERSCORE_REGEX = re.compile(r"[-_.]+")
+
+
+def normalize_to_underscore(name: str) -> str:
+    return _UNDERSCORE_REGEX.sub("_", name).lower()
+
+
+def channel_from_url(url: str) -> Optional[str]:
+    up = urlparse(url)
+    if up.hostname == "conda.anaconda.org":
+        return up.path.split("/", 2)[1]
+    return None
+
+
+def channel_or_url(url: str) -> str:
+    up = urlparse(url)
+    if up.hostname == "conda.anaconda.org":
+        return up.path.split("/", 2)[1]
+    if (
+        CONDA_HACK_CHANNEL_ALIAS
+        and up.hostname
+        and CONDA_HACK_CHANNEL_ALIAS in up.hostname
+    ):
+        return up.path.split("/", 2)[1]
+    return url
+
+
+def auth_from_urls(urls: List[str]) -> Optional[AuthBase]:
+    auths_per_hostname = {
+        cast(str, h): HTTPBasicAuth(username, pwd)
+        for h, (username, pwd) in CONDA_SRCS_AUTH_INFO.items()
+    }
+
+    partial_auths = {}
+
+    for url in urls:
+        up = urlparse(url.strip("'\" \t\n"))
+        if up.hostname and up.username:
+            if up.password is not None:
+                auths_per_hostname[up.hostname] = HTTPBasicAuth(
+                    up.username, up.password
+                )
+            else:
+                partial_auths[up.hostname] = up.username
+    if auths_per_hostname or partial_auths:
+        return PerHostAuth(auths_per_hostname, partial_auths)
+    return None
+
+
+class PerHostAuth(AuthBase):
+    def __init__(
+        self,
+        auths_per_hostname: Mapping[str, AuthBase],
+        partial_auths: Mapping[str, str],
+    ):
+        self._static_auths = auths_per_hostname
+        self._partial_auths = partial_auths
+        self._dynamic_auths = {}  # type: Dict[str, AuthBase]
+
+        try:
+            import keyring
+
+            self._keyring = keyring
+        except ImportError:
+            self._keyring = None
+
+    def __call__(self, r: PreparedRequest):
+        h = self._get_hostname(r.url)
+        if h:
+            # Check if we have a static auth (username and password)
+            auth_provider = self._static_auths.get(h or "<none>")
+            if auth_provider:
+                return auth_provider(r)
+
+            # If we have a keyring, we can check for partial (just username) or full
+            # auth from the keyring
+            if self._keyring:
+                if h in self._dynamic_auths:
+                    r.register_hook("response", self._handle_401)
+                    return self._dynamic_auths[h](r)
+                elif h in self._partial_auths:
+                    # Here we have a username but we don't have a password, we see
+                    # if we can get it from the keyring
+                    cred = self._get_and_update_credentials(h, self._partial_auths[h])
+                    if cred is not None:
+                        r.register_hook("response", self._handle_401)
+                        return cred(r)
+                else:
+                    # We will suppose that other URLs can be looked up using keyring
+                    # so on failure we will try to get the auth settings -- this means
+                    # we only pay this cost if we fail first.
+                    r.register_hook("response", self._handle_401)
+
+        return r
+
+    @staticmethod
+    def _get_hostname(url: Optional[str]) -> Optional[str]:
+        if url is None:
+            return None
+        up = urlparse(url)
+        return up.hostname
+
+    def _get_and_update_credentials(
+        self, hostname: str, username: Optional[str] = None
+    ) -> Optional[AuthBase]:
+        if self._keyring is None:
+            return None
+
+        # Support keyring's get_credential interface which supports getting
+        # credentials without a username. This is only available for
+        # keyring>=15.2.0.
+        if hasattr(self._keyring, "get_credential"):
+            debug.conda_exec("Getting credentials from keyring for %s" % hostname)
+            cred = self._keyring.get_credential(hostname, username)
+            if cred is not None:
+                debug.conda_exec(
+                    "Successfully got keyring credentials for %s" % hostname
+                )
+                cred = HTTPBasicAuth(cred.username, cred.password)
+                self._dynamic_auths[hostname] = cred
+                return cred
+            debug.conda_exec(
+                "Attempted to get keyring credentials for %s but got nothing" % hostname
+            )
+            return None
+
+        if username is not None:
+            password = self._keyring.get_password(hostname, username)
+            if password is not None:
+                debug.conda_exec("Successfully got keyring password for %s" % hostname)
+                cred = HTTPBasicAuth(username, password)
+                self._dynamic_auths[hostname] = cred
+                return cred
+            debug.conda_exec(
+                "Attempted to get keyring password for %s but got nothing" % hostname
+            )
+        return None
+
+    def _handle_401(self, resp: Response, **kwargs: Any) -> Response:
+        # This code is inspired from https://github.com/pypa/pip/blob/main/src/pip/_internal/network/auth.py
+
+        # Only care about 401
+        if resp.status_code != 401:
+            return resp
+
+        # If we are here, we know we have a keyring so we check for new credentials. We
+        # also don't have a username to use.
+        hostname = cast(str, self._get_hostname(resp.url))
+        cred = self._get_and_update_credentials(hostname)
+
+        if cred is None:
+            # We couldn't get any credentials from keyring so we return the original
+            # response (and error)
+            return resp
+
+        # Consume content and release the original connection to allow our new
+        # request to reuse the same one.
+        _ = resp.content
+        resp.raw.release_conn()
+
+        # Get a new request with authentication included
+        req = cred(resp.request)
+        req.deregister_hook("response", self._handle_401)
+
+        with Session() as s:
+            # Carry over cookies from the previous request if present
+            if hasattr(resp, "cookies") and resp.cookies:
+                s.cookies.update(resp.cookies)
+
+            new_resp = s.send(req, **kwargs)
+            new_resp.history.append(resp)
+            return new_resp
+
+
+def version_to_str(v: Version, overrides: Dict[str, Any]) -> str:
+    # This code copies __str__ from Version basically but allows components to be
+    # changed
+    parts: List[str] = []
+
+    # Epoch
+    val = int(overrides.get("epoch", v.epoch))
+    if v != 0:
+        parts.append(f"{val}!")
+
+    # Release segment
+    val = overrides.get("release", v.release)
+    parts.append(".".join(str(x) for x in cast(Tuple[int, ...], val)))
+
+    # Pre-release
+    val = overrides.get("pre", v.pre)
+    if val is not None:
+        parts.append("".join(str(x) for x in cast(Tuple[Union[str, int], ...], val)))
+
+    # Post-release
+    val = overrides.get("post", v.post)
+    if val is not None:
+        parts.append(f".post{val}")
+
+    # Development release
+    val = overrides.get("dev", v.dev)
+    if val is not None:
+        parts.append(f".dev{val}")
+
+    # Local version segment
+    val = overrides.get("local", v.local)
+    if val is not None:
+        parts.append(f"+{val}")
+
+    return "".join(parts)
+
+
+# HACK to prevent looking for python versions that do not exist on
+# conda-forge.
+version_maps = {
+    "3.7.4": "3.7.5",
+    "3.7.7": "3.7.8",
+    "3.7.11": "3.7.12",
+    "3.7.13": "3.7.12",
+    "3.7.14": "3.7.12",
+    "3.7.15": "3.7.12",
+    "3.7.16": "3.7.12",
+    "3.7.17": "3.7.12",
+    "3.8.7": "3.8.8",
+    "3.8.9": "3.8.10",
+    "3.8.11": "3.8.12",
+    "3.9.3": "3.9.4",
+    "3.9.8": "3.9.9",
+    "3.9.11": "3.9.12",
+    "3.10.3": "3.10.4",
+}
+
+
+def sanitize_python_version(v: str) -> str:
+    # Use major.minor version only to avoid OS-specific patch version constraints
+    mapped_version = version_maps.get(v, v)
+    version_parts = mapped_version.split(".")
+    return f"{version_parts[0]}.{version_parts[1]}"
+
+
+# Function heavily inspired from https://github.com/hauntsaninja/change_wheel_version
+# MIT license of that source file:
+# MIT License
+
+# Copyright (c) 2023 hauntsaninja
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+def change_pypi_package_version(
+    python_path: str, wheel_path: str, new_version_str: str
+) -> str:
+    base_dir, wheel_name = os.path.split(wheel_path)
+    with tempfile.TemporaryDirectory() as build_dir:
+        old_parts = parse_wheel_filename(wheel_name)
+
+        distribution = wheel_name.split("-", 1)[0]
+        old_version = old_parts[1]
+        new_version = Version(new_version_str)
+        new_version_str = str(new_version)
+
+        old_slug = "%s-%s" % (distribution, old_version)
+        new_slug = "%s-%s" % (distribution, new_version)
+
+        subprocess.check_output(
+            [python_path, "-m", "wheel", "unpack", "-d", build_dir, wheel_path]
+        )
+        if not os.path.isdir(os.path.join(build_dir, old_slug)) or not os.path.isdir(
+            os.path.join(build_dir, old_slug, "%s.dist-info" % old_slug)
+        ):
+            raise ValueError("Invalid wheel expansion for '%s'" % wheel_path)
+
+        # Copy everything
+        shutil.move(
+            os.path.join(build_dir, old_slug), os.path.join(build_dir, new_slug)
+        )
+
+        # Rename dist-info directory
+        shutil.move(
+            os.path.join(build_dir, new_slug, "%s.dist-info" % old_slug),
+            os.path.join(build_dir, new_slug, "%s.dist-info" % new_slug),
+        )
+
+        # Rename data if it exists
+        if os.path.exists(os.path.join(build_dir, new_slug, "%s.data" % old_slug)):
+            shutil.move(
+                os.path.join(build_dir, new_slug, "%s.data" % old_slug),
+                os.path.join(build_dir, new_slug, "%s.data" % new_slug),
+            )
+
+        # Rewrite METADATA file
+        metadata = os.path.join(
+            build_dir, new_slug, "%s.dist-info" % new_slug, "METADATA"
+        )
+
+        # This is actually a non-conformant email policy as per
+        # https://packaging.python.org/en/latest/specifications/core-metadata/
+        # However, it works around this bug in setuptools in cases where the version is really long
+        # https://github.com/pypa/setuptools/issues/3808
+        max_line_length = 200
+        policy = email.policy.compat32.clone(max_line_length=200)
+        if len(new_version_str) >= max_line_length:
+            raise ValueError(f"Version '%s' is too long" % new_version_str)
+
+        with open(metadata, "rb") as f:
+            parser = email.parser.BytesParser(policy=policy)
+            msg = parser.parse(f)
+
+        msg.replace_header("Version", new_version_str)
+        with open(metadata, "wb") as f:
+            f.write(msg.as_bytes())
+
+        # Rewrites the RECORD file and generate the file.
+        subprocess.check_output(
+            [
+                python_path,
+                "-m",
+                "wheel",
+                "pack",
+                "-d",
+                build_dir,
+                os.path.join(build_dir, new_slug),
+            ]
+        )
+
+        # We check if we get the expected name
+        expected_name = (
+            reform_pypi_filename(distribution, new_version, old_parts[2], old_parts[3])
+            + ".whl"
+        )
+        if os.path.isfile(os.path.join(build_dir, expected_name)):
+            shutil.move(
+                os.path.join(build_dir, expected_name),
+                os.path.join(base_dir, expected_name),
+            )
+            os.unlink(wheel_path)
+            return os.path.join(base_dir, expected_name)
+        raise RuntimeError(
+            "Could not rename wheel '%s'; expected '%s' got: %s"
+            % (wheel_path, expected_name, ", ".join(os.listdir(build_dir)))
+        )
+
+
+def hash_directory(path: str) -> str:
+    # The "hash" of a directory will be the last modified time and last modified
+    # file. We could just use the time probably but this will hopefully inject
+    # even more safety.
+    last_modified_time = 0.0
+    last_modified_file = None  # type: Optional[str]
+
+    # Walk through all files and directories in the root directory
+    top_level = True
+    for directory, dirs, files in walk_without_cycles(path):
+        if top_level:
+            # Skip build and .egg-info since we don't want them to affect the
+            # last modified file (it's not source)
+            to_remove = []  # type: List[str]
+            for d in dirs:
+                if d == "build":
+                    to_remove.append(d)
+                if d.endswith(".egg-info"):
+                    to_remove.append(d)
+            for d in to_remove:
+                dirs.remove(d)
+            top_level = False
+
+        for file in files:
+            filename = os.path.join(directory, file)
+            mod_time = os.path.getmtime(filename)
+            # If this file is the most recently modified, update max_mod_time and max_file_dir
+            if mod_time > last_modified_time:
+                last_modified_time, last_modified_file = mod_time, filename
+
+    debug.conda_exec(
+        "Last modified file in '%s': '%s' at %s"
+        % (path, last_modified_file, last_modified_time)
+    )
+    return hashlib.sha256(
+        ("%s:%s" % (last_modified_time, last_modified_file)).encode()
+    ).hexdigest()
+
+
+def determine_uv_env_python_version(cwd: str) -> str:
+    cmd_output, error_code = call_binary(
+        args=["run", "python", "--version"],
+        binary="uv",
+        cwd=cwd,
+        no_exception_on_error=True,
+    )
+
+    if error_code != 0:
+        if (
+            "which is incompatible with the project's Python requirement"
+            in cmd_output.decode()
+        ):
+            raise EnvironmentError(
+                "The uv environment's version is incompatible with the pyproject.toml requirements. "
+                "Original error: %s" % cmd_output.decode()
+            )
+        else:
+            raise EnvironmentError(
+                "Could not call uv environment at '%s' to determine python version. "
+                "uv run python --version returned error code %d with output='%s'"
+                % (cwd, error_code, cmd_output.decode())
+            )
+
+    pattern = r"Python ([\d.]+)"
+
+    match = re.search(pattern, cmd_output.decode())
+    if match:
+        return match.group(1)
+    else:
+        raise EnvironmentError(
+            "Could not determine python version from uv environment at '%s'" % cwd
+            + " uv run python --version output='%s'" % cmd_output.decode()
+        )
+
+
+def call_binary(
+    args: List[str],
+    binary: str,
+    cwd: Optional[str] = None,
+    no_exception_on_error: bool = False,
+) -> Tuple[bytes, int]:
+    try:
+        debug.conda_exec("Binary call: %s" % str([binary] + args))
+        return (
+            subprocess.check_output(
+                [binary] + args,
+                stderr=subprocess.PIPE,
+                cwd=cwd,
+            ).strip(),
+            0,
+        )
+    except subprocess.CalledProcessError as e:
+        if no_exception_on_error:
+            # The returned bytes: we simply concatenate stdout and stderr
+            # here, as the downstream caller normally just matches a pattern
+            # to determine the failure reason.
+            return e.stdout.strip() + e.stderr.strip(), e.returncode
+        else:
+            raise CondaException(
+                "Binary command for '{cmd}' returned error ({code}); "
+                "see pretty-printed error above".format(cmd=e.cmd, code=e.returncode)
+            ) from None
+
+
+def get_best_compatible_packages(
+    grouped_packages: Dict[str, List["PackageSpecification"]],
+    supported_tags: List[Tag] = [],
+) -> Dict[str, "PackageSpecification"]:
+
+    best_packages = dict()  # type:  Dict[str, "PackageSpecification"]
+
+    for key, package_list in grouped_packages.items():
+        for t in supported_tags:
+            # Tags are ordered from most-preferred to least preferred
+            for p in package_list:
+                full_filename = p.filename + p.url_format
+                _, _, _, tags = parse_wheel_filename(full_filename)
+                if t in tags:
+                    best_packages[key] = p
+                    debug.conda_exec("%s: matching package @ %s" % (key, p))
+                    break
+            else:
+                # If we don't find a match, continue to next tag (and
+                # skip break of outer loop on next line)
+                continue
+            break
+
+    return best_packages
+
+
+def compute_target_envs(
+    target_env: Dict[str, str],
+    python_versions: List[str],
+    arch: str,
+) -> List[Dict[str, str]]:
+    # Strip out fields we don't support well.
+    target_env.update(
+        {
+            "implementation_version": "",
+            "python_full_version": "",
+        }
+    )
+
+    if arch != arch_id():
+        target_env.update(CONDA_SYS_MARKERS.get(arch, {}))
+
+    # Workaround issue with platform_release not being clean enough for our packaged
+    # version of packaging
+    # Clean up platform_release to ensure it's in X[.Y[.Z]] format (digits, optional Y/Z, strip suffixes)
+    pr = target_env.get("platform_release", "")
+    m = re.match(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", pr)
+    if m:
+        cleaned = ".".join([group for group in m.groups(default="") if group != ""])
+        target_env["platform_release"] = cleaned
+    target_envs: List[Dict[str, str]] = []
+    for v in python_versions:
+        if v.count(".") != 2:
+            new_target_env = target_env.copy()
+            new_target_env.update({"python_version": v})
+        else:
+            new_target_env = target_env.copy()
+            new_target_env.update(
+                {
+                    "python_full_version": v,
+                    "python_version": ".".join(v.split(".")[:2]),
+                    "implementation_version": v,
+                }
+            )
+        target_envs.append(new_target_env)
+
+    return target_envs
+
+
+def evaluate_marker(
+    marker: Optional[Marker], target_envs: List[Dict[str, str]]
+) -> bool:
+    if marker is None:
+        return True  # No marker so we keep it
+    try:
+        keep_dep = marker.evaluate(target_envs[0])
+        if any(marker.evaluate(env) != keep_dep for env in target_envs[1:]):
+            raise InvalidEnvironmentException(
+                f"Ambiguous package marker {marker}; "
+                "inconsistent overlap with requested Python version. "
+                "Restrict your Python version further to fully overlap "
+                "with this marker."
+            )
+        return keep_dep
+
+    except InvalidVersion as e:
+        raise InvalidEnvironmentException(
+            f"Package marker {marker} not supported"
+        ) from e
+
+
+def filter_packages_by_markers(
+    packages: List["PackageSpecification"],
+    python_full_version: str,
+    arch: str,
+    target_env: Optional[Dict[str, str]] = None,
+) -> List["PackageSpecification"]:
+    """
+    Filters a list of packages based on their environment markers.
+    More context in https://netflix.atlassian.net/browse/MLPMF-545.
+
+    Parameters:
+
+    target_env is a dictionary representing the target environment's properties,
+    normally obtained by packaging.markers.default_environment(). A sample could be:
+    {'implementation_name': 'cpython', 'implementation_version': '3.10.19',
+     'os_name': 'posix', 'platform_machine': 'arm64', 'platform_release': '25.1.0',
+     'platform_system': 'Darwin', 'platform_version':
+     'Darwin Kernel Version 25.1.0: Mon Oct 20 19:34:05 PDT 2025; root:xnu-12377.41.6~2/RELEASE_ARM64_T6041',
+     'python_full_version': '3.10.19', 'platform_python_implementation': 'CPython',
+     'python_version': '3.10', 'sys_platform': 'darwin'}
+
+    If target_env is not provided, then default_environment() will be called, and
+    overrides will be applied to reflect information provided in python_full_version
+    and arch.
+
+    arch is our own donation defined in arch_id(). We have our own overrides
+    of target_env based on the arch provided.
+    """
+    if python_full_version.count(".") != 2:
+        raise InvalidEnvironmentException(
+            "Full python version expected to be known "
+            "-- this is a bug. Please report it"
+        )
+    target_envs = compute_target_envs(
+        target_env or default_environment(),
+        [python_full_version],
+        arch,
+    )
+
+    # We now filter based on the markers -- if we try to filter based on something
+    # that is empty, an error (packaging.version.InvalidVersion) is raised so we
+    # can catch that.
+    filtered_packages: List["PackageSpecification"] = []
+
+    for pkg in packages:
+        if not pkg.environment_marker:
+            filtered_packages.append(pkg)
+        else:
+            marker = Marker(pkg.environment_marker)
+            if evaluate_marker(marker, target_envs):
+                filtered_packages.append(pkg)
+            else:
+                debug.conda_exec(
+                    "Skipping dependency '%s' due to marker mismatch" % pkg.filename
+                )
+
+    return filtered_packages
+
+
+def filter_user_reqs_by_markers(
+    deps: Dict[str, List[str]],
+    python_version: str,
+    arch: str,
+    target_env: Optional[Dict[str, str]] = None,
+) -> Dict[str, List[str]]:
+    """
+    Filters out user specified dependencies based on markers.
+
+    Parameters
+    ----------
+    deps : Dict[str, List[str]]
+        The dependencies to filter
+    python_version : str
+        The python version to filter against
+    arch : str
+        The architecture to filter against
+    target_env : Optional[Dict[str, str]]
+        The target environment to filter against
+
+    Returns
+    -------
+    Dict[str, List[str]]
+        The filtered dependencies
+    """
+    # This is in part to support markers for conda (and some other cases).
+    # To do so, we need to manually filter
+    # out dependencies. We may not know specifically, at this time, what version of
+    # python we are going to be using and if markers filter on python versions, that
+    # may be a problem if for some choice of python we need to keep the dependency and
+    # for others we don't. As an example, if we have:
+    #  - python_version >= 3.10
+    #  - marker: python_version <= 3.11
+    # that would not work because we don't know if we are getting 3.10, 3.11 or 3.12 at
+    # that time.
+    # We only deal with major.minor for now as a "heuristic". It is likely that
+    # it won't matter much. If this is a problem, we need to add patch version too.
+    # Consider:
+    #  - python_version >= 3.10,<3.11
+    #  - marker: python_version <= 3.10.5
+    # We would not detect this possible problem and include the dependency
+    python_req = get_requirement(python_version)
+
+    acceptable_versions = list(python_req.specifier.filter(_generate_python_versions()))
+    if not acceptable_versions:
+        # Specific version (this is best)
+        python_req_str = str(python_req.specifier)
+        if not python_req_str.startswith("=="):
+            raise InvalidEnvironmentException(
+                f"Python version {python_version} does not match any known version"
+            )
+        acceptable_versions = [python_req_str[2:]]
+
+    target_envs = compute_target_envs(
+        target_env or default_environment(),
+        acceptable_versions,
+        arch,
+    )
+    # We now filter based on the markers -- if we try to filter based on something
+    # that is empty, an error (packaging.version.InvalidVersion) is raised so we
+    # can catch that.
+    new_deps = {}  # type: Dict[str, List[str]]
+    for dep_type, dep_list in deps.items():
+        new_deps[dep_type] = []
+        if dep_type not in ("conda", "pypi"):
+            new_deps[dep_type] = dep_list
+            continue
+        for dep in dep_list:
+            if ";" not in dep:
+                # There is definitely no marker so we can keep the dependency as is.
+                # This speeds things up and also avoids issues with conda packages that
+                # do not meet the Requirement syntax (like ones starting with _)
+                new_deps[dep_type].append(dep)
+                continue
+
+            req = get_requirement(dep)
+            if evaluate_marker(req.marker, target_envs):
+                new_deps[dep_type].append(dep.split(";")[0])  # Remove the marker part
+            else:
+                debug.conda_exec(
+                    "Skipping dependency '%s' due to marker mismatch"
+                    % dep.split(";")[0]
+                )
+                continue
+    return new_deps
+
+
+def compute_file_hash(file_path: str) -> str:
+    if not file_path:
+        return ""
+
+    try:
+        with open(file_path, "rb") as f:
+            file_content_hash = hashlib.sha256(f.read()).hexdigest()
+            return file_content_hash
+    except (IOError, OSError):
+        raise IOError(f"Could not read file '{file_path}' for hashing") from None
+
+
+class WithDir:
+    # WARNING: os.chdir is not compatible with thread processing so do not use in
+    # a context where multiple threads can exist.
+    def __init__(self, new_dir: str):
+        self._current_dir = os.getcwd()
+        self._new_dir = new_dir
+
+    def __enter__(self):
+        os.chdir(self._new_dir)
+        return self._new_dir
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        os.chdir(self._current_dir)

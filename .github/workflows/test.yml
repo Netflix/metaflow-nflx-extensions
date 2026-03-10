@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+      - npow/fastdata-oss-clean
+  workflow_dispatch:
 
 jobs:
   pre-commit:
@@ -40,7 +42,7 @@ jobs:
       METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
       METAFLOW_CONDA_TEST: 1
       METAFLOW_DATASTORE_SYSROOT_LOCAL: .metaflow
-      METAFLOW_HACK_CONDA_CHANNEL_ALIAS: prefix.dev
+      METAFLOW_CONDA_HACK_CHANNEL_ALIAS: prefix.dev
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
@@ -53,15 +55,15 @@ jobs:
           condarc: |
             channels:
               - conda-forge
-            channel_alias: https://prefix.dev
           create-args: >-
             python=${{ matrix.python-version }}
             ${{ matrix.mamba-version }}
+
       - name: install nflx-extension
         shell: bash -eo pipefail -l {0}
         run: |
           which pip
-          pip install -e . --force-reinstall -U
+          pip install -e metaflow-netflixext/ --force-reinstall -U
 
       - name: install bash
         if: runner.os == 'macOS'
@@ -73,4 +75,13 @@ jobs:
           set -x
           which pytest
           mkdir .metaflow
-          pytest -n 4 tests
+          pytest -n 4 tests/netflixext tests/test_env_create.py --junit-xml=junit.xml
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Tests (${{ matrix.os }}, py${{ matrix.python-version }}, ${{ matrix.resolver }})
+          path: junit.xml
+          reporter: java-junit
+          fail-on-empty: true

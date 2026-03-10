@@ -1,0 +1,179 @@
+name: test-functions
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - npow/fastdata-oss-clean
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    env:
+      AWS_ENDPOINT_URL: http://localhost:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+      METAFLOW_DEFAULT_DATASTORE: s3
+      METAFLOW_DATASTORE_SYSROOT_S3: s3://metaflow-test
+      METAFLOW_DEFAULT_FUNCTIONS_S3_ROOT: s3://metaflow-test/functions
+      METAFLOW_FUNCTION_RUNTIME_PATH: /tmp
+      METAFLOW_CONDA_DEPENDENCY_RESOLVER: micromamba
+      METAFLOW_FEAT_ALWAYS_UPLOAD_CODE_PACKAGE: true
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Start MinIO
+        run: |
+          docker run -d \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio server /data
+          until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done
+
+      - uses: mamba-org/setup-micromamba@b09ef9b599704322748535812ca03efb2625677b # v2.0.5
+        with:
+          environment-name: nflxext-dev
+          condarc: |
+            channels:
+              - conda-forge
+            channel_alias: https://prefix.dev
+          create-args: python=${{ matrix.python-version }}
+
+      - name: Install metaflow-functions + test deps
+        shell: bash -eo pipefail -l {0}
+        run: |
+          pip install metaflow
+          pip install -e metaflow-netflixext/
+          pip install -e metaflow-functions/
+          pip install pytest pytest-xdist pytest-cov fastavro psutil pandas pyarrow pytest-mock
+
+      - name: Create minio bucket
+        shell: bash -eo pipefail -l {0}
+        run: |
+          python -c "
+          import boto3, botocore
+          s3 = boto3.client(
+              's3',
+              endpoint_url='http://localhost:9000',
+              aws_access_key_id='minioadmin',
+              aws_secret_access_key='minioadmin',
+              region_name='us-east-1',
+              config=botocore.config.Config(signature_version='s3v4'),
+          )
+          s3.create_bucket(Bucket='metaflow-test')
+          print('Bucket metaflow-test created')
+          "
+
+      - name: Run unit tests
+        shell: bash -eo pipefail -l {0}
+        run: |
+          pytest tests/functions/ -v \
+            --junit-xml=junit.xml \
+            --cov=metaflow-functions/metaflow_extensions \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --cov-branch
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Functions Unit Tests (py${{ matrix.python-version }})
+          path: junit.xml
+          reporter: java-junit
+
+      - name: Post coverage summary
+        if: always()
+        run: |
+          echo "## Coverage — Functions Unit Tests (py${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python -m coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: functions-unit-test-report-py${{ matrix.python-version }}
+          path: |
+            junit.xml
+            coverage.xml
+            htmlcov/
+            .coverage
+          include-hidden-files: true
+
+  coverage-report:
+    name: "Coverage Report"
+    needs: unit
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
+        with:
+          python-version: "3.11"
+
+      - name: Install coverage
+        run: pip install coverage[toml]
+
+      - name: Download coverage data from all jobs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "functions-unit-test-report-*"
+          path: coverage-artifacts/
+
+      - name: Combine coverage data
+        run: |
+          for dir in coverage-artifacts/*/; do
+            label=$(basename "$dir" | sed 's/^functions-unit-test-report-//')
+            src="$dir/.coverage"
+            if [ -f "$src" ]; then
+              cp "$src" ".coverage.$label"
+              echo "Copied $src → .coverage.$label"
+            fi
+          done
+          coverage combine || echo "No coverage data to combine"
+          echo "Combined data sources:"
+          coverage debug data || true
+
+      - name: Generate combined report
+        run: |
+          coverage xml -o combined-coverage.xml || echo "No coverage data to generate XML"
+          coverage html -d combined-htmlcov/ --title="metaflow-functions Coverage" || echo "No coverage data to generate HTML"
+
+      - name: Post coverage summary
+        run: |
+          echo "## Coverage — metaflow-functions (combined)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          total=$(coverage report 2>/dev/null | tail -1 | awk '{print $NF}') || true
+          echo "**Total coverage: ${total:-N/A}**" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: combined-coverage.xml
+          name: functions-combined
+
+      - name: Upload combined coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-combined
+          path: |
+            combined-htmlcov/
+            combined-coverage.xml

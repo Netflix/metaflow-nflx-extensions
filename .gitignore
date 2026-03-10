@@ -1,1 +1,5 @@
 **/__pycache__
+**/*.egg-info
+**/dist
+**/build
+metaflow-functions/metaflow_extensions/nflx/toplevel/functions_version.py
