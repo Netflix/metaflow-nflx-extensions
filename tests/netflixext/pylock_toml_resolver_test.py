@@ -626,36 +626,7 @@ def test_pylock_toml_to_resolved_env(deps, mocker):
     )
 
 
-@pytest.fixture
-def deps():
-    return {
-        "conda": [
-            "python==>=3.9,<3.10",
-            "pip",
-            "wheel",
-            "tomli",
-            "setuptools",
-            "uv==<=0.7.8",
-        ],
-        "sys": [],
-    }
-
-
-# Differences between test_translate_pylock_to_resolved_env() and
-# test_pylock_toml_to_resolved_env():
-# - test_translate_pylock_to_resolved_env() calls _translate_pylock_toml_to_resolved_env().
-# - test_translate_pylock_to_resolved_env() avoids executing code paths in PylockTomlResolver
-#   that rely on external methods such as get_python_full_version_from_builder_envs()
-#   and pypi_tags_from_arch(), making it more atomic.
-# - test_pylock_toml_to_resolved_env() calls PylockTomlResolver.resolve(), which introduces
-#   additional dependencies, including a Conda instance for the PylockTomlResolver constructor,
-#   get_python_full_version_from_builder_envs(), and pypi_tags_from_arch(). As a result, this test
-#   is more end-to-end but less isolated, and requires mocks such as
-#   mock_get_python_full_version_from_builder_envs() and arch_id().
-# - test_pylock_toml_to_resolved_env() also calls pypi_tags_from_arch(), which makes the list
-#   of supported tags substantially longer, covering more combinations of architectures and platforms.
-#   This results in a longer _all_packages list in the resolved environment.
-def test_translate_pylock_to_resolved_env(deps):
+def test_translate_pylock_to_resolved_env_positional_args(deps):
     root_obj = PylockTomlResolver._read_toml(
         str(Path(__file__).parent / "data" / "sample_pylock1.toml"),
     )
@@ -701,7 +672,7 @@ def test_translate_pylock_to_resolved_env(deps):
     )
 
 
-def test_pylock_toml_to_resolved_env(deps, mocker):
+def test_pylock_toml_to_resolved_env_with_python_version(deps, mocker):
     builder_deps = deps
     builder_sources = {"conda": "conda-forge"}
     builder_env_id = EnvID(

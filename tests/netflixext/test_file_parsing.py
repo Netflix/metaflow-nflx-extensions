@@ -99,7 +99,9 @@ def add_environment_basic_checks(
 
     expected_sources.setdefault("conda", []).append("conda-forge")
     if expected_env_type != EnvType.CONDA_ONLY:
-        expected_sources.setdefault("pypi", []).append(CONDA_DEFAULT_PYPI_SOURCE)
+        expected_sources.setdefault("pypi", []).append(
+            CONDA_DEFAULT_PYPI_SOURCE or "https://pypi.org/simple"
+        )
 
     deps = call_args[1]
     # We don't check sys -- it has variability depending on where it runs and not
