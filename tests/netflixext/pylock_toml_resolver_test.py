@@ -583,6 +583,7 @@ def test_pylock_toml_to_resolved_env(deps, mocker):
         # In a real scenario (with this PR), only extras["pylock_toml_path"] should be passed to the resolver.
         # However, for unit testing and to verify that information provided to the resolver is correctly
         # propagated to the created ResolvedEnvironment, we supply a non-empty deps and check that it appears in the output.
+        python_version_requested="3.10.1",
         deps=deps,
         sources={},
         extras={},
