@@ -39,7 +39,7 @@ from . import Resolver
 from .pip_resolver import _FAKE_WHEEL
 
 if TYPE_CHECKING:
-    from metaflow_extensions.netflix_ext.plugins.conda.env_descr import (
+    from metaflow_extensions.nflx.plugins.conda.env_descr import (
         PackageSpecification,
     )  # noqa
 

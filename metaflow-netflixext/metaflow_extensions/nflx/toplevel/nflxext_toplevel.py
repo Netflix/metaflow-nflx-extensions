@@ -1,4 +1,4 @@
-from .netflixext_version import netflixext_version
+from .nflxext_version import nflxext_version
 
 from ..plugins.conda.conda_flow_mutator import (
     ResolvedUVEnvFlowDecorator as resolved_uv,
@@ -9,8 +9,8 @@ from ..plugins.conda.conda_flow_mutator import (
 from metaflow import Runner as FlowAPI
 
 _addl_stubgen_modules = [
-    "metaflow_extensions.netflix_ext.plugins.environment_cli",
+    "metaflow_extensions.nflx.plugins.environment_cli",
 ]
 
 __mf_extensions__ = "netflix-ext"
-__version__ = netflixext_version
+__version__ = nflxext_version

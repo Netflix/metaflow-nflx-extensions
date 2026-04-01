@@ -202,7 +202,7 @@ class CondaEnvironment(MetaflowEnvironment):
                 "echo 'Bootstrapping environment ...'",
                 'python -m %s.remote_bootstrap "%s" "%s" %s %s %s'
                 % (
-                    "metaflow_extensions.netflix_ext.plugins.conda",
+                    "metaflow_extensions.nflx.plugins.conda",
                     self._flow.name,
                     step_name,
                     arg1,

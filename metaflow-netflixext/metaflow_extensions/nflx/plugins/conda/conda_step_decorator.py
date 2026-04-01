@@ -665,7 +665,7 @@ class CondaEnvInternalDecorator(StepDecorator):
         cli_args.entrypoint[0] = entrypoint
 
         if os.environ.get("METAFLOW_COVERAGE_S3_PATH"):
-            from metaflow_extensions.netflix_ext.plugins.coverage.setup_coverage import (
+            from metaflow_extensions.nflx.plugins.coverage.setup_coverage import (
                 setup_coverage,
             )
 

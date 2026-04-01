@@ -28,24 +28,24 @@ from metaflow.metaflow_config import (
     DEFAULT_METADATA,
     get_pinned_conda_libs,
 )
-from metaflow_extensions.netflix_ext.plugins.conda.conda import (
+from metaflow_extensions.nflx.plugins.conda.conda import (
     Conda,
     InvalidEnvironmentException,
 )
-from metaflow_extensions.netflix_ext.plugins.conda.env_descr import (
+from metaflow_extensions.nflx.plugins.conda.env_descr import (
     EnvID,
     EnvType,
     ResolvedEnvironment,
     env_type_for_deps,
 )
-from metaflow_extensions.netflix_ext.plugins.conda.envsresolver import EnvsResolver
+from metaflow_extensions.nflx.plugins.conda.envsresolver import EnvsResolver
 
-from metaflow_extensions.netflix_ext.plugins.conda.parsers import (
+from metaflow_extensions.nflx.plugins.conda.parsers import (
     parse_req_value,
     parse_toml_value,
     parse_yml_value,
 )
-from metaflow_extensions.netflix_ext.plugins.conda.utils import (
+from metaflow_extensions.nflx.plugins.conda.utils import (
     AliasType,
     arch_id,
     channel_or_url,

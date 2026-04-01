@@ -2,7 +2,7 @@ import configparser
 import coverage
 import re
 import os
-from metaflow_extensions.netflix_ext.plugins.coverage.setup_coverage import get_coverage_rcfile
+from metaflow_extensions.nflx.plugins.coverage.setup_coverage import get_coverage_rcfile
 
 
 def get_tmp_dirs(pattern, coverage_rcfile, data_file=".coverage"):

@@ -9,13 +9,13 @@ with open(
     os.path.join(
         os.path.dirname(__file__),
         "metaflow_extensions",
-        "netflix_ext",
+        "nflx",
         "toplevel",
-        "netflixext_version.py",
+        "nflxext_version.py",
     ),
     "wt",
 ) as f:
-    f.write('netflixext_version = "%s"\n' % version)
+    f.write('nflxext_version = "%s"\n' % version)
 
 setup(
     name="metaflow-netflixext",
@@ -51,7 +51,7 @@ setup(
         "metaflow_extensions",
     ],
     package_data={
-        "metaflow_extensions.netflix_ext.plugins.conda.resources": ["*.png", "*.svg"]
+        "metaflow_extensions.nflx.plugins.conda.resources": ["*.png", "*.svg"]
     },
     python_requires=">=3.7.2",
     install_requires=["metaflow>=2.16.0"],
