@@ -16,5 +16,6 @@ dependencies:
   - conda-package-handling
   - coverage
   - pandas
+  - uv
   - pip:
     - sh

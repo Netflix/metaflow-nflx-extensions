@@ -37,10 +37,6 @@ EXPECTED_PACKAGES = {
         "comet_ml": ">= 3",
         "itsdangerous": "",
     },
-    "conda_lock_prio.yml": {
-        "graphslice": ">= 0.0.4",
-        "pytorch": ">= 1.12.0",
-    },
     "conda-multiple-channels.yml": {
         "scikit-learn": ">= 1.0.0",
         "pandas": ">= 1.0.0",
