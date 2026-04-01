@@ -1,0 +1,4 @@
+# Conda with dependencies from multiple channels
+dependencies:
+  - conda-forge::scikit-learn>=1.0.0
+  - defaults::pandas>=1.0.0

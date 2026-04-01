@@ -1,0 +1,13 @@
+matplotlib
+plotly
+statsmodels
+pmdarima
+pydotplus
+ipython
+cerberus
+gql
+aiohttp
+reportlab
+graphing
+# This one has only a source package available
+outlier-detector==0.0.3

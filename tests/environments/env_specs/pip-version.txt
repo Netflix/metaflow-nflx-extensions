@@ -1,0 +1,2 @@
+jsonschema
+jsonschema-specifications<2024.10.1

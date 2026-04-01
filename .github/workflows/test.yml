@@ -114,7 +114,7 @@ jobs:
             .coverage
           include-hidden-files: true
 
-  coverage-report:
+  coverage-report-ext:
     name: "Coverage Report"
     needs: test
     if: always()

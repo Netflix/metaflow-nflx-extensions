@@ -1,0 +1,2 @@
+--conda-pkg ffmpeg
+ffmpeg-python

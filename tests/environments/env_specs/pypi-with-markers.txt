@@ -1,0 +1,4 @@
+# PyPI requirements with environment markers
+pandas>=1.0
+numpy>=1.20; python_version >= "3.8"
+importlib-metadata; python_version < "3.8"
