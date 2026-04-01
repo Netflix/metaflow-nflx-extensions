@@ -1,4 +1,3 @@
-import os
 from .jupyter_instructions_markdown import _jupyter_instructions_markdown
 from .jupyter_title_markdown import _jupyter_title_markdown
 

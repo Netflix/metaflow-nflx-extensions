@@ -381,14 +381,14 @@ class DebugScriptGenerator(object):
 
         # Add cells to the notebook
         for cell in notebook_cells:
-            nb_cell = {
+            nb_cell: Dict[str, Any] = {
                 "cell_type": cell.get("format"),
                 "execution_count": None,
                 "metadata": {},
                 "outputs": [],
                 "source": [cell.get("content")],
             }
-            nb["cells"].append(nb_cell)
+            nb["cells"].append(nb_cell)  # type: ignore[attr-defined]
 
         return nb
 
@@ -412,7 +412,7 @@ class DebugScriptGenerator(object):
             step_started = False
             function_definition = ""
             is_step_end = self.debug_stub_generator.task.parent.id == "end"
-            start_indentation = None
+            start_indentation: Optional[int] = None
             for i, line in enumerate(f):
                 if i == self.debug_stub_generator.task_line_num:
                     step_started = True
@@ -427,7 +427,11 @@ class DebugScriptGenerator(object):
                     # Special case for the end step, as there is no next step and we need to
                     # return the function definition at the end of the file or when the function ends
                     if is_step_end:
-                        if line.strip() and current_indentation < start_indentation:
+                        if (
+                            line.strip()
+                            and start_indentation is not None
+                            and current_indentation < start_indentation
+                        ):
                             return function_definition, i - 1
 
                     function_definition += line

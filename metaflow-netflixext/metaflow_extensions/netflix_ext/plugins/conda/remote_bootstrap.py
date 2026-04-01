@@ -95,6 +95,10 @@ def setup_conda_manifest():
             "Cannot find the conda manifest file %s in the package"
             % CONDA_MAGIC_FILE_V2
         )
+    debug.conda_exec(
+        "Moving conda manifest file to %s"
+        % os.path.join(manifest_folder, CONDA_MAGIC_FILE_V2)
+    )
     shutil.move(
         path_to_manifest,
         os.path.join(manifest_folder, CONDA_MAGIC_FILE_V2),

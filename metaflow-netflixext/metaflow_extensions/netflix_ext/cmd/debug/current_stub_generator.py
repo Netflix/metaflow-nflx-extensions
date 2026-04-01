@@ -1,8 +1,5 @@
-import os
-
-from typing import Dict, List, Any, Optional
-from metaflow import Task, namespace, Step, Run
-from metaflow.plugins.env_escape import generate_trampolines
+from typing import Any, Optional
+from metaflow import Task, Run
 
 
 class CurrentStubGenerator(object):

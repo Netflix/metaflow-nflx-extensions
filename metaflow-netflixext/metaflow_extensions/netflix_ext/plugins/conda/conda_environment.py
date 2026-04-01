@@ -212,9 +212,12 @@ class CondaEnvironment(MetaflowEnvironment):
                 "export _METAFLOW_CONDA_ENV=$(cat _env_id)",
                 "export PYTHONPATH=$(pwd)/_escape_trampolines:$(printenv PYTHONPATH)",
                 # NOTE: Assumes here that remote nodes are Linux
+                # We could remove the if but keeping things clean and not transforming
+                # an unset value into a set value.
                 "if [[ -n $(printenv LD_LIBRARY_PATH) ]]; then "
                 "export MF_ORIG_LD_LIBRARY_PATH=$(printenv LD_LIBRARY_PATH); "
-                "export LD_LIBRARY_PATH=$(cat _env_path)/lib:$(printenv LD_LIBRARY_PATH); fi",
+                "export LD_LIBRARY_PATH=$(cat _env_path)/lib:$(printenv LD_LIBRARY_PATH); else "
+                "export LD_LIBRARY_PATH=$(cat _env_path)/lib; fi",
                 "echo 'Environment bootstrapped.'",
                 "export CONDA_END=$(date +%s)",
             ]

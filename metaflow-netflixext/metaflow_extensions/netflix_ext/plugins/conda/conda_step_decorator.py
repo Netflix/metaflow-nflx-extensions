@@ -658,6 +658,10 @@ class CondaEnvInternalDecorator(StepDecorator):
                         old_ld_path,
                     ]
                 )
+            else:
+                cli_args.env["LD_LIBRARY_PATH"] = os.path.join(
+                    os.path.dirname(os.path.dirname(entrypoint)), "lib"
+                )
         cli_args.entrypoint[0] = entrypoint
 
         if os.environ.get("METAFLOW_COVERAGE_S3_PATH"):

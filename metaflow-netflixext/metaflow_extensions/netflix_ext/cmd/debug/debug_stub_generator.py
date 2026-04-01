@@ -1,8 +1,5 @@
-import os
-
-from typing import Dict, List, Any
-from metaflow import Task, namespace, Step
-from metaflow.plugins.env_escape import generate_trampolines
+from typing import Dict, List, Any, Optional
+from metaflow import Task, Step
 
 
 class DebugStubGenerator(object):
@@ -199,7 +196,7 @@ class DebugStubGenerator(object):
             to_return.extend([task for task in step if _filter(task)])
         return to_return
 
-    def get_task_namespace(self) -> str:
+    def get_task_namespace(self) -> Optional[str]:
         """
         Returns the namespace of the task.
 

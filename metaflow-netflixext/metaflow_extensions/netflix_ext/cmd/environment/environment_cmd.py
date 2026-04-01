@@ -9,7 +9,7 @@ import time
 from functools import wraps
 from itertools import chain
 from shutil import copy
-from typing import Any, Dict, List, Optional, Set, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 from metaflow._vendor import click
 
 from metaflow.cli import echo_dev_null, echo_always
@@ -50,6 +50,7 @@ from metaflow_extensions.netflix_ext.plugins.conda.utils import (
     arch_id,
     channel_or_url,
     conda_deps_to_pypi_deps,
+    dict_to_strlist,
     get_sys_packages,
     resolve_env_alias,
     plural_marker,
@@ -58,7 +59,6 @@ from metaflow_extensions.netflix_ext.plugins.conda.utils import (
 )
 
 from metaflow._vendor.packaging.specifiers import SpecifierSet
-from metaflow._vendor.packaging.utils import canonicalize_version
 
 from .utils import download_mf_version
 
@@ -200,29 +200,29 @@ def environment(
         echo = echo_always
 
     obj = CommandObj()
-    obj.quiet = quiet
-    obj.echo = echo
-    obj.echo_always = echo_always
-    obj.datastore_type = datastore
-    obj.quiet_file_output = quiet_file_output
+    obj.quiet = quiet  # type: ignore[attr-defined]
+    obj.echo = echo  # type: ignore[attr-defined]
+    obj.echo_always = echo_always  # type: ignore[attr-defined]
+    obj.datastore_type = datastore  # type: ignore[attr-defined]
+    obj.quiet_file_output = quiet_file_output  # type: ignore[attr-defined]
 
     if conda_root:
-        if obj.datastore_type == "s3":
+        if obj.datastore_type == "s3":  # type: ignore[attr-defined]
             metaflow_config.CONDA_S3ROOT = conda_root
-        elif obj.datastore_type == "azure":
-            metaflow_config.CONDA_AZUREROOT = conda_root
-        elif obj.datastore_type == "gs":
-            metaflow_config.CONDA_GSROOT = conda_root
+        elif obj.datastore_type == "azure":  # type: ignore[attr-defined]
+            metaflow_config.CONDA_PACKAGE_AZUREROOT = conda_root
+        elif obj.datastore_type == "gs":  # type: ignore[attr-defined]
+            metaflow_config.CONDA_PACKAGE_GSROOT = conda_root
         else:
             # Should never happen due to click validation
-            raise RuntimeError("Unknown datastore type: %s" % obj.datastore_type)
-    obj.conda_root = getattr(
-        metaflow_config, "CONDA_%sROOT" % obj.datastore_type.upper()
+            raise RuntimeError("Unknown datastore type: %s" % obj.datastore_type)  # type: ignore[attr-defined]
+    obj.conda_root = getattr(  # type: ignore[attr-defined]
+        metaflow_config, "CONDA_%sROOT" % obj.datastore_type.upper()  # type: ignore[attr-defined]
     )
 
-    obj.metadata_type = metadata
+    obj.metadata_type = metadata  # type: ignore[attr-defined]
 
-    obj.conda = Conda(obj.echo, obj.datastore_type)
+    obj.conda = Conda(obj.echo, obj.datastore_type)  # type: ignore[attr-defined]
     ctx.obj = obj
 
 
@@ -354,66 +354,63 @@ def create(
         # We need to install ipykernel into the resolved environment
         obj.echo("    Resolving an environment compatible with Jupyter ...", nl=False)
 
-        # We first check if `ipykernel` already exists in the environment. If it does, we
-        # can skip the whole resolution process.
-        if not any("ipykernel" == p.package_name for p in env.packages):
-            # We use envsresolver to properly deal with builder environments and what not
-            resolver = EnvsResolver(obj.conda)
-            # We force the env_type to be the same as the base env since we don't modify
-            # that by adding these deps.
+        # We use envsresolver to properly deal with builder environments and what not
+        resolver = EnvsResolver(obj.conda)
+        # We force the env_type to be the same as the base env since we don't modify
+        # that by adding these deps.
 
-            # We also force the use of use_latest because we are not really doing
-            # anything that would require a re-resolve (ie: the user doesn't really
-            # care about the version of ipykernel most likely).
-            resolver.add_environment(
-                arch_id(),
-                user_deps={
-                    "pypi" if env.env_type == EnvType.PYPI_ONLY else "conda": [
-                        "ipykernel"
-                    ]
-                },
-                user_sources={},
-                extras={},
-                base_env=env,
-                local_only=local_only,
-                use_latest=":any:",
-            )
-            resolver.resolve_environments(obj.echo)
-            update_envs = []  # type: List[ResolvedEnvironment]
-            if obj.datastore_type != "local" or CONDA_TEST:
-                # We may need to update caches
-                # Note that it is possible that something we needed to resolve, we don't need
-                # to cache (if we resolved to something already cached).
-                formats = set()  # type: Set[str]
-                for _, resolved_env, f, _ in resolver.need_caching_environments(
-                    include_builder_envs=True
-                ):
-                    update_envs.append(resolved_env)
-                    formats.update(f)
-
-                cast(Conda, obj.conda).cache_environments(
-                    update_envs, {"conda": list(formats)}
-                )
-            else:
-                update_envs = [
-                    resolved_env
-                    for _, resolved_env, _ in resolver.new_environments(
-                        include_builder_envs=True
-                    )
-                ]
-            cast(Conda, obj.conda).add_environments(update_envs)
-
-            # Update the default environment
-            for _, resolved_env, _ in resolver.resolved_environments(
+        # We also force the use of use_latest because we are not really doing
+        # anything that would require a re-resolve (ie: the user doesn't really
+        # care about the version of ipykernel most likely).
+        resolver.add_environment(
+            arch_id(),
+            user_deps={
+                "pypi" if env.env_type == EnvType.PYPI_ONLY else "conda": ["ipykernel"]
+            },
+            user_sources={},
+            extras={},
+            base_env=env,
+            local_only=local_only,
+            use_latest=":any:",
+        )
+        # Note this is a no-op if the base environment is already compatible with the
+        # addition of ipykernel.
+        resolver.resolve_environments(obj.echo)
+        update_envs = []  # type: List[ResolvedEnvironment]
+        if obj.datastore_type != "local" or CONDA_TEST:
+            # We may need to update caches
+            # Note that it is possible that something we needed to resolve, we don't need
+            # to cache (if we resolved to something already cached).
+            formats = set()  # type: Set[str]
+            for _, resolved_env, f, _ in resolver.need_caching_environments(
                 include_builder_envs=True
             ):
-                cast(Conda, obj.conda).set_default_environment(resolved_env.env_id)
+                update_envs.append(resolved_env)
+                formats.update(f)
 
-            cast(Conda, obj.conda).write_out_environments()
+            cast(Conda, obj.conda).cache_environments(
+                update_envs, {"conda": list(formats)}
+            )
+        else:
+            update_envs = [
+                resolved_env
+                for _, resolved_env, _ in resolver.new_environments(
+                    include_builder_envs=True
+                )
+            ]
+        cast(Conda, obj.conda).add_environments(update_envs)
 
-            # We are going to be creating this new environment going forward (not the
-            # initial env we got)
-            _, env, _ = next(resolver.resolved_environments())
+        # Update the default environment
+        for _, resolved_env, _ in resolver.resolved_environments(
+            include_builder_envs=True
+        ):
+            cast(Conda, obj.conda).set_default_environment(resolved_env.env_id)
+
+        cast(Conda, obj.conda).write_out_environments()
+
+        # We are going to be creating this new environment going forward (not the
+        # initial env we got)
+        _, env, _ = next(resolver.resolved_environments())
 
         delta_time = int(time.time() - start)
         obj.echo(" done in %d second%s." % (delta_time, plural_marker(delta_time)))
@@ -614,6 +611,12 @@ def create(
     default=True,
     help="Set the resolved environment as the default environment for this set of requirements",
 )
+@click.option(
+    "--skip-metaflow-deps/--no-skip-metaflow-deps",
+    show_default=True,
+    default=False,
+    help="Skip including the needed Metaflow dependencies in the resolved environment",
+)
 @env_spec_options
 @click.pass_obj
 def resolve(
@@ -623,6 +626,7 @@ def resolve(
     local_only: bool,
     dry_run: bool,
     set_default: bool,
+    skip_metaflow_deps: bool,
     arch: Optional[Tuple[str]],
     python: Optional[str],
     req_file: Optional[str],
@@ -806,7 +810,10 @@ def resolve(
     if from_str:
         deps = tstr_to_dict(cast(ResolvedEnvironment, base_env).deps)
     else:
-        if len(new_conda_deps) == 0 and (
+        if skip_metaflow_deps:
+            pypi_deps = {}
+            conda_deps = {}
+        elif len(new_conda_deps) == 0 and (
             not base_env or base_env.env_type == EnvType.PYPI_ONLY
         ):
             # Assume a pypi environment for base deps
@@ -825,18 +832,9 @@ def resolve(
         conda_deps = merge_dep_dicts(conda_deps, new_conda_deps)
 
         deps = {
-            "conda": [
-                "%s==%s" % (name, ver) if ver else name
-                for name, ver in conda_deps.items()
-            ],
-            "pypi": [
-                "%s==%s" % (name, canonicalize_version(ver)) if ver else name
-                for name, ver in pypi_deps.items()
-            ],
-            "npconda": [
-                "%s==%s" % (name, ver) if ver else name
-                for name, ver in new_np_conda_deps.items()
-            ],
+            "conda": dict_to_strlist(conda_deps),
+            "pypi": dict_to_strlist(pypi_deps),
+            "npconda": dict_to_strlist(new_np_conda_deps),
         }
 
     env_type = env_type_for_deps(deps)
@@ -849,18 +847,15 @@ def resolve(
 
     # Merge all sys deps so we have a union so we can get the same req ID for all
     # co-resolved envs
-    sys_pkgs = {}
+    sys_pkgs: Dict[str, str] = {}
     for cur_arch in archs:
         sys_pkgs.update(
             get_sys_packages(cast(Conda, obj.conda).virtual_packages, cur_arch, False)
         )
-    sys_deps = [
-        "%s==%s" % (name, ver) if ver else name for name, ver in new_sys_deps.items()
-    ]
-    for p, v in sys_pkgs.items():
-        if p not in new_sys_deps:
-            sys_deps.append("%s==%s" % (p, v) if v else p)
-
+    sys_deps = dict_to_strlist(new_sys_deps)
+    sys_deps.extend(
+        dict_to_strlist({k: v for k, v in sys_pkgs.items() if k not in new_sys_deps})
+    )
     deps["sys"] = sys_deps
 
     for cur_arch in archs:
@@ -926,25 +921,15 @@ def resolve(
         )
 
     has_something = False
-    for _ in resolver.non_resolved_environments():
+    for _ in chain(
+        resolver.non_resolved_environments(), resolver.need_caching_environments()
+    ):
         has_something = True
         break
-    if not has_something:
-        resolved_env_id = next(resolver.all_environments())[1].env_id
-        # Nothing to do
-        if alias and not dry_run:
-            # We don't care about arch for aliasing so pick one
-            obj.echo(
-                "No environments to resolve, aliasing only. Use --force to force "
-                "re-resolution"
-            )
-            obj.conda.alias_environment(resolved_env_id, list(alias))
-            cast(Conda, obj.conda).write_out_environments()
-        else:
-            raise CommandException(
-                "No environments to resolve, use --force to force re-resolution"
-            )
-        return
+    if not has_something and alias is None:
+        raise CommandException(
+            "No environments to resolve, use --force to force re-resolution"
+        )
 
     resolver.resolve_environments(obj.echo)
 

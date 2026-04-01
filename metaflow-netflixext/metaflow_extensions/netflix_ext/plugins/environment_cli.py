@@ -3,7 +3,17 @@ import json
 import os
 import sys
 
-from typing import Any, Dict, List, Set, TYPE_CHECKING, Tuple, Union, Optional, cast
+from typing import (
+    Any,
+    Dict,
+    List,
+    Set,
+    TYPE_CHECKING,
+    Tuple,
+    Union,
+    Optional,
+    cast,
+)  # noqa
 
 from metaflow._vendor import click
 
@@ -11,7 +21,6 @@ from metaflow.exception import CommandException
 from metaflow.metaflow_config import CONDA_PREFERRED_FORMAT, CONDA_TEST
 
 from .conda.conda import Conda
-from .conda.conda_common_decorator import StepRequirement
 from .conda.conda_environment import CondaEnvironment
 from .conda.envsresolver import EnvsResolver
 from .conda.env_descr import (
@@ -20,7 +29,11 @@ from .conda.env_descr import (
     ResolvedEnvironment,
     MetaflowResolvedEnvironment,
 )
-from .conda.utils import dict_to_tstr, plural_marker, resolve_env_alias
+from .conda.utils import (
+    plural_marker,
+    resolve_env_alias,
+    split_into_dict,
+)
 
 if TYPE_CHECKING:
     import metaflow
@@ -139,6 +152,13 @@ class StepEnvInfo:
 
 
 class RunnerCLI(object):
+    """
+    Environment command for the FlowAPI
+
+    This method lets you access environment related commands like `show` and
+    `resolve` and therefore allow you to programmatically resolve environments.
+    """
+
     name = "environment"
 
     def __init__(self, runner: "metaflow.Runner"):
@@ -366,12 +386,12 @@ def resolve(
     force: bool = False,
     dry_run: bool = False,
     output: Optional[str] = None,
-):
+) -> None:
 
     conda = Conda(obj.echo, obj.flow_datastore.TYPE)
     resolver = EnvsResolver(conda)
 
-    def _write_out_environments():
+    def _write_out_environments() -> None:
         # If we have an output file, write out to it
         if output:
             resolved_per_step = {}  # type: Dict[str, Dict[str, ResolvedEnvironment]]
@@ -379,7 +399,7 @@ def resolve(
             for env_id, env, steps in resolver.resolved_environments():
                 for step in steps:
                     resolved_per_step.setdefault(step, {})[env_id.arch] = env
-            out_json = {}
+            out_json: Dict[str, Any] = {}
             with open(output, "w", encoding="utf-8") as f:
                 for step, envs in resolved_per_step.items():
                     for env_arch, env in envs.items():
@@ -418,6 +438,7 @@ def resolve(
                     req.packages_as_str,
                     req.sources,
                     {},
+                    {},
                     step.name,
                     base_env,
                     base_from_full_id=base_from_full_id,
@@ -432,32 +453,19 @@ def resolve(
         aliases = None
     for env_id, steps in resolver.non_resolved_environments():
         per_req_id.setdefault(env_id.req_id, set()).update(steps)
-    if len(per_req_id) == 0:
-        # Nothing to do but we may still need to alias
-        if aliases is not None and not dry_run:
-            all_resolved_envs = list(resolver.resolved_environments())
-            if len(all_resolved_envs) == 0:
-                obj.echo("No environments to resolve")
-            elif len(all_resolved_envs) == 1:
-                obj.echo("Environment already resolved -- aliasing only")
-                conda.alias_environment(all_resolved_envs[0][0], aliases)
-                conda.write_out_environments()
-            else:
-                raise CommandException(
-                    "Cannot specify aliases if more than one environments to alias "
-                    "-- found %d environments: one for each of steps %s"
-                    % (
-                        len(all_resolved_envs),
-                        ", and ".join(", ".join(v[2]) for v in all_resolved_envs),
-                    )
-                )
-        else:
-            obj.echo("No environments to resolve, use --force to force re-resolution")
+    # We may need to cache environments if they are resolved but slightly changed
+    # (when we can reuse the base environment for example)
+    for env_id, _, _, steps in resolver.need_caching_environments():
+        per_req_id.setdefault(env_id.req_id, set()).update(steps)
+
+    if len(per_req_id) == 0 and aliases is None:
+        obj.echo("No environments to resolve/cache, use --force to force re-resolution")
         _write_out_environments()
         return
+
     if aliases is not None and len(per_req_id) > 1:
         raise CommandException(
-            "Cannot specify aliases if more than one environment to resolve "
+            "Cannot specify aliases if more than one environment to resolve/cache "
             "-- found %d environments: one for each of steps %s"
             % (
                 len(per_req_id),
@@ -483,7 +491,8 @@ def resolve(
     _write_out_environments()
 
     if obj.is_quiet:
-        for req_id, (env, steps) in resolved_per_req_id.items():
+        for req_id, (env, steps_set) in resolved_per_req_id.items():
+            steps = list(steps_set)
             obj.echo_always(",".join(steps))
             obj.echo_always(
                 env.quiet_print(
@@ -491,7 +500,8 @@ def resolve(
                 )
             )
     else:
-        for req_id, (env, steps) in resolved_per_req_id.items():
+        for req_id, (env, steps_set) in resolved_per_req_id.items():
+            steps = list(steps_set)
             obj.echo(
                 "### Environment for step%s *%s* ###"
                 % (plural_marker(len(steps)), ", ".join(steps))
@@ -571,12 +581,30 @@ def show(obj: Any, local_only: bool, output: Optional[str], steps_to_show: Tuple
             ) = CondaEnvironment.extract_merged_reqs_for_step(
                 conda, obj.flow, obj.flow_datastore.TYPE, step, local_only=local_only
             )
+            (
+                _,
+                env_id,
+                user_sources,
+                user_deps,
+                _,
+                _,
+                compatible_base_env,
+                resolved_env,
+            ) = EnvsResolver.find_resolved_environment(
+                conda,
+                step_arch,
+                req.packages_as_str,
+                req.sources,
+                req.extras,
+                base_env,
+                local_only=local_only,
+            )
             from_name = req.from_env_name
             result[step.name] = {
                 "req": req,
-                "req_hash": ResolvedEnvironment.get_req_id(
-                    req.packages_as_str, req.sources
-                ),
+                "req_hash": env_id.req_id,
+                "user_deps": user_deps,
+                "user_sources": user_sources,
             }
             if from_name:
                 result[step.name]["from_env_name"] = from_name
@@ -594,37 +622,39 @@ def show(obj: Any, local_only: bool, output: Optional[str], steps_to_show: Tuple
             else:
                 result[step.name]["state"] = []
 
-            step_env_id = CondaEnvironment.get_env_id(conda, step.name)
-            resolved_env = None
+            if req.is_fetch_at_exec:
+                result[step.name]["state"].append(
+                    "fetch-at-exec of %s" % req.from_env_name
+                )
+
             if req.is_disabled:
                 result[step.name]["state"].append("disabled")
-            elif isinstance(step_env_id, EnvID):
-                resolved_env = conda.environment(step_env_id, local_only)
-                if resolved_env:
-                    result[step.name]["env"] = resolved_env
-                    result[step.name]["state"].append("resolved")
+                continue
+            if resolved_env:
+                result[step.name]["env"] = resolved_env
+                result[step.name]["state"].append("resolved")
+                if compatible_base_env:
+                    result[step.name]["state"].append(
+                        "compatible with base environment"
+                    )
 
-                    if (
-                        obj.flow_datastore.TYPE != "local" or CONDA_TEST
-                    ) and resolved_env.is_cached(
-                        {
-                            "conda": (
-                                [CONDA_PREFERRED_FORMAT]
-                                if CONDA_PREFERRED_FORMAT
-                                and CONDA_PREFERRED_FORMAT != "none"
-                                else ["_any"]
-                            )
-                        }
-                    ):
-                        result[step.name]["state"].append("cached")
-                    if conda.created_environment(resolved_env.env_id):
-                        result[step.name]["state"].append("locally present")
-                else:
-                    result[step.name]["state"].append("unresolved")
-            elif isinstance(step_env_id, str):
-                result[step.name]["state"].append("fetch-at-exec of %s" % step_env_id)
+                if (
+                    obj.flow_datastore.TYPE != "local" or CONDA_TEST
+                ) and resolved_env.is_cached(
+                    {
+                        "conda": (
+                            [CONDA_PREFERRED_FORMAT]
+                            if CONDA_PREFERRED_FORMAT
+                            and CONDA_PREFERRED_FORMAT != "none"
+                            else ["_any"]
+                        )
+                    }
+                ):
+                    result[step.name]["state"].append("cached")
+                if conda.created_environment(resolved_env.env_id):
+                    result[step.name]["state"].append("locally present")
             else:
-                result[step.name]["state"].append("not resolved")
+                result[step.name]["state"].append("unresolved")
 
     _compute_local_instances(conda)
 
@@ -647,12 +677,11 @@ def show(obj: Any, local_only: bool, output: Optional[str], steps_to_show: Tuple
                     out_json[step_name] = StepEnvInfo(
                         is_disabled=False,
                         requested_hash=req_hash,
-                        requested_packages=cast(
-                            StepRequirement, step_info["req"]
-                        ).packages,
-                        requested_sources=cast(
-                            StepRequirement, step_info["req"]
-                        ).sources,
+                        requested_packages={
+                            k: split_into_dict(v)
+                            for k, v in step_info["user_deps"].items()
+                        },
+                        requested_sources=step_info["user_sources"],
                         from_env_name=step_info.get("from_env_name"),
                         is_fetch_at_exec=is_fetch_at_exec,
                         env=(
@@ -664,8 +693,19 @@ def show(obj: Any, local_only: bool, output: Optional[str], steps_to_show: Tuple
 
             json.dump(out_json, f, indent=2)
     if not obj.is_quiet:
-        for name, info in result.items():
-            obj.echo("\nStep *%s*" % name)
+        first_step = True
+        max_name_length = max(len(name) for name in obj.graph.sorted_nodes) + len(
+            "Step "
+        )
+        divider_line = "\n" + "=" * max_name_length
+        for name in obj.graph.sorted_nodes:
+            if name not in result:
+                continue
+            if not first_step:
+                obj.echo(divider_line)
+            first_step = False
+            info = result[name]
+            obj.echo("Step *%s*" % name)
             if "error" in info:
                 obj.echo("\t%s" % info["error"], err=True)
             else:
@@ -677,15 +717,14 @@ def show(obj: Any, local_only: bool, output: Optional[str], steps_to_show: Tuple
                         _all_local_instances.get(env_id.req_id, {}).get(env_id.full_id)
                     )
                 )
-            else:
+            elif "disabled" not in info["state"]:
                 obj.echo(
                     "*User-requested packages* %s"
                     % ", ".join(
                         [
-                            str(d).replace("*", "x")
-                            for d in dict_to_tstr(
-                                cast(StepRequirement, info["req"]).packages_as_str
-                            )
+                            f"{dep_type}::{d.replace('*', 'x')}"
+                            for dep_type, dep_list in info["user_deps"].items()
+                            for d in dep_list
                         ]
                     )
                 )
@@ -693,10 +732,8 @@ def show(obj: Any, local_only: bool, output: Optional[str], steps_to_show: Tuple
                     "*User sources* %s"
                     % ", ".join(
                         [
-                            str(s)
-                            for s in dict_to_tstr(
-                                cast(StepRequirement, info["req"]).sources
-                            )
+                            f"{source_type}::{s}"
+                            for source_type, s in info["user_sources"].items()
                         ]
                     )
                 )

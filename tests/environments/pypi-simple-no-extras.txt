@@ -1,4 +1,0 @@
-# Simple PyPI requirements without any extras
-pandas>=1.0
-numpy>=1.20
-requests

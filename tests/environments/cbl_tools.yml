@@ -1,6 +1,0 @@
-dependencies:
-  - pandas = >=0.24.0
-  - platformdirs
-  - pip:
-    - requests = >=2.21.0
-    - polars <= 0.19

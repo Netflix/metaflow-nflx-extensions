@@ -118,7 +118,7 @@ from metaflow.metaflow_config import (
 from metaflow.metaflow_environment import InvalidEnvironmentException
 
 from metaflow.system import _system_logger, _system_monitor
-from metaflow.util import get_username
+from metaflow.util import get_username, tar_safe_extract
 
 from metaflow._vendor.packaging.version import parse as parse_version
 
@@ -1157,10 +1157,21 @@ class Conda(object):
         # Here we take the resolved env (which has more information but maybe not
         # all if we request a different package format for example) if it exists or
         # the one we just resolved
-        resolved_envs = [
-            cached_env if cached_env else env
-            for cached_env, env in zip(cached_resolved_envs, resolved_envs)
-        ]
+        # There seem to be some cases where the resolved env has packages that are all cached
+        # but doesn't actually exist as a cached environment. In those cases, it won't
+        # upload the cached environment itself which is a problem. We catch this issue
+        # by making sure that if the environment is not cached, we upload it.
+        resolved_envs_merged: List[ResolvedEnvironment] = []
+        force_upload_ids: List[EnvID] = []
+        for cached_env, env in zip(cached_resolved_envs, resolved_envs):
+            if cached_env:
+                resolved_envs_merged.append(cached_env)
+            else:
+                resolved_envs_merged.append(env)
+                force_upload_ids.append(env.env_id)
+        force_upload_ids_set = set(force_upload_ids)
+        resolved_envs = resolved_envs_merged
+
         all_sources = []  # type: List[str]
 
         for resolved_env in resolved_envs:
@@ -1358,7 +1369,10 @@ class Conda(object):
             # information
             upload_files = []
             for resolved_env in resolved_envs:
-                if not resolved_env.dirty:
+                if (
+                    not resolved_env.dirty
+                    and resolved_env.env_id not in force_upload_ids_set
+                ):
                     continue
                 env_id = resolved_env.env_id
                 local_filepath = os.path.join(download_dir, "%s_%s_%s.env" % env_id)
@@ -2035,7 +2049,7 @@ class Conda(object):
                     shutil.move(tmpfile, tmp.name)
             try:
                 tar = tarfile.open(tmp.name)
-                tar.extractall(path)
+                tar_safe_extract(tar, path)
                 tar.close()
             except Exception as e:
                 raise CondaException("Could not extract environment") from e

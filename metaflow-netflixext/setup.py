@@ -1,7 +1,21 @@
+import os
 from setuptools import setup, find_namespace_packages
 
 with open("VERSION", mode="r") as f:
     version = f.read().strip()
+
+# We write a version file directly in the code so it can be read in the python code
+with open(
+    os.path.join(
+        os.path.dirname(__file__),
+        "metaflow_extensions",
+        "netflix_ext",
+        "toplevel",
+        "netflixext_version.py",
+    ),
+    "wt",
+) as f:
+    f.write('netflixext_version = "%s"\n' % version)
 
 setup(
     name="metaflow-netflixext",

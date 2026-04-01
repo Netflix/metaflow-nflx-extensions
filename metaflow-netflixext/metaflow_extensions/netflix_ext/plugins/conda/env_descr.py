@@ -9,6 +9,7 @@ from enum import Enum
 from hashlib import md5, sha1, sha256
 from itertools import chain
 
+from metaflow.debug import debug
 from metaflow._vendor.packaging.utils import (
     parse_sdist_filename,
     parse_wheel_filename,
@@ -397,6 +398,7 @@ class PackageSpecification:
             url_format=self._url_format,
             hashes=self._hashes,
             cache_info=self._cache_info,
+            environment_marker=self._environment_marker,
         )
         r._local_dir = self._local_dir
         r._local_path = self._local_path
@@ -614,7 +616,11 @@ class PackageSpecification:
         if formats:
             return all(
                 [
-                    self._url_format if f == "_any" else f in self._cache_info
+                    (
+                        self._url_format in self._cache_info
+                        if f == "_any"
+                        else f in self._cache_info
+                    )
                     for f in formats
                 ]
             )
@@ -1032,7 +1038,7 @@ class ResolvedEnvironment:
         self._dirty = True
         self._all_packages.append(pkg)
         if self._env_id.full_id not in ("_default", "_unresolved"):
-            self._env_id._replace(full_id="_unresolved")
+            self._env_id = self._env_id._replace(full_id="_unresolved")
 
     def set_coresolved(self, archs: List[str], full_id: str) -> None:
         self._dirty = True
@@ -1574,6 +1580,7 @@ class CachedEnvironmentInfo:
                 if (
                     env
                     and isinstance(env, ResolvedEnvironment)
+                    and full_id_unique_keys
                     and env._full_id_unique_keys != full_id_unique_keys
                 ):
                     env = None
@@ -1625,7 +1632,7 @@ class CachedEnvironmentInfo:
     ) -> Optional[ResolvedEnvironment]:
         env_id = self.env_id_for_alias(alias_type, resolved_alias, arch)
         if env_id:
-            return self.env_for(resolved_alias[0], resolved_alias[1], arch)
+            return self.env_for(env_id.req_id, env_id.full_id, arch)
         return None
 
     def aliases_for_env(self, env_id: EnvID) -> Tuple[List[str], List[str]]:
@@ -1759,6 +1766,7 @@ class CachedEnvironmentInfo:
 
 def read_conda_manifest(ds_root: str) -> CachedEnvironmentInfo:
     path = get_conda_manifest_path(ds_root)
+    debug.conda_exec("Reading conda manifest from %s" % path)
     if os.path.exists(path) and os.path.getsize(path) > 0:
         with os.fdopen(os.open(path, os.O_RDONLY), "r", encoding="utf-8") as f:
             try:
@@ -1767,6 +1775,7 @@ def read_conda_manifest(ds_root: str) -> CachedEnvironmentInfo:
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
     else:
+        debug.conda_exec("No conda manifest found at %s" % path)
         return CachedEnvironmentInfo()
 
 
@@ -1795,7 +1804,7 @@ def write_to_conda_manifest(ds_root: str, info: CachedEnvironmentInfo):
                     # This can happen if multiple runs are running on the same machine
                     # from the same directory.
                     current_content = CachedEnvironmentInfo()
-                    if os.path.getsize(path) > 0:
+                    if os.fstat(f.fileno()).st_size > 0:
                         # Not a new file
                         f.seek(0)
                         current_content = CachedEnvironmentInfo.from_dict(json.load(f))
