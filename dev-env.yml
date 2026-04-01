@@ -5,6 +5,7 @@ channels:
   - nodefaults
 dependencies:
   - pytest
+  - pytest-cov
   - pytest-xdist
   - pytest-timeout
   - pytest-mock
@@ -13,5 +14,7 @@ dependencies:
   - conda
   - conda-lock
   - conda-package-handling
+  - coverage
+  - pandas
   - pip:
     - sh

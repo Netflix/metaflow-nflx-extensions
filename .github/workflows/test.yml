@@ -66,7 +66,6 @@ jobs:
         shell: bash -eo pipefail -l {0}
         run: |
           which pip
-          pip intall conda-lock pytest pytest-xdist pytest-cov pandas pytest-mock
           pip install -e metaflow-netflixext/
 
       - name: install bash
