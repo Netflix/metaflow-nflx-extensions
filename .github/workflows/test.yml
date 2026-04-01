@@ -117,7 +117,7 @@ jobs:
 
   coverage-report:
     name: "Coverage Report"
-    needs: unit
+    needs: test
     if: always()
     runs-on: ubuntu-latest
 
