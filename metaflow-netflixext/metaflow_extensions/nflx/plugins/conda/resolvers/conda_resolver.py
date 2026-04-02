@@ -18,7 +18,6 @@ from ..env_descr import (
 )
 from ..utils import (
     CondaException,
-    channel_or_url,
     clean_up_double_equal,
     filter_user_reqs_by_markers,
     parse_explicit_url_conda,
@@ -74,9 +73,7 @@ class CondaResolver(Resolver):
                 "--dry-run",
             ]
             have_channels = False
-            for c in set(sources.get("conda", [])).difference(
-                map(channel_or_url, self._conda.default_conda_channels)
-            ):
+            for c in sources.get("conda", []):
                 have_channels = True
                 args.extend(["-c", c])
 
