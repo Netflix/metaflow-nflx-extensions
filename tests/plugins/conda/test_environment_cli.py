@@ -1,9 +1,19 @@
 import os
+import platform
+import sys
 import pytest
 import shutil
 import tempfile
 
 from metaflow import FlowAPI
+
+# Python 3.8 on macOS arm64 (osx-arm64) cannot be resolved by newer versions of
+# libmamba/micromamba — the solver rejects 'python==3.8' as "unsupported request".
+# These tests infer the Python version from the runner, so skip them in this config.
+_SKIP_MACOS_PY38 = pytest.mark.skipif(
+    platform.system() == "Darwin" and sys.version_info[:2] <= (3, 8),
+    reason="Python 3.8 osx-arm64 not resolvable with newer micromamba/libmamba",
+)
 
 
 @pytest.fixture
@@ -67,6 +77,7 @@ def test_show_envs_timeout(no_cached_env):
         api.environment().show("c", timeout=0.1)
 
 
+@_SKIP_MACOS_PY38
 def test_resolve_one_env(no_cached_env):
     api = FlowAPI(no_cached_env[1], environment="conda")
     res = api.environment().resolve("start", timeout=2400)
@@ -76,6 +87,7 @@ def test_resolve_one_env(no_cached_env):
     assert start_res[0]  # There is a resolved environment
 
 
+@_SKIP_MACOS_PY38
 def test_resolve_all_envs(no_cached_env):
     api = FlowAPI(no_cached_env[1], environment="conda")
     res = api.environment().resolve(timeout=2400)
