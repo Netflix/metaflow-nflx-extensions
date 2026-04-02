@@ -54,6 +54,9 @@ from metaflow.metaflow_config import CONDA_SYS_DEPENDENCIES  # type: ignore
 from metaflow.metaflow_config import CONDA_SYS_MARKERS  # type: ignore
 from metaflow.metaflow_environment import InvalidEnvironmentException
 from metaflow.util import walk_without_cycles
+from metaflow_extensions.nflx.config.mfextinit_netflixext import (  # type: ignore
+    CONDA_HACK_CHANNEL_ALIAS,
+)
 
 from requests import PreparedRequest, Response, Session
 from requests.auth import AuthBase, HTTPBasicAuth
@@ -734,6 +737,8 @@ def normalize_to_underscore(name: str) -> str:
 
 
 def channel_from_url(url: str) -> Optional[str]:
+    if CONDA_HACK_CHANNEL_ALIAS:
+        url = url.replace(CONDA_HACK_CHANNEL_ALIAS, "conda.anaconda.org")
     up = urlparse(url)
     if up.hostname == "conda.anaconda.org":
         return up.path.split("/", 2)[1]
@@ -741,6 +746,8 @@ def channel_from_url(url: str) -> Optional[str]:
 
 
 def channel_or_url(url: str) -> str:
+    if CONDA_HACK_CHANNEL_ALIAS:
+        url = url.replace(CONDA_HACK_CHANNEL_ALIAS, "conda.anaconda.org")
     up = urlparse(url)
     if up.hostname == "conda.anaconda.org":
         return up.path.split("/", 2)[1]

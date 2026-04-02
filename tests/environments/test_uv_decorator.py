@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 import pytest
 from contextlib import nullcontext as does_not_raise
@@ -53,6 +54,10 @@ def test_parse_requirements_in():
     assert "python" in user_deps
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 9),
+    reason="Fixture requirements.txt was compiled for Python 3.10 (numpy>=1.26 requires Python >=3.9)",
+)
 def test_handle_req_txt_scenario():
     requirements_txt_path = os.path.join(
         this_dir, "uv_decorator_envs/req_txt_simple_public/requirements.txt"

@@ -407,7 +407,8 @@ def test_resolve_environment_from_file(test_workspace, env_file, python_version)
 @pytest.mark.parametrize(
     "env_file",
     [
-        "channel-conda.yml",
+        # channel-conda.yml uses a third-party conda channel (comet_ml) that is only
+        # available on conda.anaconda.org, not on the prefix.dev channel alias used in CI
         "conda_lock_prio.yml",
         "conda-multiple-channels.yml",
         "conda-with-channel-spec.yml",
