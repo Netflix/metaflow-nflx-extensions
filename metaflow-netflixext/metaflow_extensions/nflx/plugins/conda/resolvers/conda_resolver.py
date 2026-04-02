@@ -18,6 +18,7 @@ from ..env_descr import (
 )
 from ..utils import (
     CondaException,
+    channel_or_url,
     clean_up_double_equal,
     filter_user_reqs_by_markers,
     parse_explicit_url_conda,
@@ -73,9 +74,17 @@ class CondaResolver(Resolver):
                 "--dry-run",
             ]
             have_channels = False
+            default_channels = set(
+                map(channel_or_url, self._conda.default_conda_channels)
+            )
             for c in sources.get("conda", []):
-                have_channels = True
-                args.extend(["-c", c])
+                # Only add explicit -c flag for channels not already in defaults.
+                # Passing default channels explicitly (e.g. -c conda-forge when
+                # conda-forge is already in condarc) can confuse newer micromamba
+                # versions, causing "unsupported request" solver errors.
+                if channel_or_url(c) not in default_channels:
+                    have_channels = True
+                    args.extend(["-c", c])
 
             if not have_channels:
                 have_channels = any(["::" in d for d in real_deps])
