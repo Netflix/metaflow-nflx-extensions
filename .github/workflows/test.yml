@@ -152,8 +152,8 @@ jobs:
 
       - name: Generate combined report
         run: |
-          coverage xml -i -o combined-coverage.xml
-          coverage html -i -d combined-htmlcov/ --title="metaflow-extensions Coverage"
+          coverage xml -o combined-coverage.xml
+          coverage html -d combined-htmlcov/ --title="metaflow-extensions Coverage"
 
       - name: Post coverage summary
         run: |
