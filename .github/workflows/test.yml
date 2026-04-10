@@ -80,7 +80,7 @@ jobs:
           mkdir .metaflow
           pytest tests/environments tests/plugins/conda -v \
             --junit-xml=junit.xml \
-            --cov=metaflow_functions \
+            --cov=metaflow_extensions \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
             --cov-report=html:htmlcov \
