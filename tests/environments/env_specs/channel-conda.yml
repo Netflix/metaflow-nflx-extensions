@@ -1,0 +1,4 @@
+dependencies:
+  - comet_ml::comet_ml = 3.32.0
+  - pip:
+    - itsdangerous

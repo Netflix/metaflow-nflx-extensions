@@ -5,12 +5,17 @@ channels:
   - nodefaults
 dependencies:
   - pytest
+  - pytest-cov
   - pytest-xdist
   - pytest-timeout
+  - pytest-mock
   - wheel
   - mamba
   - conda
   - conda-lock
   - conda-package-handling
+  - coverage
+  - pandas
+  - uv
   - pip:
     - sh

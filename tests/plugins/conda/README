@@ -1,0 +1,6 @@
+To test environment resolution we have tests in two places:
+  - test/environments: this contains expensive tests that do full environment
+      resolutions.
+  - test/plugins/new_conda: this contains more unit level tests. These tests are
+      faster and do not perform any resolution. Tests here may refer to
+      environment descriptions in test/environments

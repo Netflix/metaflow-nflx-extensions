@@ -1,2 +1,0 @@
-# GIT repo
-requests-html @ git+https://github.com/psf/requests-html@v0.10.0

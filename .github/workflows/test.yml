@@ -40,7 +40,7 @@ jobs:
       METAFLOW_CONDA_DEPENDENCY_RESOLVER: ${{ matrix.resolver }}
       METAFLOW_CONDA_TEST: 1
       METAFLOW_DATASTORE_SYSROOT_LOCAL: .metaflow
-      METAFLOW_HACK_CONDA_CHANNEL_ALIAS: prefix.dev
+      METAFLOW_CONDA_HACK_CHANNEL_ALIAS: prefix.dev
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
@@ -53,15 +53,20 @@ jobs:
           condarc: |
             channels:
               - conda-forge
-            channel_alias: https://prefix.dev
           create-args: >-
             python=${{ matrix.python-version }}
             ${{ matrix.mamba-version }}
+
+      - name: Configure channel alias for tests
+        shell: bash -eo pipefail -l {0}
+        run: |
+          echo "channel_alias: https://prefix.dev" >> ~/.condarc
+
       - name: install nflx-extension
         shell: bash -eo pipefail -l {0}
         run: |
           which pip
-          pip install -e . --force-reinstall -U
+          pip install -e metaflow-netflixext/
 
       - name: install bash
         if: runner.os == 'macOS'
@@ -73,4 +78,103 @@ jobs:
           set -x
           which pytest
           mkdir .metaflow
-          pytest -n 4 tests
+          pytest tests/environments tests/plugins/conda -v \
+            --junit-xml=junit.xml \
+            --cov=metaflow_extensions \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --cov-branch
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Extensions Unit Tests (py${{ matrix.python-version }} resolver ${{ matrix.resolver }} micromamba ${{ matrix.micromamba-version }} mamba ${{ matrix.mamba-version }} on ${{ matrix.os }})
+          path: junit.xml
+          reporter: java-junit
+
+      - name: Post coverage summary
+        if: always()
+        run: |
+          echo "## Coverage — Extensions Unit Tests (py${{ matrix.python-version }} resolver ${{ matrix.resolver }} micromamba ${{ matrix.micromamba-version }} mamba ${{ matrix.mamba-version }} on ${{ matrix.os }})" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python -m coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: extensions-unit-test-report-py${{ matrix.python-version }}-re${{ matrix.resolver }}-umamba${{ matrix.micromamba-version }}-mamba${{ matrix.mamba-version }}-os${{ matrix.os }}
+          path: |
+            junit.xml
+            coverage.xml
+            htmlcov/
+            .coverage
+          include-hidden-files: true
+
+  coverage-report-ext:
+    name: "Coverage Report"
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
+        with:
+          python-version: "3.11"
+
+      - name: Install coverage
+        run: pip install coverage[toml]
+
+      - name: Download coverage data from all jobs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "extensions-unit-test-report-*"
+          path: coverage-artifacts/
+
+      - name: Combine coverage data
+        run: |
+          for dir in coverage-artifacts/*/; do
+            label=$(basename "$dir" | sed 's/^extensions-unit-test-report-//')
+            src="$dir/.coverage"
+            if [ -f "$src" ]; then
+              cp "$src" ".coverage.$label"
+              echo "Copied $src → .coverage.$label"
+            fi
+          done
+          coverage combine
+          echo "Combined data sources:"
+          coverage debug data
+
+      - name: Generate combined report
+        run: |
+          coverage xml -o combined-coverage.xml
+          coverage html -d combined-htmlcov/ --title="metaflow-extensions Coverage"
+
+      - name: Post coverage summary
+        run: |
+          echo "## Coverage — metaflow-extensions (combined)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          coverage report --sort=miss >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          total=$(coverage report | tail -1 | awk '{print $NF}')
+          echo "**Total coverage: $total**" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: combined-coverage.xml
+          name: extensions-combined
+
+      - name: Upload combined coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-combined
+          path: |
+            combined-htmlcov/
+            combined-coverage.xml

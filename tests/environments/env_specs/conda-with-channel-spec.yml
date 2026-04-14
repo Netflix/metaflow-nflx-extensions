@@ -1,0 +1,7 @@
+# Test conda with explicit channel specifications (triggers :: in dep handling)
+channels:
+  - conda-forge
+dependencies:
+  - conda-forge::numpy
+  - conda-forge::pandas
+  - python=3.10

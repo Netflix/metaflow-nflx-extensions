@@ -1,0 +1,4 @@
+# PyPI with custom index URL
+--extra-index-url https://pypi.org/simple
+pandas>=1.0.0
+requests>=2.20.0

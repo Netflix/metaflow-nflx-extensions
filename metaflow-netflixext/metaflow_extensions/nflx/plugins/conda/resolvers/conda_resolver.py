@@ -1,0 +1,191 @@
+# pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
+import json
+import os
+import sys
+import tempfile
+
+from itertools import chain
+from typing import Dict, List, Optional, Tuple, cast
+
+# Consider re-adding if resolving fails weirdly.
+# from metaflow.exception import retry_exp_backoff
+
+from ..env_descr import (
+    CondaPackageSpecification,
+    PackageSpecification,  # noqa
+    EnvType,
+    ResolvedEnvironment,
+)
+from ..utils import (
+    CondaException,
+    channel_or_url,
+    clean_up_double_equal,
+    filter_user_reqs_by_markers,
+    parse_explicit_url_conda,
+    split_into_dict,
+)
+from . import Resolver
+
+
+class CondaResolver(Resolver):
+    TYPES = ["conda", "mamba", "micromamba"]
+
+    # @retry_exp_backoff(
+    #    (CondaException, OSError),
+    #    "Failed to resolve conda environment",
+    #    tries=3,
+    #    max_delay_per_retry=5,
+    # )
+    def resolve(
+        self,
+        env_type: EnvType,
+        python_version_requested: str,
+        deps: Dict[str, List[str]],
+        sources: Dict[str, List[str]],
+        extras: Dict[str, List[str]],
+        architecture: str,
+        builder_envs: Optional[List[ResolvedEnvironment]] = None,
+        base_env: Optional[ResolvedEnvironment] = None,
+        file_paths: Dict[str, List[str]] = {},
+        # full_id_unique_keys is not used in CondaResolver.
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
+    ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
+        if base_env:
+            local_packages = [
+                p for p in base_env.packages if not p.is_downloadable_url()
+            ]
+            if local_packages:
+                raise CondaException(
+                    "Local packages are not allowed in Conda: %s"
+                    % ", ".join([p.package_name for p in local_packages])
+                )
+        deps = filter_user_reqs_by_markers(deps, python_version_requested, architecture)
+        sys_overrides = split_into_dict(deps.get("sys", []))
+        real_deps = clean_up_double_equal(
+            chain(deps.get("conda", []), deps.get("npconda", []))
+        )
+        packages = []  # type: List[PackageSpecification]
+        with tempfile.TemporaryDirectory() as mamba_dir:
+            args = [
+                "create",
+                "--yes",
+                "--prefix",
+                os.path.join(mamba_dir, "prefix"),
+                "--dry-run",
+            ]
+            have_channels = False
+            default_channels = set(
+                map(channel_or_url, self._conda.default_conda_channels)
+            )
+            for c in sources.get("conda", []):
+                # Only add explicit -c flag for channels not already in defaults.
+                # Passing default channels explicitly (e.g. -c conda-forge when
+                # conda-forge is already in condarc) can confuse newer micromamba
+                # versions, causing "unsupported request" solver errors.
+                if channel_or_url(c) not in default_channels:
+                    have_channels = True
+                    args.extend(["-c", c])
+
+            if not have_channels:
+                have_channels = any(["::" in d for d in real_deps])
+            args.extend(real_deps)
+
+            addl_env = {
+                "CONDA_SUBDIR": architecture,
+                "CONDA_PKGS_DIRS": os.path.join(mamba_dir, "pkgs"),
+                "CONDA_ENVS_DIRS": os.path.join(mamba_dir, "envs"),
+                "CONDA_ROOT": self._conda.root_prefix,
+                "CONDA_UNSATISFIABLE_HINTS_CHECK_DEPTH": "0",
+            }
+            addl_env.update(
+                {
+                    "CONDA_OVERRIDE_%s"
+                    % pkg_name[2:].upper(): pkg_version.split("=")[0]
+                    for pkg_name, pkg_version in sys_overrides.items()
+                }
+            )
+            if have_channels:
+                # Add flexible-channel-priority because otherwise if a version
+                # is present in the other channels but not in the higher
+                # priority channels, it is not found.
+                addl_env["CONDA_CHANNEL_PRIORITY"] = "flexible"
+            conda_result = json.loads(self._conda.call_conda(args, addl_env=addl_env))
+
+        # This returns a JSON blob with:
+        #  - actions:
+        #    - FETCH: List of objects to fetch -- this is where we get hash and URL
+        #    - LINK: Packages to actually install (in that order)
+        # On micromamba (or Mamba 2+), we can just use the LINK blob since it has all
+        # information we need
+        if not conda_result["success"]:
+            print(
+                "Pretty-printed Conda create result:\n%s" % conda_result,
+                file=sys.stderr,
+            )
+            raise CondaException(
+                "Could not resolve environment -- see above pretty-printed error."
+            )
+
+        if self._conda.is_non_conda_exec:
+            for lnk in conda_result["actions"]["LINK"]:
+                parse_result = parse_explicit_url_conda(
+                    "%s#%s" % (lnk["url"], lnk["md5"])
+                )
+                packages.append(
+                    CondaPackageSpecification(
+                        filename=parse_result.filename,
+                        url=parse_result.url,
+                        url_format=parse_result.url_format,
+                        hashes={parse_result.url_format: cast(str, parse_result.hash)},
+                    )
+                )
+        else:
+
+            def _pkg_key(
+                name: str, platform: str, build_string: str, build_number: str
+            ) -> str:
+                return "%s_%s_%s_%s" % (name, platform, build_string, build_number)
+
+            fetched_packages = {}  # type: Dict[str, Tuple[str, str]]
+            for pkg in conda_result["actions"]["FETCH"]:
+                fetched_packages[
+                    _pkg_key(
+                        pkg["name"], pkg["subdir"], pkg["build"], pkg["build_number"]
+                    )
+                ] = (pkg["url"], pkg["md5"])
+            for lnk in conda_result["actions"]["LINK"]:
+                k = _pkg_key(
+                    lnk["name"],
+                    lnk["platform"],
+                    lnk["build_string"],
+                    lnk["build_number"],
+                )
+                url, md5_hash = fetched_packages[k]
+                if not url.startswith(lnk["base_url"]):
+                    raise CondaException(
+                        "Unexpected record for %s: %s" % (k, str(conda_result))
+                    )
+                parse_result = parse_explicit_url_conda("%s#%s" % (url, md5_hash))
+                packages.append(
+                    CondaPackageSpecification(
+                        filename=parse_result.filename,
+                        url=parse_result.url,
+                        url_format=parse_result.url_format,
+                        hashes={parse_result.url_format: cast(str, parse_result.hash)},
+                    )
+                )
+        return (
+            ResolvedEnvironment(
+                deps,
+                sources,
+                extras,
+                architecture,
+                all_packages=packages,
+                env_type=env_type,
+                # full_id_unique_keys is a uv specific cache invalidation mechanism,
+                # and PipResolver shouldn't need it. We still pass this along as {}
+                # to make code consistent.
+                full_id_unique_keys=full_id_unique_keys,
+            ),
+            builder_envs,
+        )

@@ -1,0 +1,101 @@
+import os
+import platform
+import sys
+import pytest
+import shutil
+import tempfile
+
+from metaflow import FlowAPI
+
+# Python 3.8 on macOS arm64 (osx-arm64) cannot be resolved by newer versions of
+# libmamba/micromamba — the solver rejects 'python==3.8' as "unsupported request".
+# These tests infer the Python version from the runner, so skip them in this config.
+_SKIP_MACOS_PY38 = pytest.mark.skipif(
+    platform.system() == "Darwin" and sys.version_info[:2] <= (3, 8),
+    reason="Python 3.8 osx-arm64 not resolvable with newer micromamba/libmamba",
+)
+
+
+@pytest.fixture
+def no_cached_env():
+    flow_file_name = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "sample_flow.py"
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        current_dir = os.getcwd()
+        os.chdir(tmpdir)
+        os.mkdir(".metaflow")
+        yield tmpdir, flow_file_name
+        os.chdir(current_dir)
+
+
+def test_show_envs(no_cached_env):
+    api = FlowAPI(no_cached_env[1], environment="conda")
+    res = api.environment().show()
+    # Should show for all steps
+    for step_name in ("start", "a", "b", "c", "end"):
+        assert step_name in res
+    # We should not have any other info in res
+    assert len(res) == 5
+
+    # Verify fields
+    c_res = res["c"]
+    assert c_res.is_disabled == False
+    assert c_res.error is None
+    assert c_res.is_fetch_at_exec == False
+    assert c_res.env is None
+
+    # All other environments should not be resolved
+    for step_name in ("start", "a"):
+        rr = res[step_name]
+        assert rr.is_disabled == False
+        assert rr.error is None
+        assert rr.from_env_name is None
+        assert rr.is_fetch_at_exec == False
+        assert rr.env is None
+    for step_name in ("b", "end"):
+        rr = res[step_name]
+        assert rr.is_disabled == True
+        assert rr.error is None
+        assert rr.requested_packages == {}
+        assert rr.from_env_name is None
+        assert rr.is_fetch_at_exec == False
+        assert rr.env is None
+
+
+def test_show_envs_single(no_cached_env):
+    api = FlowAPI(no_cached_env[1], environment="conda")
+    res = api.environment().show("c", timeout=600)
+    assert len(res) == 1
+    assert "c" in res
+    # No need to check for info on "c" since this is done in the other test
+
+
+def test_show_envs_timeout(no_cached_env):
+    api = FlowAPI(no_cached_env[1], environment="conda")
+    with pytest.raises(RuntimeError):
+        api.environment().show("c", timeout=0.1)
+
+
+@_SKIP_MACOS_PY38
+def test_resolve_one_env(no_cached_env):
+    api = FlowAPI(no_cached_env[1], environment="conda")
+    res = api.environment().resolve("start", timeout=2400)
+    assert len(res) == 1
+    start_res = next(iter(res["start"].values()))
+    assert start_res[1]  # Just resolved
+    assert start_res[0]  # There is a resolved environment
+
+
+@_SKIP_MACOS_PY38
+def test_resolve_all_envs(no_cached_env):
+    api = FlowAPI(no_cached_env[1], environment="conda")
+    res = api.environment().resolve(timeout=2400)
+    # Should show for all steps that are not disabled
+    for step_name in ("start", "a", "c"):
+        assert step_name in res
+    assert len(res) == 3
+    for step_name in ("start", "a", "c"):
+        step_res = next(iter(res[step_name].values()))
+        assert step_res[1] == True  # Not previously resolved
+        assert step_res[0]  # There is a resolved environment

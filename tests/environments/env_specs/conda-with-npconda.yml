@@ -1,0 +1,7 @@
+# Test with non-python conda dependencies (npconda)
+dependencies:
+  - python=3.10
+  - pandas
+  - ffmpeg  # Non-python conda package
+  - pip:
+    - requests

@@ -1,0 +1,9 @@
+[paths]
+source =
+    .
+    /home/runner/work/metaflow-nflx-extensions/metaflow-nflx-extensions/
+    /Users/runner/work/metaflow-nflx-extensions/metaflow-nflx-extensions/
+
+[report]
+omit =
+    */toplevel/nflxext_version.py
