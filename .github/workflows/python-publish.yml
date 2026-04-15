@@ -18,6 +18,7 @@ jobs:
     environment: pypi
     permissions:
       id-token: write
+      attestations: write
 
     steps:
     - uses: actions/checkout@v4
@@ -42,13 +43,15 @@ jobs:
         done
 
     - name: Publish metaflow-netflixext
-      uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # 1.13.0
+      uses: pypa/gh-action-pypi-publish@release/v1
       with:
         packages-dir: metaflow-netflixext/dist/
         skip-existing: true
+        verbose: true
 
     - name: Publish metaflow-functions
-      uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # 1.13.0
+      uses: pypa/gh-action-pypi-publish@release/v1
       with:
         packages-dir: metaflow-functions/dist/
         skip-existing: true
+        verbose: true
