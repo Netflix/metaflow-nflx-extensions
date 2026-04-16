@@ -3,3 +3,4 @@
 **/dist
 **/build
 metaflow-functions/metaflow_extensions/nflx/toplevel/functions_version.py
+metaflow-netflixext/metaflow_extensions/nflx/toplevel/nflxext_version.py

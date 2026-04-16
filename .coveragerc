@@ -7,3 +7,4 @@ source =
 [report]
 omit =
     */toplevel/nflxext_version.py
+    */toplevel/functions_version.py
