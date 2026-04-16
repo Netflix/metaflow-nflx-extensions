@@ -15,6 +15,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: pypi
     permissions:
       id-token: write
       attestations: write
