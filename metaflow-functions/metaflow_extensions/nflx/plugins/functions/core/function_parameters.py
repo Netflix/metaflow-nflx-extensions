@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import types
 from collections.abc import Iterator, Mapping
-from typing import TYPE_CHECKING, Any, Dict, Optional, TypeVar, Generic
+from typing import TYPE_CHECKING, Any, Dict, Optional, Type, TypeVar, Generic
 
 if TYPE_CHECKING:
     from metaflow import Task
@@ -92,6 +92,7 @@ class LazyArtifactMapping(Mapping[str, Any]):
 
 
 T_FP_co = TypeVar("T_FP_co", covariant=True)
+T_FP = TypeVar("T_FP", bound="FunctionParameters")
 
 
 class FunctionParameters(Generic[T_FP_co]):
@@ -414,3 +415,28 @@ class FunctionParameters(Generic[T_FP_co]):
     def __len__(self) -> int:
         """Return number of artifacts."""
         return len(self._lazy_mapping)
+
+    def as_typed(self, typed_class: Type[T_FP]) -> T_FP:
+        """
+        Create a typed view of this FunctionParameters instance.
+
+        The new instance is pre-populated from this instance's already-fetched
+        cache, so previously prefetched artifacts are not re-fetched. Any
+        artifacts not yet in the cache are loaded lazily from the same
+        function spec.
+
+        Parameters
+        ----------
+        typed_class : Type[FunctionParameters]
+            A FunctionParameters subclass to instantiate.
+
+        Returns
+        -------
+        FunctionParameters
+            An instance of typed_class pre-populated from this instance's cache.
+        """
+        cached = dict(self._lazy_mapping._cache)
+        return typed_class(
+            function_spec=self._lazy_mapping._function_spec,
+            **cached,
+        )

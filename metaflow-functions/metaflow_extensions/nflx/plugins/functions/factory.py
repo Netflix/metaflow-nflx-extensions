@@ -324,10 +324,15 @@ def create_function_type(
             type_hints = get_type_hints(self.func)
             parameter_schema = None
 
+            from metaflow_extensions.nflx.plugins.functions.core.function_parameters import (
+                FunctionParameters,
+            )
+
             params_type = type_hints.get("params")
             if params_type and is_optional_function_parameters_type(params_type):
                 # Extract the actual concrete type, unwrapping Optional if needed
                 concrete_type = params_type
+                is_optional_wrapper = False
                 if get_origin(params_type) is Union:
                     # Handle Optional[T] which is Union[T, None]
                     args = get_args(params_type)
@@ -335,8 +340,14 @@ def create_function_type(
                         if arg is not type(None):
                             concrete_type = arg
                             break
+                    is_optional_wrapper = True
 
-                parameter_schema = {"type": get_type_string(concrete_type)}
+                # Optional[FunctionParameters] (base class) signals no artifacts needed.
+                # A typed subclass or bare FunctionParameters still carries artifacts.
+                if is_optional_wrapper and concrete_type is FunctionParameters:
+                    parameter_schema = None
+                else:
+                    parameter_schema = {"type": get_type_string(concrete_type)}
 
             return GeneratedDecoratorSpec(
                 name=self.func.__name__,
@@ -400,6 +411,36 @@ def create_function_type(
         def _build_function_spec(self, **kwargs):
             """Build function spec and populate serializer configs."""
             func_spec = super()._build_function_spec(**kwargs)
+
+            # Filter artifacts based on what the function's FunctionParameters declares:
+            #   - parameter_schema is None (Optional[FunctionParameters]): no artifacts needed
+            #   - parameter_schema has a typed subclass: only declared artifacts
+            #   - parameter_schema has base FunctionParameters: keep all artifacts
+            if func_spec.function is not None:
+                if func_spec.function.parameter_schema is None:
+                    # Optional[FunctionParameters] — function needs no task artifacts
+                    func_spec.artifacts = {}
+                elif "type" in func_spec.function.parameter_schema:
+                    from metaflow_extensions.nflx.plugins.functions.utils import (
+                        load_type_from_string,
+                    )
+                    from metaflow_extensions.nflx.plugins.functions.core.function_parameters import (
+                        FunctionParameters,
+                    )
+
+                    params_class = load_type_from_string(
+                        func_spec.function.parameter_schema["type"]
+                    )
+                    if (
+                        params_class is not None
+                        and issubclass(params_class, FunctionParameters)
+                        and params_class._expected_artifacts is not None
+                    ):
+                        func_spec.artifacts = {
+                            k: v
+                            for k, v in (func_spec.artifacts or {}).items()
+                            if k in params_class._expected_artifacts
+                        }
 
             # Add serializer configs for this function's types
             from metaflow_extensions.nflx.plugins.functions.serializers.registry import (
