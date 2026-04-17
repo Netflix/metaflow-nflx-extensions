@@ -33,6 +33,10 @@ from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionTypeException,
     MetaflowFunctionUserException,
 )
+from metaflow_extensions.nflx.plugins.functions.core.function_parameters import (
+    FunctionParameters,
+)
+from metaflow_extensions.nflx.plugins.functions.utils import load_type_from_string
 
 if TYPE_CHECKING:
     from metaflow_extensions.nflx.plugins.functions.memory.memory import (
@@ -68,6 +72,9 @@ class FunctionPipeline(MetaflowFunction):
 
         self.functions = functions
         self._name = name
+        self._scoped_params: Optional[List["FunctionParameters"]] = (
+            None  # populated on first execute call
+        )
 
         # Pipeline creates its own backend instance
         from metaflow_extensions.nflx.plugins.functions.backends import get_backend
@@ -172,8 +179,14 @@ class FunctionPipeline(MetaflowFunction):
                 self.functions[0].spec.task_code_path if self.functions else None
             ),  # Use first function's task code path
             artifacts=(
-                self.functions[0].spec.artifacts if self.functions else None
-            ),  # Use first function's artifacts metadata
+                {
+                    k: v
+                    for func in self.functions
+                    if func.spec.artifacts
+                    for k, v in func.spec.artifacts.items()
+                }
+                or None
+            ),  # Union of all constituent functions' artifacts metadata
             user=_lazy_get_username(),
             timestamp_utc=int(time.time()),
             system_metadata={
@@ -239,6 +252,44 @@ class FunctionPipeline(MetaflowFunction):
         """
         return self.backend.apply(self, data, **kwargs)
 
+    def _make_func_params(
+        self, pipeline_params: "FunctionParameters", func: MetaflowFunction
+    ) -> "FunctionParameters":
+        """
+        Create a typed FunctionParameters instance for a constituent function.
+
+        Uses the function's parameter_schema to instantiate the correct typed class,
+        pre-populated from the pipeline-level cache (already prefetched). This means
+        isinstance checks work correctly and no re-fetching is needed.
+
+        Returns pipeline params as-is for Optional[FunctionParameters] and base
+        FunctionParameters functions, and a typed instance for typed subclasses.
+        """
+        param_schema = None
+        if (
+            func.spec
+            and func.spec.function
+            and hasattr(func.spec.function, "parameter_schema")
+        ):
+            param_schema = func.spec.function.parameter_schema
+
+        # Optional[FunctionParameters] — artifacts not required but pass through anyway;
+        # the function can check and use them if present
+        if param_schema is None:
+            return pipeline_params
+
+        # Base FunctionParameters — pass pipeline params as-is, all artifacts accessible
+        if not param_schema or "type" not in param_schema:
+            return pipeline_params
+
+        # Typed subclass — create a typed view so isinstance works and
+        # no re-fetching occurs for already-prefetched artifacts
+        typed_class = load_type_from_string(param_schema["type"])
+        if typed_class is None or not issubclass(typed_class, FunctionParameters):
+            return pipeline_params
+
+        return pipeline_params.as_typed(typed_class)
+
     def execute(self, data: Any, params: "FunctionParameters", **kwargs: Any) -> Any:  # type: ignore
         """
         Execute the pipeline by chaining all functions in the same process.
@@ -257,10 +308,16 @@ class FunctionPipeline(MetaflowFunction):
         Any
             The result of the pipeline execution
         """
-        # Chain all functions together in the same process
+        # Per-function params are computed once on the first call and reused —
+        # params is the same object for every request in a runtime lifetime.
+        if self._scoped_params is None:
+            self._scoped_params = [
+                self._make_func_params(params, func) for func in self.functions
+            ]
+
         result = data
-        for func in self.functions:
-            result = func.execute(result, params, **kwargs)
+        for func, func_params in zip(self.functions, self._scoped_params):
+            result = func.execute(result, func_params, **kwargs)
         return result
 
     def is_compatible_with(self, other: MetaflowFunction) -> bool:
@@ -522,6 +579,7 @@ class FunctionPipeline(MetaflowFunction):
         if spec.uuid is None:
             raise MetaflowFunctionException("Pipeline spec is missing a uuid.")
         pipeline._name = spec.name
+        pipeline._scoped_params = None  # type: ignore[assignment]  # populated on first execute call
 
         # Pipeline creates its own backend instance
         from metaflow_extensions.nflx.plugins.functions.backends import get_backend
