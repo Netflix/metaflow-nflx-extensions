@@ -40,7 +40,24 @@ DEBUG_OPTIONS = ["functions"]
 
 ###
 # Override pinned conda libraries to include libraries necessary for functions.
-# This list should match metaflow-functions/setup.py install_requires
+# This list should match metaflow-functions/setup.py install_requires.
+#
+# IMPORTANT: every entry must carry a real (non-empty) version specifier.
+# Metaflow's extension merge logic joins duplicate keys with a comma:
+#     d1[k] = v if k not in d1 else ",".join([d1[k], v])
+# If this extension and another both pin the same package (e.g. cffi is also
+# pinned by nflx-fastdata) and one side uses an empty string, the join produces
+# `,>=X` (leading comma) or `>=X,` (trailing comma), which downstream becomes
+# a malformed conda spec like `cffi==,>=1.13.0,!=1.15.0` and fails resolution.
+# Use a real lower bound instead — duplicate constraints in the joined spec
+# are harmless (conda/mamba dedupes them at solve time).
 ###
 def get_pinned_conda_libs(python_version, datastore_type):
-    return {"psutil": ">=5.8.0", "cffi": "", "fastavro": "", "ray-default": ""}
+    return {
+        "psutil": ">=5.8.0",
+        # cffi 1.15.0 has an ABI regression (libffi mismatch on some platforms),
+        # so exclude it explicitly — matches nflx-fastdata's pin.
+        "cffi": ">=1.13.0,!=1.15.0",
+        "fastavro": ">=1.6.0",
+        "ray-default": ">=2.0",
+    }
