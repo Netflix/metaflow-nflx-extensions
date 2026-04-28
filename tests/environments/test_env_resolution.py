@@ -87,7 +87,6 @@ EXPECTED_PACKAGES = {
     },
     "simple-conda.yml": {
         "pandas": ">= 1",
-        "pip": "",
         "requests": ">= 2.21",
     },
     "pip-no-hash.txt": {"typing-extensions": "4.15.0"},
