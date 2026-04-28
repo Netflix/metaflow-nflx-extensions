@@ -28,17 +28,15 @@ class _LazyDebug:
         return resolved
 
     def __getattr__(self, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
         resolved = self._resolve()
-        # Use object.__getattribute__ to avoid recursion if metaflow's debug
-        # doesn't have the attribute registered yet (e.g. during init)
         try:
             val = resolved.__dict__.get(name)
             if val is not None:
                 return val
         except AttributeError:
             pass
-        # Attribute not registered yet - return noop to avoid recursion
-        # in metaflow's Debug.__getattr__ which calls getattr(self, name)
         return _noop
 
 
