@@ -590,6 +590,9 @@ def create_function_type(
         GeneratedDecorator.__module__ = caller_module_name
         GeneratedDecoratorSpec.__module__ = caller_module_name
 
+        setattr(caller_module, config.name, decorator_function)
+        decorator_function.__module__ = caller_module_name
+
     decorator_function.__name__ = config.name
 
     return GeneratedFunction, decorator_function
