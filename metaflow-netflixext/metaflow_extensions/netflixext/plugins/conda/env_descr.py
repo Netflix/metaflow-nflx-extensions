@@ -180,11 +180,16 @@ class CachePackage:
         cls._ensure_class_per_type()
         url = urlparse(base_url)
 
-        if is_real_url or url.netloc.split("/")[0] == FAKEURL_PATHCOMPONENT:
+        # Use hostname (not netloc) to avoid leaking embedded credentials
+        safe_netloc = url.hostname or ""
+        if url.port:
+            safe_netloc += ":%d" % url.port
+
+        if is_real_url or safe_netloc.split("/")[0] == FAKEURL_PATHCOMPONENT:
             return os.path.join(
                 cast(str, CONDA_PACKAGES_DIRNAME),
                 cls.TYPE,
-                url.netloc,
+                safe_netloc,
                 url.path.lstrip("/"),
             )
         else:
@@ -192,7 +197,7 @@ class CachePackage:
                 cast(str, CONDA_PACKAGES_DIRNAME),
                 cls.TYPE,
                 FAKEURL_PATHCOMPONENT,
-                url.netloc,
+                safe_netloc,
                 url.path.lstrip("/"),
             )
 
@@ -365,11 +370,15 @@ class PackageSpecification:
             # If it is not a real URL, add the FAKEURL_PATHCOMPONENT but only if not
             # already there.
             url_parse_result = urlparse(self._url)
-            if not url_parse_result.netloc.startswith(FAKEURL_PATHCOMPONENT):
+            # Use hostname (not netloc) to avoid leaking embedded credentials
+            safe_netloc = url_parse_result.hostname or ""
+            if url_parse_result.port:
+                safe_netloc += ":%d" % url_parse_result.port
+            if not safe_netloc.startswith(FAKEURL_PATHCOMPONENT):
                 self._url = urlunparse(
                     (
                         url_parse_result.scheme,
-                        os.path.join(FAKEURL_PATHCOMPONENT, url_parse_result.netloc),
+                        os.path.join(FAKEURL_PATHCOMPONENT, safe_netloc),
                         url_parse_result.path,
                         url_parse_result.params,
                         url_parse_result.query,
@@ -502,9 +511,13 @@ class PackageSpecification:
     def is_downloadable_url(self, pkg_format: Optional[str] = None) -> bool:
         if not pkg_format:
             pkg_format = self._url_format
-        return pkg_format == self._url_format and not urlparse(
-            self._url
-        ).netloc.startswith(FAKEURL_PATHCOMPONENT)
+        url_parsed = urlparse(self._url)
+        safe_netloc = url_parsed.hostname or ""
+        if url_parsed.port:
+            safe_netloc += ":%d" % url_parsed.port
+        return pkg_format == self._url_format and not safe_netloc.startswith(
+            FAKEURL_PATHCOMPONENT
+        )
 
     def is_derived(self) -> bool:
         # If the filename component of the URL does not match the filename of this package,
@@ -776,7 +789,9 @@ class PypiPackageSpecification(PackageSpecification):
         # This is used to determine if we should consider a package as a local package to
         # be downloaded before resolving the environment
         pypi_sources = sources.get("pypi", [])
-        return not any(urlparse(source).netloc in self.url for source in pypi_sources)
+        return not any(
+            (urlparse(source).hostname or "") in self.url for source in pypi_sources
+        )
 
 
 class ResolvedEnvironment:
