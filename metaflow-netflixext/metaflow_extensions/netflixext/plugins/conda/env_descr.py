@@ -38,6 +38,7 @@ from .utils import (
     _ALL_PYPI_FORMATS,
     FAKEURL_PATHCOMPONENT,
     AliasType,
+    _safe_netloc,
     arch_id,
     channel_from_url,
     correct_splitext,
@@ -180,10 +181,7 @@ class CachePackage:
         cls._ensure_class_per_type()
         url = urlparse(base_url)
 
-        # Use hostname (not netloc) to avoid leaking embedded credentials
-        safe_netloc = url.hostname or ""
-        if url.port:
-            safe_netloc += ":%d" % url.port
+        safe_netloc = _safe_netloc(url)
 
         if is_real_url or safe_netloc.split("/")[0] == FAKEURL_PATHCOMPONENT:
             return os.path.join(
@@ -370,10 +368,7 @@ class PackageSpecification:
             # If it is not a real URL, add the FAKEURL_PATHCOMPONENT but only if not
             # already there.
             url_parse_result = urlparse(self._url)
-            # Use hostname (not netloc) to avoid leaking embedded credentials
-            safe_netloc = url_parse_result.hostname or ""
-            if url_parse_result.port:
-                safe_netloc += ":%d" % url_parse_result.port
+            safe_netloc = _safe_netloc(url_parse_result)
             if not safe_netloc.startswith(FAKEURL_PATHCOMPONENT):
                 self._url = urlunparse(
                     (
@@ -512,10 +507,9 @@ class PackageSpecification:
         if not pkg_format:
             pkg_format = self._url_format
         url_parsed = urlparse(self._url)
-        safe_netloc = url_parsed.hostname or ""
-        if url_parsed.port:
-            safe_netloc += ":%d" % url_parsed.port
-        return pkg_format == self._url_format and not safe_netloc.startswith(
+        return pkg_format == self._url_format and not _safe_netloc(
+            url_parsed
+        ).startswith(
             FAKEURL_PATHCOMPONENT
         )
 
