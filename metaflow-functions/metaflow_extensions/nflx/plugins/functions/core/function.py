@@ -324,8 +324,8 @@ class MetaflowFunction(ABC):
         # TODO: Update this code to support other data stores, and make it compatible with OSS
         # TODO: Add support for versioning
         # TODO: Do not export if the function is already exported, use cache
-        from metaflow.metaflow_config import DEFAULT_DATASTORE
-        from metaflow_extensions.nflx.config.mfextinit_functions import (
+        from metaflow.metaflow_config import (
+            DEFAULT_DATASTORE,
             DEFAULT_FUNCTIONS_LOCAL_ROOT,
             DEFAULT_FUNCTIONS_S3_ROOT,
         )
