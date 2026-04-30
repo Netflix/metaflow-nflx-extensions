@@ -279,6 +279,7 @@ class CondaLockResolver(Resolver):
                     outfile_name,
                     "-k",
                     "explicit",
+                    "--strip-auth",
                     "--conda",
                 ]
                 #                if "micromamba_server" in self._conda._bins:
@@ -358,7 +359,11 @@ class CondaLockResolver(Resolver):
                                 base_build_url = components[4]
                                 parse = urlparse(base_build_url)
                                 clean_path, clean_commit = parse.path.split("@")
-                                clean_url = parse.scheme[4:] + parse.netloc + clean_path
+                                # Use hostname (not netloc) to avoid leaking embedded credentials
+                                safe_netloc = parse.hostname or ""
+                                if parse.port:
+                                    safe_netloc += ":%d" % parse.port
+                                clean_url = parse.scheme[4:] + safe_netloc + clean_path
                                 base_pkg_url = "%s/%s" % (clean_url, clean_commit)
                                 # TODO: Do we need to handle subdirectories
                                 cache_base_url = (
