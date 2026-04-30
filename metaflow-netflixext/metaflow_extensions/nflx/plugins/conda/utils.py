@@ -763,7 +763,14 @@ def strip_url_credentials(url: str) -> str:
     if parsed.port:
         netloc += ":%d" % parsed.port
     return urlunparse(
-        (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+        (
+            parsed.scheme,
+            netloc,
+            parsed.path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
     )
 
 

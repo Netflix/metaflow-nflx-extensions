@@ -161,7 +161,7 @@ class PipResolver(Resolver):
             pypi_sources = sources.get("pypi", [])
             # The first source is always the index
             # Strip credentials from URLs to avoid leaking them in /proc/<pid>/cmdline
-            from .utils import strip_url_credentials
+            from ..utils import strip_url_credentials
 
             args.extend(["-i", strip_url_credentials(pypi_sources[0])])
             for c in pypi_sources[1:]:
