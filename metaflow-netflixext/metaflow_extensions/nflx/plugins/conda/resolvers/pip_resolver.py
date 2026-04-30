@@ -160,9 +160,12 @@ class PipResolver(Resolver):
 
             pypi_sources = sources.get("pypi", [])
             # The first source is always the index
-            args.extend(["-i", pypi_sources[0]])
+            # Strip credentials from URLs to avoid leaking them in /proc/<pid>/cmdline
+            from .utils import strip_url_credentials
+
+            args.extend(["-i", strip_url_credentials(pypi_sources[0])])
             for c in pypi_sources[1:]:
-                args.extend(["--extra-index-url", c])
+                args.extend(["--extra-index-url", strip_url_credentials(c)])
 
             if arch_id() == "linux-64":
                 # Glibc version only relevant on linux
