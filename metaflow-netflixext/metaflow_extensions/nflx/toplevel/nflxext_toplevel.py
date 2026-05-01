@@ -1,4 +1,18 @@
-from .nflxext_version import nflxext_version
+try:
+    from .nflxext_version import nflxext_version
+except ImportError:
+    try:
+        from importlib.metadata import version
+    except ImportError:
+        try:
+            from importlib_metadata import version
+        except ImportError:
+            version = None
+
+    try:
+        nflxext_version = version("metaflow-netflixext") if version else "0+unknown"
+    except Exception:
+        nflxext_version = "0+unknown"
 
 from ..plugins.conda.conda_flow_mutator import (
     ResolvedUVEnvFlowDecorator as resolved_uv,
