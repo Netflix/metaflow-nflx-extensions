@@ -32,6 +32,7 @@ Metaflow slack channels.
 This extension currently contains:
 - refactored and improved [Conda decorator](#conda-v2)
 - improved [debugging capability](#debug)
+- [Hugging Face auth management](../docs/huggingface.md)
 
 ## Conda V2
 

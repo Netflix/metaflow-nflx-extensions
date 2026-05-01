@@ -11,6 +11,12 @@ from metaflow.metaflow_config_funcs import from_conf, get_validate_choice_fn
 # Set to true if running the tests with a local datastore
 CONDA_TEST = from_conf("CONDA_TEST", False)
 
+# HuggingFace @huggingface decorator configuration.
+HUGGINGFACE_AUTH_PROVIDER = from_conf("HUGGINGFACE_AUTH_PROVIDER", "env")
+HUGGINGFACE_AUTH_PROVIDERS = from_conf("HUGGINGFACE_AUTH_PROVIDERS", {})
+HUGGINGFACE_ENDPOINT = from_conf("HUGGINGFACE_ENDPOINT")
+HUGGINGFACE_LOCAL_DIR = from_conf("HUGGINGFACE_LOCAL_DIR")
+
 # Datastores for which caching should be skipped
 CONDA_IGNORE_CACHING_DATASTORES = from_conf("CONDA_IGNORE_CACHING_DATASTORES", [])
 
