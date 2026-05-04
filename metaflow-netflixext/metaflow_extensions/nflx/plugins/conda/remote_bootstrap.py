@@ -80,7 +80,7 @@ def bootstrap_environment(
     with open("_env_path", mode="w", encoding="utf-8") as f:
         if python_bin is None:
             raise RuntimeError("Environment was not created properly")
-        json.dump(os.path.dirname(os.path.dirname(python_bin)), f)
+        f.write(os.path.dirname(os.path.dirname(python_bin)))
 
 
 def setup_conda_manifest():
