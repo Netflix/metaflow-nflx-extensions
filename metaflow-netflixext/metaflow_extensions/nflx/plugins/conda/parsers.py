@@ -1,4 +1,5 @@
 import re
+import warnings
 from typing import Any, Dict, List, Optional
 
 from metaflow.metaflow_config import CONDA_SYS_DEPENDENCIES
@@ -120,6 +121,14 @@ def parse_req_value(
 ) -> Optional[str]:
     python_version = None
     for line in file_content.splitlines():
+        # Strip inline comments (but not inside URL fragments)
+        comment_idx = line.find("#")
+        if comment_idx >= 0:
+            # Only strip if the '#' is preceded by whitespace or is at the start
+            # (avoids stripping '#egg=...' or URL fragments)
+            before = line[:comment_idx]
+            if not before or before[-1] in (" ", "\t"):
+                line = before
         line = line.strip()
         if not line:
             continue
@@ -130,10 +139,12 @@ def parse_req_value(
         else:
             rem = None
         if first_word in ("-i", "--index-url"):
-            raise InvalidEnvironmentException(
-                "To specify a base PYPI index, set `METAFLOW_CONDA_DEFAULT_PYPI_SOURCE; "
-                "you can specify additional indices using --extra-index-url"
+            warnings.warn(
+                "Ignoring '%s' in requirements.txt; the system-configured index "
+                "or METAFLOW_CONDA_DEFAULT_PYPI_SOURCE will be used instead. "
+                "You can specify additional indices using --extra-index-url." % line
             )
+            continue
         elif first_word == "--extra-index-url" and rem:
             sources.setdefault("pypi", []).append(rem)
         elif first_word in ("-f", "--find-links", "--trusted-host") and rem:

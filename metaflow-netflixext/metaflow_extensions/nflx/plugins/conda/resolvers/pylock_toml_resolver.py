@@ -1,15 +1,20 @@
 from ..env_descr import (
     PackageSpecification,
+    PypiCachePackage,
     PypiPackageSpecification,
     ResolvedEnvironment,
     EnvType,
 )
 
+from ..pypi_package_builder import PackageToBuild, build_pypi_packages
+
 from ..utils import (
+    correct_splitext,
     filter_packages_by_markers,
     get_best_compatible_packages,
     get_maximum_glibc_version,
     get_python_full_version_from_builder_envs,
+    parse_explicit_path_pypi,
     parse_explicit_url_pypi_no_hash,
     pypi_tags_from_arch,
 )
@@ -18,13 +23,17 @@ from metaflow._vendor.packaging.tags import (
     Tag,
 )
 
+from metaflow.debug import debug
 from ..utils import CondaException
 
 from . import Resolver
 from typing import Callable, Dict, Iterable, List, Any, Optional, Tuple
 import os
 import itertools
+import tempfile
 from itertools import chain
+
+_FAKE_WHEEL = "_fake-1.0-py3-none-any.whl"
 
 
 class PylockTomlResolver(Resolver):
@@ -55,6 +64,9 @@ class PylockTomlResolver(Resolver):
         # builder_envs check also skipped.
 
         toml_path_list = file_paths["pylock_toml"]
+        debug.conda_exec(
+            "PylockTomlResolver: resolving for architecture %s" % architecture
+        )
 
         toml_path = toml_path_list[0]
         if not (
@@ -67,6 +79,7 @@ class PylockTomlResolver(Resolver):
         if not os.path.isfile(toml_path):
             raise ValueError(f"TOML file does not exist: {toml_path}")
 
+        debug.conda_exec("Reading pylock.toml from %s" % toml_path)
         toml_root_obj = self._read_toml(toml_path)
 
         if not builder_envs:
@@ -91,11 +104,15 @@ class PylockTomlResolver(Resolver):
                 "Could not determine version of Python from conda packages"
             )
 
+        debug.conda_exec(
+            "Python version: %s, glibc: %s" % (python_full_version, glibc_version)
+        )
         supported_tags = pypi_tags_from_arch(
             python_full_version,
             architecture,
             glibc_version,
         )
+        debug.conda_exec("Generated %d supported tags" % len(supported_tags))
 
         def filter_func(
             package_dict: Dict[str, List[PackageSpecification]],
@@ -106,7 +123,8 @@ class PylockTomlResolver(Resolver):
                 architecture,
             )
 
-        resolved_env = self._translate_pylock_toml_to_resolved_env(
+        toml_dir = os.path.dirname(os.path.abspath(toml_path))
+        resolved_env, to_build_pkg_info = self._translate_pylock_toml_to_resolved_env(
             toml_root_obj,
             env_type,
             deps,
@@ -115,38 +133,67 @@ class PylockTomlResolver(Resolver):
             extras,
             architecture,
             supported_tags,
+            toml_dir,
             filter_func,
             full_id_unique_keys,
         )
 
+        if to_build_pkg_info:
+            debug.conda_exec(
+                "Need to build %d source packages: %s"
+                % (
+                    len(to_build_pkg_info),
+                    ", ".join(
+                        "%s @ %s" % (v.spec, k) for k, v in to_build_pkg_info.items()
+                    ),
+                )
+            )
+            if not self._conda.storage:
+                raise CondaException(
+                    "Cannot create a relocatable environment as it depends on "
+                    "source packages and no storage backend is defined: %s"
+                    % ", ".join([v.url for v in to_build_pkg_info.values()])
+                )
+            with tempfile.TemporaryDirectory() as build_dir:
+                built_packages, builder_envs = build_pypi_packages(
+                    self._conda,
+                    self._conda.storage,
+                    python_full_version,
+                    to_build_pkg_info,
+                    builder_envs,
+                    build_dir,
+                    architecture,
+                    supported_tags,
+                    sources.get("pypi", []),
+                )
+            # Reconstruct resolved env with built packages included
+            all_packages = list(resolved_env.packages) + built_packages
+            resolved_env = PylockTomlResolver._packages_to_resolved_env(
+                all_packages,
+                env_type,
+                deps,
+                sources,
+                extras,
+                architecture,
+                full_id_unique_keys=full_id_unique_keys,
+            )
+
+        debug.conda_exec(
+            "Resolved environment with %d packages" % len(list(resolved_env.packages))
+        )
         return (resolved_env, builder_envs)
 
     """
-    At this time, we will only support the wheels format, and explicitly reject vcs, archive, directory
-    formats.
+    Supported package formats in pylock.toml (https://peps.python.org/pep-0751/):
+    - wheels: used directly
+    - sdist: built into wheels via build_pypi_packages
+    - directory: local path packages, built into wheels
+    - vcs: git/hg/etc repositories, built into wheels
+    - archive: remote tarballs/zips, built into wheels
 
-    CONTEXT:
-
-    The formats of packages in pylock.toml (https://peps.python.org/pep-0751/) are:
-    vcs, archive, sdist+wheels, directory.
-    1. The formats are specified by the existence of one of the four inline-tables (subtables): [packages.vcs], [packages.directory],
-        [packages.sdist] within a [[package]] table. These four subtables are mutually exclusive
-        within the same package. This design ensures that a package can be specified with only one format.
-    2. [[packages.Wheels]] is a nested array table mutually exclusive with other formats except [packages.sdist], which makes
-       it a nested array only available within a [packages.sdist].
-        (More details can be found here: https://peps.python.org/pep-0751/#packages)
-
-    RATIONALE for supporting wheels only in this version:
-
-    1. Despite the user passions in adoption of uv, we want a gradual rollout of support for other formats,
-       to ensure our thorough testing.
-    2. We do not want our customers to be the first ones to encounter issues with them.
-       We will officially support those only after a thorough testing, with abundant real-world
-       pylock.py examples with those formats (which we don't have).
-    3. We don't want to skip parsing of a particular package when it's vcs/archive/directory,
-       a practice which makes the silent failures much harder to debug.
+    Non-wheel formats are built using the same mechanism as PipResolver
+    (via pypi_package_builder.build_pypi_packages).
     """
-    UNSUPPORTED_PACKAGE_SUBTYPES = {"vcs", "archive", "directory"}
 
     # TODO(https://netflix.atlassian.net/browse/MLPMF-502): wait for dependency of pylock.py to resolved, so that we could use
     # the pylock.py to read it.
@@ -208,6 +255,7 @@ class PylockTomlResolver(Resolver):
         extras: Dict[str, List[str]],
         architecture: str,
         supported_tags: List[Tag],
+        toml_dir: Optional[str] = None,
         # We take a Callable here rather than do the filtering directly
         # in this function due to:
         # 1. The filtering call requires knowledge of architecture, python_version,
@@ -221,20 +269,26 @@ class PylockTomlResolver(Resolver):
                 Dict[str, List[PackageSpecification]],
             ]
         ] = None,
-        full_id_unique_keys: Dict[str, str] = {},
-    ) -> ResolvedEnvironment:
+        full_id_unique_keys: Optional[Dict[str, str]] = None,
+    ) -> Tuple[ResolvedEnvironment, Dict[str, PackageToBuild]]:
 
-        packages_dict = PylockTomlResolver._pylock_toml_root_obj_to_packages(
-            toml_root_obj
+        packages_dict, to_build = PylockTomlResolver._pylock_toml_root_obj_to_packages(
+            toml_root_obj, toml_dir
         )
 
         if package_filter_func:
+            pre_filter_count = len(packages_dict)
             packages_dict = package_filter_func(packages_dict)
+            debug.conda_exec(
+                "Marker filtering: %d -> %d package names"
+                % (pre_filter_count, len(packages_dict))
+            )
 
         best_packages = get_best_compatible_packages(
             packages_dict,
             supported_tags,
         )
+        debug.conda_exec("Selected %d best compatible wheel(s)" % len(best_packages))
 
         packages: List[PackageSpecification] = list(best_packages.values())
         packages.extend(base_packages)
@@ -249,15 +303,21 @@ class PylockTomlResolver(Resolver):
             full_id_unique_keys=full_id_unique_keys,
         )
 
-        return resolved_env
+        return resolved_env, to_build
 
     @staticmethod
     # TODO(https://netflix.atlassian.net/browse/MLPMF-502): use the pylock.py object instead.
     def _toml_package_to_package_specs(
         toml_package_dict: Dict[str, Any],
-    ) -> List[PackageSpecification]:
+        toml_dir: Optional[str] = None,
+    ) -> Tuple[List[PackageSpecification], List[Tuple[str, PackageToBuild]]]:
         """
-        Convert a TOML package item to a PackageSpecification object.
+        Convert a TOML package item to PackageSpecification objects and/or
+        PackageToBuild entries for packages that need to be built from source.
+
+        Returns a tuple of:
+          - List of PackageSpecification (ready-to-use wheel specs)
+          - List of (cache_key, PackageToBuild) for packages needing a build
 
         Sample package item from pylock.toml:
 
@@ -268,66 +328,210 @@ class PylockTomlResolver(Resolver):
         wheels = [{ url = "https://pypi.netflix.net/packages/18933835517/certifi-2025.8.3-py3-none-any.whl", upload-time = 2025-08-03T03:07:45Z, size = 161216, hashes = { sha256 = "f6c12493cfb1b06ba2ff328595af9350c65d6644968e5d3a2ffd78699af217a5" } }]
         """
 
-        if PylockTomlResolver.UNSUPPORTED_PACKAGE_SUBTYPES & set(
-            toml_package_dict.keys()
-        ):
-            raise CondaException(
-                "Currently we only support wheel packages. Please contact the Metaflow team "
-                + "if you need us to support more general cases.\n"
-                + "And please mention the following information to the Metaflow team:\n"
-                f"toml_package_dict.keys()={toml_package_dict.keys()}"
-            )
-
-        wheels = toml_package_dict.get("wheels", [])
-        if not wheels:
-            raise CondaException(
-                "We just encountered a package definition that contains no wheels.\n"
-                + "Please help us diagnose the issue by mentioning the following information to the Metaflow team:\n"
-                f"toml_package_dict={toml_package_dict}"
-            )
-
         packages: List[PackageSpecification] = []
+        to_build: List[Tuple[str, PackageToBuild]] = []
+        pkg_name = toml_package_dict.get("name", "unknown")
+        pkg_version = toml_package_dict.get("version", "")
 
-        # This set of attributes will be applied to all wheels within this package.
-        package_attributes = {
-            k: toml_package_dict.get(k)
-            for k in ["name", "version", "marker"]
-            if k in toml_package_dict
-        }
+        # Handle directory packages (local path)
+        if "directory" in toml_package_dict:
+            dir_info = toml_package_dict["directory"]
+            local_path = dir_info.get("path", "")
+            if not local_path:
+                raise CondaException(
+                    "Directory package is missing 'path': %s" % toml_package_dict
+                )
+            # Resolve relative paths against the pylock.toml directory
+            if not os.path.isabs(local_path) and toml_dir:
+                local_path = os.path.normpath(os.path.join(toml_dir, local_path))
+            if dir_info.get("editable", False):
+                raise CondaException(
+                    "Cannot include an editable package: '%s'" % local_path
+                )
+            base_pkg_url = "file://%s/%s-%s.whl" % (local_path, pkg_name, pkg_version)
+            cache_key = PypiCachePackage.make_partial_cache_url(
+                base_pkg_url, is_real_url=False
+            )
+            to_build.append(
+                (
+                    cache_key,
+                    PackageToBuild(
+                        "file://" + local_path,
+                        PypiPackageSpecification(
+                            _FAKE_WHEEL,
+                            base_pkg_url,
+                            is_real_url=False,
+                            url_format=".whl",
+                        ),
+                    ),
+                )
+            )
+            return packages, to_build
 
-        for wheel in wheels:
-            url = wheel.get("url", "")
-            file_hashes = wheel.get("hashes", {})
+        # Handle VCS packages
+        if "vcs" in toml_package_dict:
+            vcs_info = toml_package_dict["vcs"]
+            vcs_type = vcs_info.get("type", "git")
+            vcs_url = vcs_info.get("url", "")
+            commit = vcs_info.get("commit", "")
+            if not vcs_url or not commit:
+                raise CondaException(
+                    "VCS package is missing 'url' or 'commit': %s" % toml_package_dict
+                )
+            build_url = "%s+%s@%s" % (vcs_type, vcs_url, commit)
+            base_pkg_url = "%s/%s" % (vcs_url, commit)
+            if "subdirectory" in vcs_info:
+                build_url += "#subdirectory=%s" % vcs_info["subdirectory"]
+                base_pkg_url += "/%s" % vcs_info["subdirectory"]
+            cache_key = PypiCachePackage.make_partial_cache_url(
+                base_pkg_url, is_real_url=False
+            )
+            to_build.append(
+                (
+                    cache_key,
+                    PackageToBuild(
+                        build_url,
+                        PypiPackageSpecification(
+                            _FAKE_WHEEL,
+                            base_pkg_url,
+                            is_real_url=False,
+                            url_format=".whl",
+                        ),
+                    ),
+                )
+            )
+            return packages, to_build
 
-            if url and file_hashes:
+        # Handle archive packages (remote URL or local path)
+        if "archive" in toml_package_dict:
+            archive_info = toml_package_dict["archive"]
+            url = archive_info.get("url", "")
+            local_path = archive_info.get("path", "")
+            file_hashes = archive_info.get("hashes", {})
+
+            if local_path:
+                # Resolve relative paths against the pylock.toml directory
+                if not os.path.isabs(local_path) and toml_dir:
+                    local_path = os.path.normpath(os.path.join(toml_dir, local_path))
+                file_url = "file://" + local_path
+                parse_result = parse_explicit_path_pypi(file_url)
+                _, url_format = correct_splitext(os.path.basename(local_path))
+                if url_format == ".whl":
+                    # Local wheel — use directly, no build needed
+                    spec = PypiPackageSpecification(
+                        parse_result.filename,
+                        parse_result.url,
+                        is_real_url=False,
+                        url_format=parse_result.url_format,
+                        hashes=file_hashes if file_hashes else None,
+                    )
+                    spec.add_local_file(parse_result.url_format, local_path)
+                    packages.append(spec)
+                else:
+                    # Local source archive — needs building
+                    cache_key = PypiCachePackage.make_partial_cache_url(
+                        parse_result.url, is_real_url=False
+                    )
+                    spec = PypiPackageSpecification(
+                        parse_result.filename,
+                        parse_result.url,
+                        is_real_url=False,
+                        url_format=parse_result.url_format,
+                        hashes=file_hashes if file_hashes else None,
+                    )
+                    spec.add_local_file(parse_result.url_format, local_path)
+                    to_build.append(
+                        (
+                            cache_key,
+                            PackageToBuild(file_url, spec, [parse_result.url_format]),
+                        )
+                    )
+            elif url:
+                parse_result = parse_explicit_url_pypi_no_hash(url)
+                cache_key = PypiCachePackage.make_partial_cache_url(
+                    parse_result.url, is_real_url=True
+                )
+                spec = PypiPackageSpecification(
+                    parse_result.filename,
+                    parse_result.url,
+                    url_format=parse_result.url_format,
+                    hashes=file_hashes if file_hashes else None,
+                )
+                to_build.append((cache_key, PackageToBuild(url, spec)))
+            else:
+                raise CondaException(
+                    "Archive package is missing both 'url' and 'path': %s"
+                    % toml_package_dict
+                )
+            return packages, to_build
+
+        # Handle wheels (and sdist fallback)
+        wheels = toml_package_dict.get("wheels", [])
+
+        if wheels:
+            # This set of attributes will be applied to all wheels within this package.
+            package_attributes = {
+                k: toml_package_dict.get(k)
+                for k in ["name", "version", "marker"]
+                if k in toml_package_dict
+            }
+
+            for wheel in wheels:
+                url = wheel.get("url", "")
+                file_hashes = wheel.get("hashes", {})
+
+                if not url:
+                    raise CondaException(
+                        "Wheel entry is missing a url. "
+                        + f"Please escalate this to the Metaflow team. wheel={wheel}"
+                    )
+
                 parse_result = parse_explicit_url_pypi_no_hash(url)
                 package = PypiPackageSpecification(
                     filename=parse_result.filename,
                     url=url,
-                    hashes=file_hashes,
+                    hashes=file_hashes if file_hashes else None,
                     # Confirmed marker will only be a string in pylock.toml
                     # Thread: https://netflix.slack.com/archives/C0D3Z78F4/p1763265175272329
                     environment_marker=package_attributes.get("marker"),
                 )
 
                 packages.append(package)
-            else:
-                # Despite we can continue the loop ignoring this particular wheel,
-                # we should raise an exception to make us be aware of this issue in case
-                # it's hiding other issues.
+        elif "sdist" in toml_package_dict:
+            # No wheels available, fall back to building from sdist
+            sdist_info = toml_package_dict["sdist"]
+            url = sdist_info.get("url", "")
+            file_hashes = sdist_info.get("hashes", {})
+            if not url:
                 raise CondaException(
-                    "We encountered a wheel package that's missing an url or a hash. "
-                    + f"Please escalate this case to the Metaflow team. url={url}, file_hashes={file_hashes}"
+                    "sdist package is missing 'url': %s" % toml_package_dict
                 )
+            parse_result = parse_explicit_url_pypi_no_hash(url)
+            cache_key = PypiCachePackage.make_partial_cache_url(
+                parse_result.url, is_real_url=True
+            )
+            spec = PypiPackageSpecification(
+                parse_result.filename,
+                parse_result.url,
+                url_format=parse_result.url_format,
+                hashes=file_hashes if file_hashes else None,
+            )
+            to_build.append((cache_key, PackageToBuild(url, spec)))
+        else:
+            raise CondaException(
+                "Package has no wheels, sdist, or other recognized format: %s"
+                % toml_package_dict
+            )
 
-        return packages
+        return packages, to_build
 
     # TODO(https://netflix.atlassian.net/browse/MLPMF-502): use the open source PyLock
     # code to parse the toml file instead of parsing it to a dict as in current code.
     @staticmethod
     def _pylock_toml_root_obj_to_packages(
         toml_root_obj: Dict[str, Any],
-    ) -> Dict[str, List[PackageSpecification]]:
+        toml_dir: Optional[str] = None,
+    ) -> Tuple[Dict[str, List[PackageSpecification]], Dict[str, PackageToBuild]]:
         # Despite pylock.toml being a standard format, let's refrain the scope of
         # of supported scenarios to reduce risks.
         if toml_root_obj.get("created-by", "") != "uv":
@@ -338,6 +542,17 @@ class PylockTomlResolver(Resolver):
 
         packages = toml_root_obj.get("packages", [])
         out_dict: Dict[str, List[PackageSpecification]] = {}
+        to_build: Dict[str, PackageToBuild] = {}
+
+        # Track package types for summary
+        pkg_types: Dict[str, List[str]] = {
+            "wheels": [],
+            "sdist": [],
+            "directory": [],
+            "vcs": [],
+            "archive_local": [],
+            "archive_remote": [],
+        }
 
         for package in packages:
             if not isinstance(package, dict):
@@ -349,14 +564,75 @@ class PylockTomlResolver(Resolver):
                 # https://peps.python.org/pep-0751/#packages-name: name is required.
                 raise CondaException("Each package in 'packages' must have a name.")
 
+            version = package.get("version", "")
+            label = "%s==%s" % (name, version) if version else name
+
+            # Categorize for summary
+            if "directory" in package:
+                pkg_types["directory"].append(label)
+            elif "vcs" in package:
+                pkg_types["vcs"].append(label)
+            elif "archive" in package:
+                if package["archive"].get("path"):
+                    pkg_types["archive_local"].append(label)
+                else:
+                    pkg_types["archive_remote"].append(label)
+            elif package.get("wheels"):
+                pkg_types["wheels"].append(label)
+            elif "sdist" in package:
+                pkg_types["sdist"].append(label)
+
             # Packages of the same name can appear multiple times with different markers.
             # We will apply filtering of them later based on the environment markers.
             # See https://netflix.atlassian.net/browse/MLPMF-545.
-            out_dict.setdefault(name, []).extend(
-                PylockTomlResolver._toml_package_to_package_specs(package)
+            wheel_specs, build_entries = (
+                PylockTomlResolver._toml_package_to_package_specs(package, toml_dir)
             )
+            out_dict.setdefault(name, []).extend(wheel_specs)
+            for cache_key, pkg_to_build in build_entries:
+                to_build[cache_key] = pkg_to_build
 
-        return out_dict
+        # Log a single summary of the pylock.toml content
+        total = sum(len(v) for v in pkg_types.values())
+        summary_parts = []
+        if pkg_types["wheels"]:
+            summary_parts.append("%d wheels" % len(pkg_types["wheels"]))
+        if pkg_types["sdist"]:
+            summary_parts.append(
+                "%d sdist-only (need build): %s"
+                % (len(pkg_types["sdist"]), ", ".join(pkg_types["sdist"]))
+            )
+        if pkg_types["directory"]:
+            summary_parts.append(
+                "%d directory (need build): %s"
+                % (len(pkg_types["directory"]), ", ".join(pkg_types["directory"]))
+            )
+        if pkg_types["vcs"]:
+            summary_parts.append(
+                "%d vcs (need build): %s"
+                % (len(pkg_types["vcs"]), ", ".join(pkg_types["vcs"]))
+            )
+        if pkg_types["archive_local"]:
+            summary_parts.append(
+                "%d local archive: %s"
+                % (
+                    len(pkg_types["archive_local"]),
+                    ", ".join(pkg_types["archive_local"]),
+                )
+            )
+        if pkg_types["archive_remote"]:
+            summary_parts.append(
+                "%d remote archive (need build): %s"
+                % (
+                    len(pkg_types["archive_remote"]),
+                    ", ".join(pkg_types["archive_remote"]),
+                )
+            )
+        debug.conda_exec(
+            "pylock.toml: %d packages — %s" % (total, "; ".join(summary_parts))
+        )
+
+        return out_dict, to_build
 
     @staticmethod
     def _packages_to_resolved_env(
