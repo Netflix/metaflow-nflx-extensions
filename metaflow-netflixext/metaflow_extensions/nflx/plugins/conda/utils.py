@@ -1196,7 +1196,6 @@ def get_best_compatible_packages(
                 _, _, _, tags = parse_wheel_filename(full_filename)
                 if t in tags:
                     best_packages[key] = p
-                    debug.conda_exec("%s: matching package @ %s" % (key, p))
                     break
             else:
                 # If we don't find a match, continue to next tag (and

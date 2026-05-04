@@ -260,7 +260,7 @@ test_case_params = [
             "expected": {},
             "check_subset": True,
             "id": "no_wheel_in_package",
-            "expected_conda_exception": "We just encountered a package definition that contains no wheels",
+            "expected_to_build_count": 1,
         }
     ),
     (
@@ -272,14 +272,16 @@ test_case_params = [
                 [[packages]]
                 name = "charset-normalizer"
                 version = "3.4.3"
-                sdist = { url = "https://pypi.netflix.net/packages/18953203074/charset_normalizer-3.4.3.tar.gz", upload-time = 2025-08-09T07:57:28Z, size = 122371, hashes = { sha256 = "6fce4b8500244f6fcb71465d4a4930d132ba9ab8e71a7859e6a5d59851068d14" } }
-                vcs = { foo= "foo"}
+                [packages.vcs]
+                type = "git"
+                url = "https://github.com/example/charset-normalizer.git"
+                commit = "abc123def456"
             """,
             "supported_tags": [("cp310", "cp310", "macosx_10_9_universal2")],
             "expected": {},
             "check_subset": True,
-            "id": "other_package_formats_than_sdist_wheels",
-            "expected_conda_exception": "Currently we only support wheel packages",
+            "id": "vcs_package",
+            "expected_to_build_count": 1,
         }
     ),
     (
@@ -295,10 +297,11 @@ test_case_params = [
                 wheels = [ { url = "https://pypi.netflix.net/packages/18653672681/charset_normalizer-3.4.2-cp310-cp310-macosx_10_9_universal2.whl", upload-time = 2025-05-02T08:31:46Z, size = 201818 }, ]
             """,
             "supported_tags": [("cp310", "cp310", "macosx_10_9_universal2")],
-            "expected": {},
+            "expected": {
+                "charset-normalizer": "charset_normalizer-3.4.2-cp310-cp310-macosx_10_9_universal2",
+            },
             "check_subset": True,
             "id": "no_hash_in_wheel",
-            "expected_conda_exception": "We encountered a wheel package that's missing an url or a hash.",
         }
     ),
 ]
@@ -324,7 +327,12 @@ def check_package_matching_may_throw_exception(case):
         if case.get("toml_file", None)
         else (tomli.loads(case["toml_str"]))
     )
-    grouped = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
+    grouped, to_build = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
+
+    if "expected_to_build_count" in case:
+        assert len(to_build) == case["expected_to_build_count"]
+        return
+
     if "supported_tags_tag_type" in case:
         tags = case["supported_tags_tag_type"]
     else:
@@ -355,10 +363,11 @@ def test_resolve_one_package():
     """
     first_package_obj = obj["packages"][0]
     assert len(first_package_obj["wheels"]) == 1
-    output_packages = PylockTomlResolver._toml_package_to_package_specs(
+    output_packages, to_build = PylockTomlResolver._toml_package_to_package_specs(
         first_package_obj
     )
     assert len(output_packages) == 1
+    assert len(to_build) == 0
 
     assert output_packages[0].filename == "certifi-2025.8.3-py3-none-any"
     assert output_packages[0].package_name == "certifi"
@@ -389,8 +398,11 @@ def test_one_to_multi_package_resolution():
     """
     package_obj = obj["packages"][1]
     assert len(package_obj["wheels"]) == 91
-    output_packages = PylockTomlResolver._toml_package_to_package_specs(package_obj)
+    output_packages, to_build = PylockTomlResolver._toml_package_to_package_specs(
+        package_obj
+    )
     assert len(output_packages) == 91
+    assert len(to_build) == 0
 
     # 90-th element of wheels:
     #    { url = "https://pypi.netflix.net/packages/18653687934/charset_normalizer-3.4.2-py3-none-any.whl", upload-time = 2025-05-02T08:34:40Z, size = 52626, hashes = { sha256 = "7f56930ab0abd1c45cd15be65cc741c28b1c9a34876ce8c17a2fa107810c0af0" } },
@@ -408,7 +420,8 @@ def test_parsing_root_toml_obj():
     data_path = Path(__file__).parent / "data" / "sample_pylock1.toml"
     obj = PylockTomlResolver._read_toml(data_path)
 
-    packages_dict = PylockTomlResolver._pylock_toml_root_obj_to_packages(obj)
+    packages_dict, to_build = PylockTomlResolver._pylock_toml_root_obj_to_packages(obj)
+    assert len(to_build) == 0
     counts = 0
     counts = sum(len(p["wheels"]) for p in obj["packages"])
     wheels_count = sum(len(l) for l in packages_dict.values())
@@ -440,7 +453,8 @@ def create_supported_tags(
 
 def parse_toml_str(toml_str: str) -> Dict[str, List[PypiPackageSpecification]]:
     package_obj = tomli.loads(toml_str)
-    return PylockTomlResolver._pylock_toml_root_obj_to_packages(package_obj)
+    packages_dict, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(package_obj)
+    return packages_dict
 
 
 @pytest.fixture
@@ -477,7 +491,7 @@ def test_translate_pylock_to_resolved_env(deps):
         str(Path(__file__).parent / "data" / "sample_pylock1.toml"),
     )
 
-    resolved_env = PylockTomlResolver._translate_pylock_toml_to_resolved_env(
+    resolved_env, _ = PylockTomlResolver._translate_pylock_toml_to_resolved_env(
         toml_root_obj=root_obj,
         env_type=EnvType.MIXED,
         deps=deps,
@@ -529,7 +543,7 @@ def test_base_packages_extended_to_packages(deps):
         )
     ]
 
-    resolved_env = PylockTomlResolver._translate_pylock_toml_to_resolved_env(
+    resolved_env, _ = PylockTomlResolver._translate_pylock_toml_to_resolved_env(
         toml_root_obj=root_obj,
         env_type=EnvType.MIXED,
         deps=deps,
@@ -660,7 +674,7 @@ def test_translate_pylock_to_resolved_env(deps):
         str(Path(__file__).parent / "data" / "sample_pylock1.toml"),
     )
 
-    resolved_env = PylockTomlResolver._translate_pylock_toml_to_resolved_env(
+    resolved_env, _ = PylockTomlResolver._translate_pylock_toml_to_resolved_env(
         root_obj,
         EnvType.MIXED,
         deps,
@@ -795,7 +809,7 @@ def test_resolve_marker():
     # Test resolving one package "numpy"
     numpy_package_obj = [p for p in root_obj["packages"] if p["name"] == "numpy"][0]
 
-    numpy_packages = PylockTomlResolver._toml_package_to_package_specs(
+    numpy_packages, _ = PylockTomlResolver._toml_package_to_package_specs(
         numpy_package_obj
     )
     assert numpy_packages
@@ -803,7 +817,7 @@ def test_resolve_marker():
         assert pkg.environment_marker == "python_full_version < '3.11'"
 
     # Test resolving the full toml file.
-    pkgs_dict = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
+    pkgs_dict, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
     assert "numpy" in pkgs_dict
     for pkg in pkgs_dict["numpy"]:
         assert pkg.environment_marker == "python_full_version < '3.11'"
@@ -831,7 +845,7 @@ def test_filter_packages(mock_target_env):
     root_obj = PylockTomlResolver._read_toml(
         str(Path(__file__).parent / "data" / "sample_pylock1.toml"),
     )
-    pkgs_dict = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
+    pkgs_dict, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
 
     # Filter packages with marker that is satisfied by python version 3.10
     filtered_pkgs = PylockTomlResolver._filter_packages(
@@ -890,7 +904,7 @@ wheels = [
             )
         )
     )
-    packages_dict = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
+    packages_dict, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
 
     assert "numpy" in packages_dict
     assert len(packages_dict["numpy"]) == 7

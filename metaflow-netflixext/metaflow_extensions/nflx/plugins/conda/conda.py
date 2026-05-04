@@ -321,11 +321,6 @@ class Conda(object):
         if self._bins is None or self._bins[binary] is None:
             raise InvalidEnvironmentException("Binary '%s' unknown" % binary)
         try:
-            env: Dict[str, str] = {}
-            if addl_env:
-                env.update(addl_env)
-            self._envars_for_conda_exec(env)
-
             initial_command = args[0] if args else None
 
             if (
@@ -351,17 +346,22 @@ class Conda(object):
                 # This is in the remote case.
                 args.extend(["-r", self.root_prefix, "--json"])
 
-            debug.conda_exec(
-                "Conda call: %s (env: %s)"
-                % (str([self._bins[binary]] + args), str(env))
-            )
-            return cast(
-                bytes,
-                subprocess.check_output(
-                    [cast(str, self._bins[binary])] + args,
-                    stderr=subprocess.PIPE,
-                    env=dict(os.environ, **env),
-                ),
+            env = dict(os.environ)
+            if CONDA_LOCAL_PATH:
+                # We need to strip out PYTHONPATH because this is a separate Python
+                # environment.
+                if "PYTHONPATH" in env:
+                    del env["PYTHONPATH"]
+            if addl_env:
+                env.update(addl_env)
+            self._envars_for_conda_exec(env)
+
+            debug.conda_exec("Conda call: %s" % (str([self._bins[binary]] + args)))
+
+            return subprocess.check_output(
+                [cast(str, self._bins[binary])] + args,
+                stderr=subprocess.PIPE,
+                env=env,
             ).strip()
         except subprocess.CalledProcessError as e:
             if pretty_print_exception:
@@ -408,15 +408,21 @@ class Conda(object):
             binary = cast(str, self._bins[binary])
         elif not os.path.isfile(binary) or not os.access(binary, os.X_OK):
             raise InvalidEnvironmentException("Binary '%s' unknown" % binary)
-        if addl_env is None:
-            addl_env = {}
-        self._envars_for_conda_exec(addl_env)
+        env = dict(os.environ)
+        if CONDA_LOCAL_PATH:
+            # We need to strip out PYTHONPATH because this is a separate Python
+            # environment.
+            if "PYTHONPATH" in env:
+                del env["PYTHONPATH"]
+        if addl_env:
+            env.update(addl_env)
+        self._envars_for_conda_exec(env)
         try:
             debug.conda_exec("Binary call: %s" % str([binary] + args))
             return subprocess.check_output(
                 [binary] + args,
                 stderr=subprocess.PIPE,
-                env=dict(os.environ, **addl_env),
+                env=env,
                 cwd=cwd,
             ).strip()
         except subprocess.CalledProcessError as e:
