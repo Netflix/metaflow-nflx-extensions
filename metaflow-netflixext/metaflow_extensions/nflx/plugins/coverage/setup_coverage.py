@@ -104,8 +104,14 @@ def setup_coverage(sh_python: Union[str, "sh.Command"]):
     for python_binary in python_binaries:
         if not python_binary or not which(python_binary):
             continue
-        maybe_install_coverage(python_binary)
-        setup_sitecustomize(python_binary)
+        try:
+            maybe_install_coverage(python_binary)
+            setup_sitecustomize(python_binary)
+        except Exception as e:
+            print(
+                f"Warning: coverage setup failed for {python_binary}: {e}",
+                file=sys.stderr,
+            )
 
 
 if __name__ == "__main__":
