@@ -66,11 +66,14 @@ def setup_sitecustomize(python_binary: str):
         f"os.environ['COVERAGE_PROCESS_START'] = os.environ.get('COVERAGE_PROCESS_START') or os.path.join(site_packages_dir, '.coveragerc')",
         f"os.environ['COVERAGE_RCFILE'] = os.environ.get('COVERAGE_RCFILE') or os.path.join(site_packages_dir, '.coveragerc')",
         f"os.environ['METAFLOW_COVERAGE_S3_PATH'] = os.environ.get('METAFLOW_COVERAGE_S3_PATH') or '{os.environ['METAFLOW_COVERAGE_S3_PATH']}'",
-        "import coverage",
-        "coverage.process_startup()",
-        "coverage_context = os.environ.get('METAFLOW_COVERAGE_CONTEXT')",
-        "if coverage_context and coverage.Coverage.current():",
-        "    coverage.Coverage.current().switch_context(coverage_context)",
+        "try:",
+        "    import coverage",
+        "    coverage.process_startup()",
+        "    coverage_context = os.environ.get('METAFLOW_COVERAGE_CONTEXT')",
+        "    if coverage_context and coverage.Coverage.current():",
+        "        coverage.Coverage.current().switch_context(coverage_context)",
+        "except Exception as _cov_err:",
+        "    import sys; print(f'Warning: coverage instrumentation skipped: {_cov_err}', file=sys.stderr)",
     ]
     if not os.path.exists(sitecustomize_file):
         with open(sitecustomize_file, "w") as target_file:
