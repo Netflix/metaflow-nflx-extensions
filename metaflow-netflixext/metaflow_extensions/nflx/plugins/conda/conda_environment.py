@@ -210,11 +210,32 @@ class CondaEnvironment(MetaflowEnvironment):
                     datastore_type,
                 ),
                 "export _METAFLOW_CONDA_ENV=$(cat _env_id)",
-                "export PYTHONPATH=$(pwd)/_escape_trampolines:$(printenv PYTHONPATH)",
-                # NOTE: Assumes here that remote nodes are Linux
-                # We could remove the if but keeping things clean and not transforming
-                # an unset value into a set value.
-                "if [[ -n $(printenv LD_LIBRARY_PATH) ]]; then "
+                # Sanitize host-inherited PYTHONPATH so the conda env uses its
+                # own stdlib, not the host's. Specifically, bare Python lib
+                # directories (e.g. /usr/lib/python3.10, /apps/.../python3.10)
+                # contain a platform.py whose _sys_version regex predates the
+                # conda-forge "| packaged by conda-forge |" format, causing
+                # platform.python_implementation() to raise ValueError.
+                #
+                # Strategy: keep the first entry (bundled metaflow, prepended
+                # by metaflow_environment.get_package_commands) and any
+                # site-packages / dist-packages entries (which provide runtime
+                # tools like scheduler_tool that must remain importable).
+                # Drop bare stdlib dirs that would shadow the conda stdlib.
+                #
+                # Save the original to MF_ORIG_PYTHONPATH so env-escape
+                # trampolines can restore it for sub-shells.
+                "if printenv PYTHONPATH >/dev/null 2>&1; then "
+                "export MF_ORIG_PYTHONPATH=$(printenv PYTHONPATH); fi",
+                "export PYTHONPATH=$(pwd)/_escape_trampolines:"
+                "$(printenv PYTHONPATH | tr ':' '\\n' | "
+                "awk 'NR==1 || /site-packages/ || /dist-packages/' | "
+                "paste -sd:)",
+                # NOTE: Assumes here that remote nodes are Linux. The host
+                # LD_LIBRARY_PATH tail is preserved deliberately so that OS
+                # libraries (e.g. accelerator drivers) the conda env may link
+                # against remain discoverable.
+                "if printenv LD_LIBRARY_PATH >/dev/null 2>&1; then "
                 "export MF_ORIG_LD_LIBRARY_PATH=$(printenv LD_LIBRARY_PATH); "
                 "export LD_LIBRARY_PATH=$(cat _env_path)/lib:$(printenv LD_LIBRARY_PATH); else "
                 "export LD_LIBRARY_PATH=$(cat _env_path)/lib; fi",
