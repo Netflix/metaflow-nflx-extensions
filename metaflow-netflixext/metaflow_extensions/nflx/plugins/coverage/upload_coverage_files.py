@@ -1,4 +1,13 @@
-import coverage
+try:
+    import coverage
+except Exception as _e:
+    import sys
+
+    print(
+        f"Warning: coverage upload skipped — could not import coverage: {_e}",
+        file=sys.stderr,
+    )
+    sys.exit(0)
 import glob
 import gzip
 import hashlib
