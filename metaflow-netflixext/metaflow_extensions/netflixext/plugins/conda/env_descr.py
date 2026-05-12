@@ -509,9 +509,7 @@ class PackageSpecification:
         url_parsed = urlparse(self._url)
         return pkg_format == self._url_format and not _safe_netloc(
             url_parsed
-        ).startswith(
-            FAKEURL_PATHCOMPONENT
-        )
+        ).startswith(FAKEURL_PATHCOMPONENT)
 
     def is_derived(self) -> bool:
         # If the filename component of the URL does not match the filename of this package,
