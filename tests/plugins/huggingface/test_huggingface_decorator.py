@@ -18,6 +18,7 @@ from metaflow_extensions.nflx.plugins.huggingface.huggingface_decorator import (
     _LazyRepoMap,
     _build_spec_map,
     _fill_huggingface_maps,
+    _is_hf_repository_not_found,
     _parse_repo_spec,
     _safe_path_component,
 )
@@ -27,13 +28,21 @@ _NO_FLOW_STEP_INIT: Tuple[object, ...] = (None, None, "start", [], None, None, N
 _HF_TOKEN_ENV_KEYS = ("HF_TOKEN", "HUGGING_FACE_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 
 
-def _fake_hf_api_class(error_message):
+class _ResponseError(RuntimeError):
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.response = types.SimpleNamespace(status_code=status_code)
+
+
+def _fake_hf_api_class(error):
     class _FakeApi:
         def __init__(self, token=None, endpoint=None):
             pass
 
-        def model_info(self, repo_id, revision=None, token=None):
-            raise RuntimeError(error_message)
+        def model_info(self, repo_id, revision=None):
+            if isinstance(error, Exception):
+                raise error
+            raise RuntimeError(error)
 
     return _FakeApi
 
@@ -272,8 +281,8 @@ def test_get_auth_provider_type_mismatch_raises(monkeypatch):
         hf_dec._get_auth_provider()
 
 
-def test_get_model_info_wraps_not_found_when_token_set():
-    fake = _fake_hf_api_class("404 repository not found")
+def test_get_model_info_wraps_404_when_token_set():
+    fake = _fake_hf_api_class(_ResponseError("repository not found", 404))
     with patch.object(hf_dec, "_import_hf_api", return_value=fake):
         with pytest.raises(MetaflowException) as ctx:
             hf_dec._get_model_info("acme/model", "main", "secret-token")
@@ -281,11 +290,23 @@ def test_get_model_info_wraps_not_found_when_token_set():
     assert "Token was obtained" in str(ctx.value)
 
 
+def test_get_model_info_does_not_wrap_repository_text_without_404():
+    fake = _fake_hf_api_class(RuntimeError("repository service unavailable"))
+    with patch.object(hf_dec, "_import_hf_api", return_value=fake):
+        with pytest.raises(RuntimeError, match="repository service"):
+            hf_dec._get_model_info("acme/model", "main", "secret-token")
+
+
 def test_get_model_info_propagates_when_no_token():
     fake = _fake_hf_api_class("404 not found")
     with patch.object(hf_dec, "_import_hf_api", return_value=fake):
         with pytest.raises(RuntimeError):
             hf_dec._get_model_info("acme/model", "main", None)
+
+
+def test_is_hf_repository_not_found_checks_response_status():
+    assert _is_hf_repository_not_found(_ResponseError("not found", 404)) is True
+    assert _is_hf_repository_not_found(_ResponseError("repository", 500)) is False
 
 
 def test_fill_maps_metadata_only_uses_get_model_info():

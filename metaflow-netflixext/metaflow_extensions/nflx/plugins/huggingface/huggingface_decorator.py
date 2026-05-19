@@ -32,6 +32,8 @@ _BUILTIN_AUTH_PROVIDERS = {
 
 
 def _install_current_sentinel() -> None:
+    # Install a user-facing guard as soon as the plugin module loads, matching
+    # Metaflow's current.* extension pattern before any decorated step runs.
     if "huggingface" in current.__class__.__dict__:
         return
 
@@ -119,12 +121,6 @@ class _LazyRepoMap(MappingABC):
 
     def __contains__(self, key: object) -> bool:
         return key in self._spec_map
-
-    def get(self, key: str, default=None):
-        try:
-            return self[key]
-        except KeyError:
-            return default
 
 
 def _parse_repo_spec(value: str) -> Tuple[str, str]:
@@ -315,17 +311,31 @@ def _get_model_info(
     base_url = endpoint or "https://huggingface.co"
     api = HfApi(token=token, endpoint=base_url)
     try:
-        return api.model_info(repo_id, revision=revision, token=token)
+        return api.model_info(repo_id, revision=revision)
     except Exception as e:
-        err_str = str(e).lower()
-        if token and (
-            "404" in err_str or "not found" in err_str or "repository" in err_str
-        ):
+        if token and _is_hf_repository_not_found(e):
             raise MetaflowException(
                 "@huggingface: failed to get model info for %s@%s from %s: %s. %s"
                 % (repo_id, revision, base_url, e, _model_info_404_hint(repo_id))
             ) from e
         raise
+
+
+def _is_hf_repository_not_found(error: Exception) -> bool:
+    try:
+        from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
+    except ImportError:
+        HfHubHTTPError = RepositoryNotFoundError = None
+
+    if RepositoryNotFoundError is not None and isinstance(
+        error, RepositoryNotFoundError
+    ):
+        return True
+    if HfHubHTTPError is not None and isinstance(error, HfHubHTTPError):
+        response = getattr(error, "response", None)
+        return getattr(response, "status_code", None) == 404
+    response = getattr(error, "response", None)
+    return getattr(response, "status_code", None) == 404
 
 
 def _log_auth_provider(provider_type: str, token: Optional[str]) -> None:
