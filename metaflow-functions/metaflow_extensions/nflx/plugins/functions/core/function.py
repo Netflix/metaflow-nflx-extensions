@@ -264,6 +264,14 @@ class MetaflowFunction(ABC):
         # Set user metadata if provided
         func_spec.user_metadata = kwargs.get("user_metadata", None)
 
+        # Ray needs to know how much CPU, GPU, and memory to reserve for the actor
+        # that will run this function. We store these requirements at bind time
+        # so they travel with the function spec and are available when the Ray
+        # actor is created later — without the caller needing to specify them again.
+        resources = kwargs.get("resources", None)
+        if resources:
+            func_spec.system_metadata["resources"] = resources
+
         # Add class name and type specs
         func_spec.class_name = (
             f"{self.__class__.__module__}.{self.__class__.__qualname__}"

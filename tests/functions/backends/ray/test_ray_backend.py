@@ -96,3 +96,51 @@ def test_shutdown_with_active_actors():
             ray.shutdown()
         RayBackend._cluster_initialized = False
         RayBackend._actor_pool.clear()
+
+
+def test_extract_resources_empty():
+    """Resources default to empty dict when not in system_metadata."""
+    from metaflow_extensions.nflx.plugins.functions.backends.ray import RayBackend
+    from unittest.mock import MagicMock
+
+    func_instance = MagicMock()
+    func_instance.spec.system_metadata = {}
+
+    resources = RayBackend._extract_resources_from_spec(func_instance)
+    assert resources == {}
+
+
+def test_extract_resources_present():
+    """Resources are read from system_metadata["resources"]."""
+    from metaflow_extensions.nflx.plugins.functions.backends.ray import RayBackend
+    from unittest.mock import MagicMock
+
+    func_instance = MagicMock()
+    func_instance.spec.system_metadata = {
+        "resources": {"num_cpus": 2, "num_gpus": 1, "memory": 4 * 1024**3}
+    }
+
+    resources = RayBackend._extract_resources_from_spec(func_instance)
+    assert resources["num_cpus"] == 2
+    assert resources["num_gpus"] == 1
+    assert resources["memory"] == 4 * 1024**3
+
+
+def test_extract_resources_missing_metadata():
+    """Resources return empty dict when system_metadata is None."""
+    from metaflow_extensions.nflx.plugins.functions.backends.ray import RayBackend
+    from unittest.mock import MagicMock
+
+    func_instance = MagicMock()
+    func_instance.spec.system_metadata = None
+
+    resources = RayBackend._extract_resources_from_spec(func_instance)
+    assert resources == {}
+
+
+def test_apply_async_is_coroutine():
+    """apply_async must be a coroutine function (not a sync wrapper)."""
+    import asyncio
+    from metaflow_extensions.nflx.plugins.functions.backends.ray import RayBackend
+
+    assert asyncio.iscoroutinefunction(RayBackend.apply_async)
