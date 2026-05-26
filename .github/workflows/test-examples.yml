@@ -87,7 +87,7 @@ jobs:
       - name: Run training flow
         shell: bash -eo pipefail -l {0}
         working-directory: examples/shared
-        run: python training_flow.py run
+        run: python training_flow.py --environment=conda run
 
       - name: Capture function references
         shell: bash -eo pipefail -l {0}
