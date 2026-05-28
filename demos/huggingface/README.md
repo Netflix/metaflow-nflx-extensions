@@ -58,7 +58,8 @@ local checks. The live modes are opt-in and still run through this Python entryp
 
 Demo run metadata is written under `demos/huggingface/.metaflow/` by default.
 Download-mode artifacts created with `--use-demo-cache` are written under
-`demos/huggingface/.demo_hf_cache/`.
+`demos/huggingface/.demo_hf_cache/`. The demo cache is persistent and ignored by
+git; delete it manually when you no longer need the downloaded snapshots.
 
 ## Custom Auth Providers
 

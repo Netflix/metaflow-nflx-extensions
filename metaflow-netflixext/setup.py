@@ -56,6 +56,6 @@ setup(
     python_requires=">=3.7.2",
     install_requires=["metaflow>=2.16.0"],
     extras_require={
-        "huggingface": ["huggingface_hub"],
+        "huggingface": ["huggingface_hub>=0.19"],
     },
 )

@@ -14,6 +14,7 @@ from metaflow_extensions.nflx.plugins.huggingface.env_auth_provider import (
     EnvHuggingFaceAuthProvider,
 )
 from metaflow_extensions.nflx.plugins.huggingface.huggingface_decorator import (
+    _FetchConfig,
     HuggingFaceDecorator,
     _LazyRepoMap,
     _build_spec_map,
@@ -28,6 +29,22 @@ _NO_FLOW_STEP_INIT: Tuple[object, ...] = (None, None, "start", [], None, None, N
 _HF_TOKEN_ENV_KEYS = ("HF_TOKEN", "HUGGING_FACE_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 
 
+def _fetch_config(
+    metadata_only=False,
+    token=None,
+    endpoint=None,
+    local_dir_base="/base",
+    download_timeout=300,
+):
+    return _FetchConfig(
+        metadata_only=metadata_only,
+        token=token,
+        endpoint=endpoint,
+        local_dir_base=local_dir_base,
+        download_timeout=download_timeout,
+    )
+
+
 class _ResponseError(RuntimeError):
     def __init__(self, message, status_code):
         super().__init__(message)
@@ -39,7 +56,7 @@ def _fake_hf_api_class(error):
         def __init__(self, token=None, endpoint=None):
             pass
 
-        def model_info(self, repo_id, revision=None):
+        def model_info(self, repo_id, revision=None, timeout=None):
             if isinstance(error, Exception):
                 raise error
             raise RuntimeError(error)
@@ -290,6 +307,34 @@ def test_get_model_info_wraps_404_when_token_set():
     assert "Token was obtained" in str(ctx.value)
 
 
+def test_get_model_info_uses_api_token_and_timeout():
+    calls = {}
+    sentinel = object()
+
+    class _FakeApi:
+        def __init__(self, token=None, endpoint=None):
+            calls["init"] = {"token": token, "endpoint": endpoint}
+
+        def model_info(self, repo_id, revision=None, timeout=None):
+            calls["model_info"] = {
+                "repo_id": repo_id,
+                "revision": revision,
+                "timeout": timeout,
+            }
+            return sentinel
+
+    with patch.object(hf_dec, "_import_hf_api", return_value=_FakeApi):
+        result = hf_dec._get_model_info(
+            "acme/model", "main", "secret-token", "https://hub.example", timeout=123
+        )
+
+    assert result is sentinel
+    assert calls == {
+        "init": {"token": "secret-token", "endpoint": "https://hub.example"},
+        "model_info": {"repo_id": "acme/model", "revision": "main", "timeout": 123},
+    }
+
+
 def test_get_model_info_does_not_wrap_repository_text_without_404():
     fake = _fake_hf_api_class(RuntimeError("repository service unavailable"))
     with patch.object(hf_dec, "_import_hf_api", return_value=fake):
@@ -314,17 +359,24 @@ def test_fill_maps_metadata_only_uses_get_model_info():
     with patch.object(hf_dec, "_get_model_info", return_value=sentinel) as m_info:
         path_map, info_map = _fill_huggingface_maps(
             {"a": ("r1", "v1"), "b": ("r2", "v2")},
-            True,
-            "tok",
-            "https://hub.example",
-            "/base",
+            _fetch_config(
+                metadata_only=True,
+                token="tok",
+                endpoint="https://hub.example",
+                local_dir_base="/base",
+                download_timeout=123,
+            ),
         )
     assert path_map == {}
     assert info_map["a"] is sentinel
     assert info_map["b"] is sentinel
     assert m_info.call_count == 2
-    m_info.assert_any_call("r1", "v1", "tok", endpoint="https://hub.example")
-    m_info.assert_any_call("r2", "v2", "tok", endpoint="https://hub.example")
+    m_info.assert_any_call(
+        "r1", "v1", "tok", endpoint="https://hub.example", timeout=123
+    )
+    m_info.assert_any_call(
+        "r2", "v2", "tok", endpoint="https://hub.example", timeout=123
+    )
 
 
 def test_fill_maps_download_uses_download_to_task_dir():
@@ -333,14 +385,27 @@ def test_fill_maps_download_uses_download_to_task_dir():
     ) as m_dl:
         path_map, info_map = _fill_huggingface_maps(
             {"alias": ("org/repo", "rev")},
-            False,
-            "tok",
-            None,
-            "/parent",
+            _fetch_config(
+                metadata_only=False,
+                token="tok",
+                endpoint=None,
+                local_dir_base="/parent",
+                download_timeout=123,
+            ),
         )
     assert info_map == {}
     assert path_map["alias"] == "/snap/path"
-    m_dl.assert_called_once_with("org/repo", "rev", "tok", None, "/parent")
+    m_dl.assert_called_once_with(
+        "org/repo",
+        "rev",
+        _fetch_config(
+            metadata_only=False,
+            token="tok",
+            endpoint=None,
+            local_dir_base="/parent",
+            download_timeout=123,
+        ),
+    )
 
 
 def test_download_model_calls_snapshot_download_with_endpoint():
@@ -354,7 +419,12 @@ def test_download_model_calls_snapshot_download_with_endpoint():
         hf_dec, "_import_snapshot_download", return_value=fake_snapshot_download
     ):
         path = hf_dec._download_model(
-            "org/repo", "rev", "tok", "/local", endpoint="https://hub.example"
+            "org/repo",
+            "rev",
+            "tok",
+            "/local",
+            endpoint="https://hub.example",
+            timeout=321,
         )
     assert path == "/downloaded"
     assert calls == [
@@ -364,31 +434,56 @@ def test_download_model_calls_snapshot_download_with_endpoint():
             "token": "tok",
             "local_dir": "/local",
             "endpoint": "https://hub.example",
+            "etag_timeout": 321,
         }
     ]
 
 
-def test_download_to_task_dir_sanitizes_repo_with_double_dash(tmp_path):
+def test_download_to_task_dir_encodes_repo_id(tmp_path):
     with patch.object(hf_dec, "_download_model", return_value="/downloaded") as m_dl:
         path = hf_dec._download_to_task_dir(
-            "org/repo", "main", None, None, str(tmp_path)
+            "org/repo",
+            "main",
+            _fetch_config(local_dir_base=str(tmp_path), download_timeout=123),
         )
     assert path == "/downloaded"
     m_dl.assert_called_once_with(
         "org/repo",
         "main",
         None,
-        os.path.join(str(tmp_path), "org--repo_main"),
+        os.path.join(str(tmp_path), "org%2Frepo_main"),
         endpoint=None,
+        timeout=123,
     )
+
+
+def test_download_to_task_dir_distinguishes_encoded_repo_collisions(tmp_path):
+    with patch.object(hf_dec, "_download_model", return_value="/downloaded") as m_dl:
+        hf_dec._download_to_task_dir(
+            "org/repo",
+            "main",
+            _fetch_config(local_dir_base=str(tmp_path)),
+        )
+        hf_dec._download_to_task_dir(
+            "org--repo",
+            "main",
+            _fetch_config(local_dir_base=str(tmp_path)),
+        )
+    slash_repo_dir = m_dl.call_args_list[0].args[3]
+    literal_repo_dir = m_dl.call_args_list[1].args[3]
+    assert slash_repo_dir != literal_repo_dir
+    assert slash_repo_dir.endswith("org%2Frepo_main")
+    assert literal_repo_dir.endswith("org--repo_main")
 
 
 def test_download_to_task_dir_sanitizes_revision_with_slashes(tmp_path):
     with patch.object(hf_dec, "_download_model", return_value="/downloaded") as m_dl:
         path = hf_dec._download_to_task_dir(
-            "org/repo", "refs/pr/1", None, None, str(tmp_path)
+            "org/repo",
+            "refs/pr/1",
+            _fetch_config(local_dir_base=str(tmp_path), download_timeout=123),
         )
-    expected_local_dir = os.path.join(str(tmp_path), "org--repo_refs%2Fpr%2F1")
+    expected_local_dir = os.path.join(str(tmp_path), "org%2Frepo_refs%2Fpr%2F1")
     assert path == "/downloaded"
     m_dl.assert_called_once_with(
         "org/repo",
@@ -396,38 +491,44 @@ def test_download_to_task_dir_sanitizes_revision_with_slashes(tmp_path):
         None,
         expected_local_dir,
         endpoint=None,
+        timeout=123,
     )
 
 
 def test_download_to_task_dir_keeps_traversal_revision_inside_base(tmp_path):
     with patch.object(hf_dec, "_download_model", return_value="/downloaded") as m_dl:
         path = hf_dec._download_to_task_dir(
-            "org/repo", "../../escape", None, None, str(tmp_path)
+            "org/repo",
+            "../../escape",
+            _fetch_config(local_dir_base=str(tmp_path), download_timeout=123),
         )
     local_dir = m_dl.call_args.args[3]
     assert path == "/downloaded"
     assert os.path.commonpath([str(tmp_path), local_dir]) == str(tmp_path)
-    assert local_dir == os.path.join(str(tmp_path), "org--repo_..%2F..%2Fescape")
+    assert local_dir == os.path.join(str(tmp_path), "org%2Frepo_..%2F..%2Fescape")
     m_dl.assert_called_once_with(
         "org/repo",
         "../../escape",
         None,
         local_dir,
         endpoint=None,
+        timeout=123,
     )
 
 
 def test_download_to_task_dir_distinguishes_encoded_revision_collisions(tmp_path):
     with patch.object(hf_dec, "_download_model", return_value="/downloaded") as m_dl:
-        hf_dec._download_to_task_dir("org/repo", "refs/pr/1", None, None, str(tmp_path))
         hf_dec._download_to_task_dir(
-            "org/repo", "refs--pr--1", None, None, str(tmp_path)
+            "org/repo", "refs/pr/1", _fetch_config(local_dir_base=str(tmp_path))
+        )
+        hf_dec._download_to_task_dir(
+            "org/repo", "refs--pr--1", _fetch_config(local_dir_base=str(tmp_path))
         )
     slash_revision_dir = m_dl.call_args_list[0].args[3]
     literal_revision_dir = m_dl.call_args_list[1].args[3]
     assert slash_revision_dir != literal_revision_dir
-    assert slash_revision_dir.endswith("org--repo_refs%2Fpr%2F1")
-    assert literal_revision_dir.endswith("org--repo_refs--pr--1")
+    assert slash_revision_dir.endswith("org%2Frepo_refs%2Fpr%2F1")
+    assert literal_revision_dir.endswith("org%2Frepo_refs--pr--1")
 
 
 @pytest.mark.parametrize("component", ["", "   ", ".", ".."])
@@ -439,24 +540,21 @@ def test_safe_path_component_rejects_empty_or_unsafe_values(component):
 def test_lazy_download_deferred_until_getitem():
     calls = []
 
-    def record_download(repo_id, revision, token, endpoint, local_dir_base):
-        calls.append((repo_id, revision, local_dir_base))
-        return "/fake/%s" % repo_id.replace("/", "--")
+    def record_download(repo_id, revision, fetch_config):
+        calls.append((repo_id, revision, fetch_config.local_dir_base))
+        return "/fake/%s" % repo_id.replace("/", "%2F")
 
     with patch.object(hf_dec, "_download_to_task_dir", side_effect=record_download):
         mapping = _LazyRepoMap(
             {"a": ("org/m1", "main"), "b": ("org/m2", "v1")},
-            False,
-            None,
-            None,
-            "/fakebase",
+            _fetch_config(metadata_only=False, local_dir_base="/fakebase"),
         )
         assert calls == []
-        assert mapping["a"] == "/fake/org--m1"
+        assert mapping["a"] == "/fake/org%2Fm1"
         assert calls == [("org/m1", "main", "/fakebase")]
-        assert mapping["a"] == "/fake/org--m1"
+        assert mapping["a"] == "/fake/org%2Fm1"
         assert calls == [("org/m1", "main", "/fakebase")]
-        assert mapping["b"] == "/fake/org--m2"
+        assert mapping["b"] == "/fake/org%2Fm2"
         assert calls == [
             ("org/m1", "main", "/fakebase"),
             ("org/m2", "v1", "/fakebase"),
@@ -466,32 +564,37 @@ def test_lazy_download_deferred_until_getitem():
 def test_lazy_metadata_deferred_until_getitem():
     calls = []
 
-    def record_info(repo_id, revision, token, endpoint=None):
-        calls.append((repo_id, revision, endpoint))
+    def record_info(repo_id, revision, token, endpoint=None, timeout=None):
+        calls.append((repo_id, revision, endpoint, timeout))
         return object()
 
     with patch.object(hf_dec, "_get_model_info", side_effect=record_info):
         mapping = _LazyRepoMap(
             {"k": ("org/m", "rev")},
-            True,
-            "tok",
-            "https://hf.example",
-            "/base",
+            _fetch_config(
+                metadata_only=True,
+                token="tok",
+                endpoint="https://hf.example",
+                local_dir_base="/base",
+                download_timeout=123,
+            ),
         )
         assert calls == []
         _ = mapping["k"]
-        assert calls == [("org/m", "rev", "https://hf.example")]
+        assert calls == [("org/m", "rev", "https://hf.example", 123)]
 
 
 def test_lazy_unknown_key_raises():
-    mapping = _LazyRepoMap({"a": ("x", "main")}, False, None, None, "/tmp")
+    mapping = _LazyRepoMap({"a": ("x", "main")}, _fetch_config(local_dir_base="/tmp"))
     with pytest.raises(KeyError):
         _ = mapping["missing"]
 
 
 def test_lazy_contains_does_not_download():
     with patch.object(hf_dec, "_download_to_task_dir", side_effect=AssertionError):
-        mapping = _LazyRepoMap({"a": ("x", "main")}, False, None, None, "/tmp")
+        mapping = _LazyRepoMap(
+            {"a": ("x", "main")}, _fetch_config(local_dir_base="/tmp")
+        )
         assert "a" in mapping
         assert "z" not in mapping
 
@@ -499,7 +602,10 @@ def test_lazy_contains_does_not_download():
 def test_lazy_get_returns_value_or_default():
     info = {"id": "m"}
     with patch.object(hf_dec, "_get_model_info", return_value=info):
-        mapping = _LazyRepoMap({"k": ("x/y", "main")}, True, None, None, "/tmp")
+        mapping = _LazyRepoMap(
+            {"k": ("x/y", "main")},
+            _fetch_config(metadata_only=True, local_dir_base="/tmp"),
+        )
         assert mapping.get("k") is info
         assert mapping.get("missing") is None
         assert mapping.get("missing", "default") == "default"
@@ -530,6 +636,20 @@ def test_resolve_local_dir_config_when_decorator_unset(monkeypatch):
         mf_config, "HUGGINGFACE_LOCAL_DIR", "/mnt/shared/hf", raising=False
     )
     assert hf_dec._resolve_local_dir_base(None) == os.path.abspath("/mnt/shared/hf")
+
+
+def test_resolve_download_timeout_uses_config(monkeypatch):
+    monkeypatch.setattr(mf_config, "HUGGINGFACE_DOWNLOAD_TIMEOUT", "42", raising=False)
+    assert hf_dec._resolve_download_timeout() == 42
+
+
+@pytest.mark.parametrize("timeout", ["0", "-1", "not-int"])
+def test_resolve_download_timeout_invalid_config_raises(monkeypatch, timeout):
+    monkeypatch.setattr(
+        mf_config, "HUGGINGFACE_DOWNLOAD_TIMEOUT", timeout, raising=False
+    )
+    with pytest.raises(MetaflowException, match="DOWNLOAD_TIMEOUT"):
+        hf_dec._resolve_download_timeout()
 
 
 def test_current_huggingface_sentinel_raises_without_decorator():

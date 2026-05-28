@@ -12,9 +12,9 @@ the corresponding key. Set ``lazy=False`` to prefetch every listed model in
 
 import importlib
 import os
-import re
 import sys
 from collections.abc import Mapping as MappingABC
+from dataclasses import dataclass
 from typing import Dict, Iterator, List, Mapping, Optional, Tuple, Union
 from urllib.parse import quote
 
@@ -57,6 +57,15 @@ def _install_current_sentinel() -> None:
 _install_current_sentinel()
 
 
+@dataclass(frozen=True)
+class _FetchConfig:
+    metadata_only: bool
+    token: Optional[str]
+    endpoint: Optional[str]
+    local_dir_base: str
+    download_timeout: int
+
+
 class HuggingFaceContext:
     """
     Context object attached to current.huggingface when @huggingface is used.
@@ -82,16 +91,10 @@ class _LazyRepoMap(MappingABC):
     def __init__(
         self,
         spec_map: Dict[str, Tuple[str, str]],
-        metadata_only: bool,
-        token: Optional[str],
-        endpoint,
-        local_dir_base: str,
+        fetch_config: _FetchConfig,
     ):
         self._spec_map = spec_map
-        self._metadata_only = metadata_only
-        self._token = token
-        self._endpoint = endpoint
-        self._local_dir_base = local_dir_base
+        self._fetch_config = fetch_config
         self._cache = {}  # type: Dict[str, Union[str, object]]
 
     def __getitem__(self, key: str) -> Union[str, object]:
@@ -99,17 +102,19 @@ class _LazyRepoMap(MappingABC):
             raise KeyError(key)
         if key not in self._cache:
             repo_id, revision = self._spec_map[key]
-            if self._metadata_only:
+            if self._fetch_config.metadata_only:
                 self._cache[key] = _get_model_info(
-                    repo_id, revision, self._token, endpoint=self._endpoint
+                    repo_id,
+                    revision,
+                    self._fetch_config.token,
+                    endpoint=self._fetch_config.endpoint,
+                    timeout=self._fetch_config.download_timeout,
                 )
             else:
                 self._cache[key] = _download_to_task_dir(
                     repo_id,
                     revision,
-                    self._token,
-                    self._endpoint,
-                    self._local_dir_base,
+                    self._fetch_config,
                 )
         return self._cache[key]
 
@@ -279,9 +284,10 @@ def _download_model(
     token: Optional[str],
     local_dir: str,
     endpoint: Optional[str] = None,
+    timeout: Optional[int] = None,
 ) -> str:
     snapshot_download = _import_snapshot_download()
-    kwargs = dict(
+    kwargs: Dict[str, object] = dict(
         repo_id=repo_id,
         revision=revision,
         token=token,
@@ -289,6 +295,9 @@ def _download_model(
     )
     if endpoint is not None:
         kwargs["endpoint"] = endpoint
+    if timeout is not None:
+        _set_hf_download_timeout(timeout)
+        kwargs["etag_timeout"] = timeout
     return snapshot_download(**kwargs)
 
 
@@ -305,13 +314,14 @@ def _get_model_info(
     revision: str,
     token: Optional[str],
     endpoint: Optional[str] = None,
+    timeout: Optional[int] = None,
 ) -> object:
     """Fetch model metadata from the Hub without downloading files."""
     HfApi = _import_hf_api()
     base_url = endpoint or "https://huggingface.co"
     api = HfApi(token=token, endpoint=base_url)
     try:
-        return api.model_info(repo_id, revision=revision)
+        return api.model_info(repo_id, revision=revision, timeout=timeout)
     except Exception as e:
         if token and _is_hf_repository_not_found(e):
             raise MetaflowException(
@@ -319,6 +329,17 @@ def _get_model_info(
                 % (repo_id, revision, base_url, e, _model_info_404_hint(repo_id))
             ) from e
         raise
+
+
+def _set_hf_download_timeout(timeout: int) -> None:
+    try:
+        from huggingface_hub import constants
+    except ImportError:
+        return
+
+    for attr in ("HF_HUB_DOWNLOAD_TIMEOUT", "HF_HUB_ETAG_TIMEOUT"):
+        if hasattr(constants, attr):
+            setattr(constants, attr, timeout)
 
 
 def _is_hf_repository_not_found(error: Exception) -> bool:
@@ -338,6 +359,22 @@ def _is_hf_repository_not_found(error: Exception) -> bool:
     return getattr(response, "status_code", None) == 404
 
 
+def _resolve_download_timeout() -> int:
+    from metaflow import metaflow_config
+
+    try:
+        timeout = int(getattr(metaflow_config, "HUGGINGFACE_DOWNLOAD_TIMEOUT", 300))
+    except (TypeError, ValueError) as e:
+        raise MetaflowException(
+            "@huggingface: HUGGINGFACE_DOWNLOAD_TIMEOUT must be a positive integer"
+        ) from e
+    if timeout <= 0:
+        raise MetaflowException(
+            "@huggingface: HUGGINGFACE_DOWNLOAD_TIMEOUT must be a positive integer"
+        )
+    return timeout
+
+
 def _log_auth_provider(provider_type: str, token: Optional[str]) -> None:
     msg = "@huggingface: using auth provider '%s', token %s"
     sys.stderr.write(msg % (provider_type, "obtained" if token else "none") + "\n")
@@ -355,12 +392,13 @@ def _resolve_auth_token():
 def _resolve_local_dir_base(decorator_local_dir: Optional[str]) -> str:
     """
     Parent directory for model snapshots: ``<base>/<repo_sanitized>_<revision>/``,
-    with ``/`` in ``repo_id`` replaced by ``--`` and revision values encoded as
-    a single filesystem component.
+    with repo id and revision encoded as single filesystem components.
 
     Order: non-empty ``@huggingface(local_dir=...)``, then
     ``METAFLOW_HUGGINGFACE_LOCAL_DIR`` / ``HUGGINGFACE_LOCAL_DIR``, else
-    ``<task temp>/metaflow_huggingface``.
+    ``<task temp>/metaflow_huggingface``. Explicit/configured directories are
+    persistent user-owned caches; only the task temp fallback is cleaned up by
+    Metaflow.
     """
     if isinstance(decorator_local_dir, str):
         s = decorator_local_dir.strip()
@@ -374,15 +412,11 @@ def _resolve_local_dir_base(decorator_local_dir: Optional[str]) -> str:
     return os.path.join(current.tempdir or "/tmp", "metaflow_huggingface")
 
 
-def _safe_path_component(value: str, label: str, encode: bool = False) -> str:
+def _safe_path_component(value: str, label: str) -> str:
     value = (value or "").strip()
     if not value:
         raise MetaflowException("@huggingface: empty %s is not valid" % label)
-    if encode:
-        component = quote(value, safe="._-")
-    else:
-        component = value.replace("/", "--").replace("\\", "--")
-        component = re.sub(r"[^A-Za-z0-9._-]+", "--", component)
+    component = quote(value, safe="._-")
     if component in ("", ".", ".."):
         raise MetaflowException(
             "@huggingface: %s '%s' cannot be used as a download path component"
@@ -394,13 +428,12 @@ def _safe_path_component(value: str, label: str, encode: bool = False) -> str:
 def _download_to_task_dir(
     repo_id: str,
     revision: str,
-    token: Optional[str],
-    endpoint,
-    local_dir_base: str,
+    fetch_config: _FetchConfig,
 ) -> str:
+    local_dir_base = fetch_config.local_dir_base
     local_dir_base = os.path.abspath(os.path.expanduser(local_dir_base))
     repo_component = _safe_path_component(repo_id, "repo id")
-    revision_component = _safe_path_component(revision, "revision", encode=True)
+    revision_component = _safe_path_component(revision, "revision")
     task_subdir = os.path.abspath(
         os.path.join(local_dir_base, "%s_%s" % (repo_component, revision_component))
     )
@@ -409,25 +442,33 @@ def _download_to_task_dir(
             "@huggingface: resolved download path escaped local_dir base"
         )
     os.makedirs(local_dir_base, exist_ok=True)
-    return _download_model(repo_id, revision, token, task_subdir, endpoint=endpoint)
+    return _download_model(
+        repo_id,
+        revision,
+        fetch_config.token,
+        task_subdir,
+        endpoint=fetch_config.endpoint,
+        timeout=fetch_config.download_timeout,
+    )
 
 
 def _fill_huggingface_maps(
     spec_map: Dict[str, Tuple[str, str]],
-    metadata_only: bool,
-    token: Optional[str],
-    endpoint,
-    local_dir_base: str,
+    fetch_config: _FetchConfig,
 ) -> Tuple[Dict[str, str], Dict[str, object]]:
     path_map = {}
     info_map = {}
     for key, (repo_id, revision) in spec_map.items():
-        if metadata_only:
-            info_map[key] = _get_model_info(repo_id, revision, token, endpoint=endpoint)
-        else:
-            path_map[key] = _download_to_task_dir(
-                repo_id, revision, token, endpoint, local_dir_base
+        if fetch_config.metadata_only:
+            info_map[key] = _get_model_info(
+                repo_id,
+                revision,
+                fetch_config.token,
+                endpoint=fetch_config.endpoint,
+                timeout=fetch_config.download_timeout,
             )
+        else:
+            path_map[key] = _download_to_task_dir(repo_id, revision, fetch_config)
     return path_map, info_map
 
 
@@ -452,6 +493,8 @@ class HuggingFaceDecorator(StepDecorator):
         ``ModelInfo`` on first access.
     local_dir : str, optional
         Absolute or relative path to the parent directory for downloaded snapshots.
+        Explicit/configured directories are persistent caches and are not cleaned up
+        by Metaflow; the default task temp directory is cleaned up with the task.
 
     MF Add To Current
     -----------------
@@ -514,26 +557,25 @@ class HuggingFaceDecorator(StepDecorator):
 
         from metaflow.metaflow_config import HUGGINGFACE_ENDPOINT
 
-        endpoint = HUGGINGFACE_ENDPOINT
-        local_dir_base = _resolve_local_dir_base(self._decorator_local_dir)
+        fetch_config = _FetchConfig(
+            metadata_only=self._metadata_only,
+            token=token,
+            endpoint=HUGGINGFACE_ENDPOINT,
+            local_dir_base=_resolve_local_dir_base(self._decorator_local_dir),
+            download_timeout=_resolve_download_timeout(),
+        )
         if self._lazy:
             if self._metadata_only:
                 ctx = HuggingFaceContext(
                     models={},
-                    model_info=_LazyRepoMap(
-                        self._spec_map, True, token, endpoint, local_dir_base
-                    ),
+                    model_info=_LazyRepoMap(self._spec_map, fetch_config),
                 )
             else:
                 ctx = HuggingFaceContext(
-                    models=_LazyRepoMap(
-                        self._spec_map, False, token, endpoint, local_dir_base
-                    ),
+                    models=_LazyRepoMap(self._spec_map, fetch_config),
                     model_info={},
                 )
         else:
-            path_map, info_map = _fill_huggingface_maps(
-                self._spec_map, self._metadata_only, token, endpoint, local_dir_base
-            )
+            path_map, info_map = _fill_huggingface_maps(self._spec_map, fetch_config)
             ctx = HuggingFaceContext(models=path_map, model_info=info_map)
         current._update_env({"huggingface": ctx})

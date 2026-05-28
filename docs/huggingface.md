@@ -109,8 +109,23 @@ Snapshots are written under a parent directory selected in this order:
 2. `METAFLOW_HUGGINGFACE_LOCAL_DIR`
 3. `<task temp>/metaflow_huggingface`
 
-Each repo gets a subdirectory named from the repo id and revision. Revision values
-are encoded into a single path component, so slash-containing revisions such as
-`refs/pr/1` cannot create nested directories.
+Each repo gets a subdirectory named from the repo id and revision. Repo ids and
+revision values are encoded into single path components, so values such as
+`org/repo` and `refs/pr/1` cannot create nested directories or collide with
+literal names such as `org--repo`.
+
+The default task temp location is cleaned up with the Metaflow task. Explicit
+`local_dir` values and `METAFLOW_HUGGINGFACE_LOCAL_DIR` are treated as persistent
+user-owned cache locations. They can be useful for large models, but users are
+responsible for disk usage and cleanup.
 
 Set `METAFLOW_HUGGINGFACE_ENDPOINT` only for a custom Hugging Face host.
+
+## Timeout
+
+`METAFLOW_HUGGINGFACE_DOWNLOAD_TIMEOUT` controls Hugging Face metadata and
+download request timeouts. The default is `300` seconds.
+
+The decorator passes this value to metadata requests, snapshot metadata checks, and
+the Hugging Face Hub download timeout constants when the installed `huggingface_hub`
+version exposes them.
