@@ -27,7 +27,8 @@ STEP_DECORATORS_DESC = [
         ".conda.conda_step_decorator.SysPackagesRequirementStepDecorator",
     ),
     ("conda_env_internal", ".conda.conda_step_decorator.CondaEnvInternalDecorator"),
+    ("huggingface", ".huggingface.huggingface_decorator.HuggingFaceDecorator"),
 ]
 ENVIRONMENTS_DESC = [("conda", ".conda.conda_environment.CondaEnvironment")]
 
-__mf_promote_submodules__ = ["conda"]
+__mf_promote_submodules__ = ["conda", "huggingface"]
