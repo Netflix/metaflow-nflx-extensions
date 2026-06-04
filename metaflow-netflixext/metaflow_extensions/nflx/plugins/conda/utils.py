@@ -27,7 +27,7 @@ from typing import (
     Union,
     cast,
 )
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 import metaflow.metaflow_config as mf_config
 from metaflow._vendor.packaging.markers import Marker, default_environment
@@ -752,6 +752,34 @@ def channel_or_url(url: str) -> str:
     if up.hostname == "conda.anaconda.org":
         return up.path.split("/", 2)[1]
     return url
+
+
+def strip_url_credentials(url: str) -> str:
+    """Strip username:password from a URL, preserving everything else."""
+    parsed = urlparse(url)
+    if not parsed.username:
+        return url
+    netloc = parsed.hostname or ""
+    if parsed.port:
+        netloc += ":%d" % parsed.port
+    return urlunparse(
+        (
+            parsed.scheme,
+            netloc,
+            parsed.path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+def _safe_netloc(url_parse_result) -> str:
+    """Return netloc without credentials (hostname:port only)."""
+    netloc = url_parse_result.hostname or ""
+    if url_parse_result.port:
+        netloc += ":%d" % url_parse_result.port
+    return netloc
 
 
 def auth_from_urls(urls: List[str]) -> Optional[AuthBase]:
