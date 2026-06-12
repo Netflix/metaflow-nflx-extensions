@@ -259,8 +259,9 @@ test_case_params = [
             "supported_tags": [("cp310", "cp310", "macosx_10_9_universal2")],
             "expected": {},
             "check_subset": True,
+            # sdist-only packages are now supported (built from source), so this
+            # no longer raises — it resolves with no compatible wheel match.
             "id": "no_wheel_in_package",
-            "expected_conda_exception": "We just encountered a package definition that contains no wheels",
         }
     ),
     (
@@ -279,7 +280,7 @@ test_case_params = [
             "expected": {},
             "check_subset": True,
             "id": "other_package_formats_than_sdist_wheels",
-            "expected_conda_exception": "Currently we only support wheel packages",
+            "expected_conda_exception": "VCS package is missing 'url'/'path' or 'commit-id'",
         }
     ),
     (
@@ -324,7 +325,7 @@ def check_package_matching_may_throw_exception(case):
         if case.get("toml_file", None)
         else (tomli.loads(case["toml_str"]))
     )
-    grouped = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
+    grouped, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
     if "supported_tags_tag_type" in case:
         tags = case["supported_tags_tag_type"]
     else:
@@ -355,7 +356,7 @@ def test_resolve_one_package():
     """
     first_package_obj = obj["packages"][0]
     assert len(first_package_obj["wheels"]) == 1
-    output_packages = PylockTomlResolver._toml_package_to_package_specs(
+    output_packages, _ = PylockTomlResolver._toml_package_to_package_specs(
         first_package_obj
     )
     assert len(output_packages) == 1
@@ -389,7 +390,7 @@ def test_one_to_multi_package_resolution():
     """
     package_obj = obj["packages"][1]
     assert len(package_obj["wheels"]) == 91
-    output_packages = PylockTomlResolver._toml_package_to_package_specs(package_obj)
+    output_packages, _ = PylockTomlResolver._toml_package_to_package_specs(package_obj)
     assert len(output_packages) == 91
 
     # 90-th element of wheels:
@@ -408,7 +409,7 @@ def test_parsing_root_toml_obj():
     data_path = Path(__file__).parent / "data" / "sample_pylock1.toml"
     obj = PylockTomlResolver._read_toml(data_path)
 
-    packages_dict = PylockTomlResolver._pylock_toml_root_obj_to_packages(obj)
+    packages_dict, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(obj)
     counts = 0
     counts = sum(len(p["wheels"]) for p in obj["packages"])
     wheels_count = sum(len(l) for l in packages_dict.values())
@@ -440,7 +441,8 @@ def create_supported_tags(
 
 def parse_toml_str(toml_str: str) -> Dict[str, List[PypiPackageSpecification]]:
     package_obj = tomli.loads(toml_str)
-    return PylockTomlResolver._pylock_toml_root_obj_to_packages(package_obj)
+    d, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(package_obj)
+    return d
 
 
 @pytest.fixture
@@ -477,7 +479,7 @@ def test_translate_pylock_to_resolved_env(deps):
         str(Path(__file__).parent / "data" / "sample_pylock1.toml"),
     )
 
-    resolved_env = PylockTomlResolver._translate_pylock_toml_to_resolved_env(
+    resolved_env, _ = PylockTomlResolver._translate_pylock_toml_to_resolved_env(
         toml_root_obj=root_obj,
         env_type=EnvType.MIXED,
         deps=deps,
@@ -529,7 +531,7 @@ def test_base_packages_extended_to_packages(deps):
         )
     ]
 
-    resolved_env = PylockTomlResolver._translate_pylock_toml_to_resolved_env(
+    resolved_env, _ = PylockTomlResolver._translate_pylock_toml_to_resolved_env(
         toml_root_obj=root_obj,
         env_type=EnvType.MIXED,
         deps=deps,
@@ -660,7 +662,7 @@ def test_translate_pylock_to_resolved_env(deps):
         str(Path(__file__).parent / "data" / "sample_pylock1.toml"),
     )
 
-    resolved_env = PylockTomlResolver._translate_pylock_toml_to_resolved_env(
+    resolved_env, _ = PylockTomlResolver._translate_pylock_toml_to_resolved_env(
         root_obj,
         EnvType.MIXED,
         deps,
@@ -795,7 +797,7 @@ def test_resolve_marker():
     # Test resolving one package "numpy"
     numpy_package_obj = [p for p in root_obj["packages"] if p["name"] == "numpy"][0]
 
-    numpy_packages = PylockTomlResolver._toml_package_to_package_specs(
+    numpy_packages, _ = PylockTomlResolver._toml_package_to_package_specs(
         numpy_package_obj
     )
     assert numpy_packages
@@ -803,7 +805,7 @@ def test_resolve_marker():
         assert pkg.environment_marker == "python_full_version < '3.11'"
 
     # Test resolving the full toml file.
-    pkgs_dict = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
+    pkgs_dict, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
     assert "numpy" in pkgs_dict
     for pkg in pkgs_dict["numpy"]:
         assert pkg.environment_marker == "python_full_version < '3.11'"
@@ -831,7 +833,7 @@ def test_filter_packages(mock_target_env):
     root_obj = PylockTomlResolver._read_toml(
         str(Path(__file__).parent / "data" / "sample_pylock1.toml"),
     )
-    pkgs_dict = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
+    pkgs_dict, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
 
     # Filter packages with marker that is satisfied by python version 3.10
     filtered_pkgs = PylockTomlResolver._filter_packages(
@@ -890,7 +892,7 @@ wheels = [
             )
         )
     )
-    packages_dict = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
+    packages_dict, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
 
     assert "numpy" in packages_dict
     assert len(packages_dict["numpy"]) == 7

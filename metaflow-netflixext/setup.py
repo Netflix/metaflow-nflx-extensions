@@ -30,9 +30,6 @@ setup(
         "Operating System :: MacOS :: MacOS X",
         "Operating System :: POSIX :: Linux",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
@@ -53,7 +50,7 @@ setup(
     package_data={
         "metaflow_extensions.nflx.plugins.conda.resources": ["*.png", "*.svg"]
     },
-    python_requires=">=3.7.2",
+    python_requires=">=3.10",
     install_requires=["metaflow>=2.16.0"],
     extras_require={
         "huggingface": ["huggingface_hub>=0.19"],

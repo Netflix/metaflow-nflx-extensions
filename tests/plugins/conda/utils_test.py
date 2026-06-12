@@ -37,7 +37,7 @@ wheels = [
     )
 
     numpy_package_obj = root_obj["packages"][0]
-    numpy_packages = PylockTomlResolver._toml_package_to_package_specs(
+    numpy_packages, _ = PylockTomlResolver._toml_package_to_package_specs(
         numpy_package_obj
     )
 
@@ -186,7 +186,7 @@ wheels = [
             )
         )
     )
-    packages_dict = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
+    packages_dict, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(root_obj)
 
     assert "numpy" in packages_dict
     assert len(packages_dict) == 1
