@@ -148,6 +148,7 @@ class PylockTomlResolver(Resolver):
         # Dedup is deferred until *after* marker filtering so that packages with
         # mutually exclusive markers sharing a URL are not incorrectly collapsed
         # before one is filtered out.
+        # filter_packages_by_markers preserves object identity — id() is safe here.
         filtered_build_spec_ids = {
             id(spec)
             for spec in filter_packages_by_markers(
@@ -381,7 +382,11 @@ class PylockTomlResolver(Resolver):
                 raise CondaException(
                     "Cannot include an editable package: '%s'" % local_path
                 )
-            base_pkg_url = "file://%s/%s-%s.whl" % (local_path, pkg_name, pkg_version)
+            base_pkg_url = "file://%s/%s-%s.whl" % (
+                local_path,
+                pkg_name,
+                pkg_version or "0",  # PEP 751 allows omitting version for local deps
+            )
             cache_key = PypiCachePackage.make_partial_cache_url(
                 base_pkg_url, is_real_url=False
             )
@@ -693,7 +698,9 @@ class PylockTomlResolver(Resolver):
             )
         if pkg_types["archive_remote"]:
             summary_parts.append(
-                "%d remote archive (need build): %s"
+                # Note: .whl URLs in this bucket are used directly (no build);
+                # other formats go through build_pypi_packages.
+                "%d remote archive (may need build): %s"
                 % (
                     len(pkg_types["archive_remote"]),
                     ", ".join(pkg_types["archive_remote"]),

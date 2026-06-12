@@ -525,7 +525,12 @@ class ResolvedReqFlowDecorator(ResolvedEnvironmentBaseFlowMutator):
                 "compile",
                 requirements_txt_path,
                 "--index-strategy",
-                "unsafe-best-match",  # Treat all indices equally
+                # With the default "first-index" strategy, uv stops at the first index
+                # that has *any* version of a package, ignoring better matches on later
+                # indices. "unsafe-best-match" checks all indices and picks the best
+                # version across all of them — required when a private index provides
+                # a newer or custom build of a package that also exists on PyPI.
+                "unsafe-best-match",
                 "--output-file",
                 temp_path,
             ],
