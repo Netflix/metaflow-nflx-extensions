@@ -61,7 +61,7 @@ class CondaRequirementFlowDecorator(
     channels : List[str], default []
         Additional channels to search
     python : str, optional, default None
-        Version of Python to use, e.g. '3.7.4'. If not specified, the current version
+        Version of Python to use, e.g. '3.10.4'. If not specified, the current version
         will be used.
     disabled : bool, default False
         If set to True, uses the external environment.
@@ -138,7 +138,7 @@ class PypiRequirementFlowDecorator(
         Extra arguments to pass to the resolver. For example "pre" to include
         pre-release packages.
     python : str, optional, default None
-        Version of Python to use, e.g. '3.7.4'. If not specified, the current python
+        Version of Python to use, e.g. '3.10.4'. If not specified, the current python
         version will be used.
     disabled : bool, default False
         If set to True, uses the external environment.
@@ -266,7 +266,7 @@ class PipRequirementFlowDecorator(PypiRequirementFlowDecorator):
     extra_indices : List[str], default []
         Additional sources to search for
     python : str, optional, default None
-        Version of Python to use, e.g. '3.7.4'. If not specified, the current python
+        Version of Python to use, e.g. '3.10.4'. If not specified, the current python
         version will be used.
     fetch_at_exec : bool, default False
         DEPRECATED -- use `@named_env(name=)` instead.

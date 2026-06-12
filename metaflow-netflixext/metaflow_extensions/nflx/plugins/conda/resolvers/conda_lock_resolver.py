@@ -1,6 +1,5 @@
 # pyright: strict, reportTypeCommentUsage=false, reportMissingTypeStubs=false
 import os
-import re
 import tempfile
 
 from itertools import chain
@@ -29,7 +28,6 @@ from ..utils import (
     arch_id,
     channel_or_url,
     filter_user_reqs_by_markers,
-    get_requirement,
     parse_explicit_url_conda,
     parse_explicit_url_pypi,
     pypi_tags_from_arch,
@@ -112,42 +110,9 @@ class CondaLockResolver(Resolver):
             # We only add pip if not present
             if not any([(d == "pip" or d.startswith("pip==")) for d in conda_deps]):
                 conda_deps.append("pip")
-            # Ditto for uv -- uv 0.7.8 is the last to actually work with python 3.7
-            # but this is not listed as a condition so we enforce it here
-            # TODO: Remove this once python3.7 is retired
+            # Ditto for uv
             if not any([(d == "uv" or d.startswith("uv==")) for d in conda_deps]):
-                # Duplicate code from filter_user_reqs_by_markers in EnvsResolver.
-                # Get the minimum python version supported (major.minor) from the requested specifier.
-                spec = get_requirement(python_version_requested).specifier
-                candidate_versions = [
-                    "3.5",
-                    "3.6",
-                    "3.7",
-                    "3.8",
-                    "3.9",
-                    "3.10",
-                    "3.11",
-                    "3.12",
-                    "3.13",
-                    "3.14",
-                ]
-                matching_versions = list(spec.filter(candidate_versions))
-                if matching_versions:
-                    min_supported_py = matching_versions[0]
-                else:
-                    # fallback to the requested version (eg, ==3.10.5 → 3.10)
-                    mm = re.match(r"^.*?([0-9]+)\.([0-9]+)", python_version_requested)
-                    if mm:
-                        min_supported_py = f"{mm.group(1)}.{mm.group(2)}"
-                    else:
-                        raise CondaException(
-                            "Could not determine minimum supported Python "
-                            f"version from {python_version_requested}"
-                        )
-                if min_supported_py in ["3.5", "3.6", "3.7"]:
-                    conda_deps.append("uv==<=0.7.8")
-                else:
-                    conda_deps.append("uv")
+                conda_deps.append("uv")
 
             toml_lines = [
                 "[build-system]\n",
