@@ -121,10 +121,10 @@ def parse_req_value(
 ) -> Optional[str]:
     python_version = None
     for line in file_content.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        # Strip inline comments (but not inside URL fragments)
+        # Strip inline comments (but not inside URL fragments) BEFORE the
+        # empty-line check, so that whole-line comments (e.g. "# GIT repo")
+        # collapse to an empty string and are skipped rather than crashing
+        # the splits[0] access below.
         comment_idx = line.find("#")
         if comment_idx >= 0:
             # Only strip if the '#' is preceded by whitespace or is at the start
@@ -132,6 +132,9 @@ def parse_req_value(
             before = line[:comment_idx]
             if not before or before[-1] in (" ", "\t"):
                 line = before
+        line = line.strip()
+        if not line:
+            continue
         splits = line.split(maxsplit=1)
         first_word = splits[0]
         if len(splits) > 1:
