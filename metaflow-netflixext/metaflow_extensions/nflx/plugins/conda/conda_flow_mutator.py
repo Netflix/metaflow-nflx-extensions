@@ -524,6 +524,8 @@ class ResolvedReqFlowDecorator(ResolvedEnvironmentBaseFlowMutator):
                 "pip",
                 "compile",
                 requirements_txt_path,
+                "--index-strategy",
+                "unsafe-best-match",  # Treat all indices equally
                 "--output-file",
                 temp_path,
             ],

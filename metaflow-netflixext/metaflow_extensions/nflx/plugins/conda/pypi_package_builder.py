@@ -5,6 +5,7 @@ import os
 import shutil
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from typing import (
     TYPE_CHECKING,
     Dict,
@@ -48,17 +49,11 @@ from .utils import (
 _DEV_TRANS = str.maketrans("abcdef", "012345")
 
 
-# This is a dataclass -- can move to that when we only support 3.7+
+@dataclass
 class PackageToBuild:
-    def __init__(
-        self,
-        url: str,
-        spec: Optional[PackageSpecification] = None,
-        have_formats: Optional[List[str]] = None,
-    ):
-        self.url = url
-        self.spec = spec
-        self.have_formats = have_formats or []
+    url: str
+    spec: Optional[PackageSpecification] = None
+    have_formats: List[str] = field(default_factory=list)
 
 
 def build_pypi_packages(
