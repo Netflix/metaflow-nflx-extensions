@@ -626,13 +626,12 @@ def test_toml_with_poetry_sources(cli_runner, mock_resolver_add_environment):
 
 
 def test_req_parser_error_index_url():
-    """Test that using -i or --index-url in requirements.txt raises an error."""
+    """Test that using -i or --index-url in requirements.txt emits a warning."""
     from metaflow_extensions.nflx.plugins.conda.parsers import req_parser
 
     content = "--index-url https://pypi.custom.com/simple\npandas"
-    with pytest.raises(Exception) as exc_info:
+    with pytest.warns(UserWarning, match="METAFLOW_CONDA_DEFAULT_PYPI_SOURCE"):
         req_parser(content)
-    assert "METAFLOW_CONDA_DEFAULT_PYPI_SOURCE" in str(exc_info.value)
 
 
 def test_req_parser_error_unsupported_line():

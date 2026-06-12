@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.8", "3.10", "3.12", "3.13"]
+        python-version: ["3.10", "3.12", "3.13"]
         resolver: [mamba, conda, micromamba]
         micromamba-version: ["1.5.10-0", "latest"]
         mamba-version: ["mamba=1.5.10", "mamba"]
@@ -31,8 +31,6 @@ jobs:
           - resolver: conda
             mamba-version: "mamba=1.5.10"
           - resolver: micromamba
-            mamba-version: "mamba=1.5.10"
-          - python-version: "3.8"
             mamba-version: "mamba=1.5.10"
           - python-version: "3.13"
             mamba-version: "mamba=1.5.10"
