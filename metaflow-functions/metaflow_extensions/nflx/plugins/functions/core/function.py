@@ -36,6 +36,7 @@ is suitable for your computation.
 
 import datetime
 import hashlib
+from io import BytesIO
 import json
 import os
 import shutil
@@ -45,7 +46,7 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, Dict, Optional, Type, cast
 
 if TYPE_CHECKING:
-    from metaflow import S3, Task
+    from metaflow import S3, Task, FunctionParameters
 
 from metaflow_extensions.nflx.plugins.functions.config import Config
 from metaflow_extensions.nflx.plugins.functions.core.function_decorator import (
@@ -64,7 +65,6 @@ if TYPE_CHECKING:
         AbstractBackend,
     )
 
-
 class MetaflowFunction(ABC):
     """
     Base class for all Metaflow functions.
@@ -76,6 +76,12 @@ class MetaflowFunction(ABC):
         self,
         func: Optional["MetaflowFunctionDecorator"] = None,
         task: Optional["Task"] = None,
+        params: Optional["FunctionParameters"] = None,
+        # Root directory of the code to package when no Metaflow task is provided.
+        # Defaults to the current working directory if not specified.
+        # Only relevant for the taskless path — ignored when a task is provided.
+        # TO DO: Could come up with a better name for this
+        root: Optional[str] = None,
         **kwargs: Any,
     ):
         """
@@ -95,24 +101,30 @@ class MetaflowFunction(ABC):
         """
         self._func: Optional["MetaflowFunctionDecorator"] = func
         self.task: Optional["Task"] = task
+        self._params: Optional["FunctionParameters"] = params
+        self._root: Optional[str] = root
         self._function_spec: Optional[FunctionSpec] = None
         self._backend: Optional["AbstractBackend"] = None
 
         # Only build function spec for legacy single-function initialization
-        if func is not None and task is not None:
+        if func is not None and (task is not None or params is not None):
             # Build the function spec
             self._function_spec = self._build_function_spec(**kwargs)
 
             # Check that the task is completed, we need a valid task
             # that saved artifacts
-            if task.successful != True:
+            if task is not None and task.successful != True:
                 raise MetaflowFunctionException(
                     f"'{task.pathspec}' cannot be bound to function '{self.name}' because it did not complete successfully or is still running. Only finished and successful tasks can be bound to a function."
                 )
 
             # Add package info, timestamp, and generate final hash
             package_suffixes = kwargs.get("package_suffixes", None)
-            self._function_spec = self._export(self._function_spec, package_suffixes)
+            self._function_spec = self._export(
+                self._function_spec,
+                package_suffixes,
+                code_root=self._root or os.getcwd() if task is None else None,
+            )
 
     @property
     def spec(self) -> FunctionSpec:
@@ -198,7 +210,7 @@ class MetaflowFunction(ABC):
                 artifact_meta[artifact.id] = artifact._object
             return artifact_meta
 
-        if self._func is None or self.task is None:
+        if self._func is None or (self.task is None and self._params is None):
             raise MetaflowFunctionException(
                 "Cannot build function spec without a function and a task."
             )
@@ -221,14 +233,19 @@ class MetaflowFunction(ABC):
             func_spec.function = self._func.deco_spec
             func_spec.name = self._func.deco_spec.name
 
-        func_spec.task_pathspec = self.task.pathspec
-        # Use the task's code package path; fall back to the current run's code URL
+        func_spec.task_pathspec = self.task.pathspec if self.task else None
+
+       # Use the task's code package path; fall back to the current run's code URL
         # (the first task in a local run may register metadata before the async
         # code-package upload completes, leaving task.code as None)
-        if self.task.code is not None:
+        if self.task is not None and self.task.code is not None:
             func_spec.task_code_path = self.task.code.path
         elif os.environ.get("METAFLOW_CODE_URL"):
             func_spec.task_code_path = os.environ["METAFLOW_CODE_URL"]
+        elif self.task is None:
+            # no task — _export() will package and upload current code
+            # and set task_code_path once the S3 path is known
+            func_spec.task_code_path = None
         else:
             raise MetaflowFunctionException(
                 "Cannot determine code package path: task '%s' has no code package "
@@ -239,30 +256,44 @@ class MetaflowFunction(ABC):
 
         func_spec.user = get_username()
         func_spec.system_metadata = {}
-        if (
-            "conda_env_id" not in self.task.metadata_dict
-            or self.task.metadata_dict["conda_env_id"] == ""
-        ):
-            raise MetaflowFunctionException(
-                "Tasks must use one of the environment "
-                "decorators to bind to a 'Metaflow Function'"
-            )
 
-        conda_env_id = self.task.metadata_dict["conda_env_id"]
-        conda_env_id = json.loads(conda_env_id)
-        alias = f"{conda_env_id[0]}:{conda_env_id[1]}"
-        arch = conda_env_id[2]
-        func_spec.system_metadata.update(
-            {
-                "environment": {
-                    "alias": alias,
-                    "arch": arch,
-                    "env_id": conda_env_id,
+        if self.task is not None:
+            if (
+                "conda_env_id" not in self.task.metadata_dict
+                or self.task.metadata_dict["conda_env_id"] == ""
+            ):
+                raise MetaflowFunctionException(
+                    "Tasks must use one of the environment "
+                    "decorators to bind to a 'Metaflow Function'"
+                )
+
+            conda_env_id = self.task.metadata_dict["conda_env_id"]
+            conda_env_id = json.loads(conda_env_id)
+            alias = f"{conda_env_id[0]}:{conda_env_id[1]}"
+            arch = conda_env_id[2]
+            func_spec.system_metadata.update(
+                {
+                    "environment": {
+                        "alias": alias,
+                        "arch": arch,
+                        "env_id": conda_env_id,
+                    }
                 }
-            }
-        )
+            )
+        else:
+            # no task — environment resolved at runtime from function decorator
+            func_spec.system_metadata.update({"environment": {}})
+
         # Set user metadata if provided
         func_spec.user_metadata = kwargs.get("user_metadata", None)
+
+        # Ray needs to know how much CPU, GPU, and memory to reserve for the actor
+        # that will run this function. We store these requirements at bind time
+        # so they travel with the function spec and are available when the Ray
+        # actor is created later — without the caller needing to specify them again.
+        resources = kwargs.get("resources", None)
+        if resources:
+            func_spec.system_metadata["resources"] = resources
 
         # Add class name and type specs
         func_spec.class_name = (
@@ -290,7 +321,13 @@ class MetaflowFunction(ABC):
             )
 
         # Set artifacts metadata
-        func_spec.artifacts = _package_artifact_metadata(self.task)
+        if self.task is not None:
+            func_spec.artifacts = _package_artifact_metadata(self.task)
+        elif self._params is not None:
+            # extract actual user-provided values not internal FunctionParameters state
+            func_spec.artifacts = {k: self._params[k] for k in self._params}
+        else:
+            func_spec.artifacts = {}
 
         return func_spec
 
@@ -299,6 +336,7 @@ class MetaflowFunction(ABC):
         cls,
         func_spec: FunctionSpec,
         package_suffixes: Optional[str] = None,
+        code_root: Optional[str] = None,
     ) -> FunctionSpec:
         """
         Exports the function specification to a file or other storage medium
@@ -311,6 +349,10 @@ class MetaflowFunction(ABC):
 
         package_suffixes : Optional[str], default None
             A comma-separated string of suffixes to be used for packaging the function.
+
+        code_root : Optional[str], default None
+            Root directory to package when no Metaflow task is provided.
+            When set, packages the directory and uploads it as the task code path.
 
         Returns
         -------
@@ -340,6 +382,44 @@ class MetaflowFunction(ABC):
             root_path = DEFAULT_FUNCTIONS_LOCAL_ROOT
         root_path = os.path.join(root_path, Config.FUNCTIONS_ENV, Config.VERSION)
         debug.functions_exec(f"Exporting to {root_path}")
+
+        # If no task was provided, package the current code directory and upload it
+        # so task_code_path has a valid S3 path before the spec is finalized
+        if code_root is not None:
+            import tarfile
+            from metaflow.package import DEFAULT_SUFFIXES_LIST
+            
+            buf = BytesIO()
+            fixed_mtime = 1575360000 
+            with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=3, dereference=True) as tar:
+                for path, rel_path in MetaflowFunctionPackage._walk(
+                    code_root,
+                    exclude_hidden=True,
+                    suffixes=DEFAULT_SUFFIXES_LIST,
+                ):
+                    info = tar.gettarinfo(path, rel_path)
+                    info.mtime = fixed_mtime
+                    with open(path, "rb") as f:
+                        tar.addfile(info, f)
+            blob = bytearray(buf.getvalue())
+            blob[4:8] = [0] * 4
+            code_blob = bytes(blob)
+            code_hash = hashlib.sha256(code_blob).hexdigest()[:32]
+            code_blob_name = f"{code_hash}.tar.gz"
+            code_blob_path = os.path.join(root_path, "code", code_hash[0:2], code_blob_name)
+            with TemporaryDirectory(prefix="metaflow-functions-") as td:
+                code_blob_path_temp = os.path.join(td, code_blob_name)
+                with open(code_blob_path_temp, "wb") as f:
+                    f.write(code_blob)
+                if is_s3(root_path):
+                    from metaflow import S3
+                    with S3() as s3:
+                        s3.put_files([(code_blob_path, code_blob_path_temp)])
+                else:
+                    os.makedirs(os.path.dirname(code_blob_path), exist_ok=True)
+                    shutil.move(code_blob_path_temp, code_blob_path)
+            func_spec.task_code_path = code_blob_path
+
         func_package = MetaflowFunctionPackage(func_spec, package_suffixes)
         package_blob = func_package.get_package()
         if not func_package.package_hash:

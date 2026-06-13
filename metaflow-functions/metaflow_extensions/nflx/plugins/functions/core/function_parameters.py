@@ -33,6 +33,16 @@ class LazyArtifactMapping(Mapping[str, Any]):
             )
 
         if self._function_spec is not None:
+            function_spec_params = self._function_spec.artifacts
+            raw_value = function_spec_params[key]
+            
+            # If the value is a plain Python value (taskless path),
+            # return it directly without wrapping in DataArtifact
+            if not isinstance(raw_value, dict) or "ds_type" not in raw_value:
+                self._cache[key] = raw_value
+                return raw_value
+            # Otherwise treat as a full Metaflow artifact metadata dict (task path)
+
             # If function_spec_params is not none, then we will raise an exception
             # if we cannot find the task here
             from metaflow import DataArtifact
