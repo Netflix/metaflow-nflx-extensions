@@ -35,7 +35,7 @@ jobs:
 
     - name: Build packages
       run: |
-        for pkg_dir in metaflow-netflixext metaflow-functions; do
+        for pkg_dir in metaflow-netflixext metaflow-functions metaflow-prebuilt; do
           echo "Building $pkg_dir..."
           cd "$pkg_dir"
           python setup.py sdist bdist_wheel --universal
@@ -53,5 +53,12 @@ jobs:
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
         packages-dir: metaflow-functions/dist/
+        skip-existing: true
+        verbose: true
+
+    - name: Publish metaflow-prebuilt
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: metaflow-prebuilt/dist/
         skip-existing: true
         verbose: true
