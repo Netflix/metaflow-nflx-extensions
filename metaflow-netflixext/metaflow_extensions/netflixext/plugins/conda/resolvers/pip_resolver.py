@@ -5,7 +5,7 @@ import shutil
 import tempfile
 
 from itertools import chain, product
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Dict, List, Optional, Tuple, cast
 
 from urllib.parse import unquote, urlparse
 
@@ -51,9 +51,6 @@ class PipResolver(Resolver):
         # deferred (e.g. a container image builder will compile them on the
         # target arch). Defaults False -> zero impact on existing callers.
         self.defer_pypi_sdist_build = False
-        # Populated by resolve() when defer_pypi_sdist_build=True; each entry is
-        # {name, version, url}. Reset at the start of every resolve() call.
-        self.deferred_sdists = []  # type: List[Dict[str, Any]]
 
     # @retry_exp_backoff(
     #    (CondaException, OSError),
@@ -74,8 +71,6 @@ class PipResolver(Resolver):
         file_paths: Dict[str, List[str]] = {},
         full_id_unique_keys: Dict[str, str] = {},
     ) -> Tuple[ResolvedEnvironment, Optional[List[ResolvedEnvironment]]]:
-        # Reset per-call so this resolver instance can be reused safely.
-        self.deferred_sdists = []
         if base_env:
             # For base environments, we may have built packages already so for those
             # packages, we need to make them available again to pip when resolving.
@@ -611,16 +606,6 @@ class PipResolver(Resolver):
                     # build_pypi_packages as before.
                     if not _spec.is_downloadable_url():
                         continue
-                    self.deferred_sdists.append(
-                        {
-                            "name": _spec.package_name,
-                            "version": _spec.package_version,
-                            "url": _pkg.url,
-                            # Stable per-(name, version, source) identity the
-                            # prebuilt per-image scoping filter matches on.
-                            "filename": _spec.filename,
-                        }
-                    )
                     packages.append(_spec)
                     deferred_keys.append(_k)
                     debug.conda_exec(

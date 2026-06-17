@@ -85,15 +85,12 @@ class EnvsResolver(object):
         self._conda = conda
         self._non_step_envs = False
         self._co_resolved_force_resolve = set()  # type: Set[str]
-        # When True, PipResolver records sdist packages in its deferred_sdists
-        # attribute instead of building wheels during resolution (useful for
-        # cross-arch builds or callers that will build sdists separately).
-        # Non-PipResolver resolvers are unaffected (they have no sdists to defer).
-        # Defaults False: all existing callers are byte-for-byte unchanged.
+        # When True, the pip resolver keeps sdist packages as source specs in
+        # the resolved environment instead of building wheels during resolution
+        # (useful for cross-arch builds, or callers that build sdists later).
+        # Non-pip resolvers are unaffected. Defaults False: existing callers are
+        # byte-for-byte unchanged.
         self.defer_pypi_sdist_build = defer_pypi_sdist_build
-        # Aggregated deferred-sdist records from all PipResolver instances after
-        # resolve() completes. Empty when defer_pypi_sdist_build=False.
-        self.deferred_sdists = []  # type: List[Dict[str, Any]]
 
     @staticmethod
     def find_resolved_environment(
@@ -948,11 +945,6 @@ class EnvsResolver(object):
                 env_desc["file_paths"],
                 env_desc["full_id_unique_keys"],
             )
-
-            # Aggregate deferred sdists from this resolver (no-op when
-            # defer_pypi_sdist_build=False — getattr returns [] by default).
-            if self.defer_pypi_sdist_build:
-                self.deferred_sdists.extend(getattr(resolver, "deferred_sdists", []))
 
             if env_desc["base"]:
                 # We try to copy things over from the base environment as it contains

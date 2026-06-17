@@ -149,10 +149,6 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
     _prebuilt_images: Dict[str, str] = {}
     _prebuilt_env_paths: Dict[str, str] = {}
     _STATE_FILE_ENV_VAR = "METAFLOW_PREBUILT_STATE_FILE"
-    # Stashed by _make_envs_resolver so _get_or_build_image can harvest the
-    # deferred sdists recorded during init_environment. Class-level default so
-    # access is safe even before __init__ runs.
-    _envs_resolver_ref: Optional["EnvsResolver"] = None
 
     @classmethod
     def _state_file_path(cls) -> Optional[str]:
@@ -241,23 +237,16 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
 
     _init_in_progress: bool = False
 
-    def __init__(self, flow: FlowSpec):
-        super().__init__(flow)
-        # Stashed by _make_envs_resolver (below) so _get_or_build_image can
-        # harvest resolver.deferred_sdists after init_environment completes.
-        self._envs_resolver_ref: Optional["EnvsResolver"] = None
-
     def _make_envs_resolver(self) -> "EnvsResolver":
         """Enable sdist-build deferral for the prebuilt resolution path.
 
-        ``defer_pypi_sdist_build=True`` makes the pip resolver record sdist
-        packages in ``resolver.deferred_sdists`` instead of building wheels on
-        the (possibly cross-arch) deploy machine. The container builds them in
-        Pass B (see prebuilt_build_install).
+        ``defer_pypi_sdist_build=True`` makes the pip resolver keep sdist
+        packages as source specs in the resolved environment instead of building
+        wheels on the (possibly cross-arch) deploy machine. _get_or_build_image
+        derives those sdists from the resolved env (so it also works on cache
+        hits) and the container builds them in Pass B (see prebuilt_build_install).
         """
-        resolver = EnvsResolver(cast(Conda, self.conda), defer_pypi_sdist_build=True)
-        self._envs_resolver_ref = resolver
-        return resolver
+        return EnvsResolver(cast(Conda, self.conda), defer_pypi_sdist_build=True)
 
     def init_environment(self, echo: Callable[..., None]):
         if PrebuiltCondaEnvironment._init_in_progress:
@@ -288,11 +277,13 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
 
             if isinstance(env_id, str):
                 # fetch_at_exec named env — resolve alias to a concrete env_id.
+                # Apply @{VAR} substitution first (as standard conda does) so a
+                # name like 'env-@{NAME}' resolves the concrete 'env-prod' alias.
                 # TODO(image-identity): env_id_from_alias resolves for the local
                 # arch; for a cross-arch deploy (deploy arch != remote step arch)
                 # it can pick the wrong concrete EnvID. Part of the image-identity
                 # follow-up noted on _image_cache_key.
-                named_alias = env_id
+                named_alias = self.sub_envvars_in_envname(env_id)
                 resolved_id = cast(Conda, self.conda).env_id_from_alias(named_alias)
                 if resolved_id is None:
                     raise MetaflowException(
@@ -406,25 +397,24 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             echo("    ERROR: failed to build metaflow code package: %s" % e)
             return None
 
-        # Harvest the sdists deferred during init_environment resolution (empty
-        # unless _make_envs_resolver set defer_pypi_sdist_build=True), then SCOPE
-        # them to THIS image's environment. The resolver aggregates deferred
-        # sdists across ALL of the flow's environments, so we must filter to the
-        # packages actually present in resolved_env — otherwise an unrelated
-        # step's image would run Pass B for an sdist it does not contain.
-        _all_deferred: List[Any] = (
-            self._envs_resolver_ref.deferred_sdists
-            if self._envs_resolver_ref is not None
-            else []
-        )
-        # Match on the exact sdist filename (unique per name/version/source) and
-        # restrict to pypi packages, so a conda package or a same-name/version
-        # package from a different source cannot pull in the wrong env's sdist.
-        _env_pypi_filenames = {
-            p.filename for p in resolved_env.packages if p.TYPE == "pypi"
-        }
+        # Derive the deferred sdists DIRECTLY from this image's resolved env:
+        # any pypi package that is a source dist (url_format != ".whl") with a
+        # real, web-downloadable URL was left unbuilt by the resolver
+        # (defer_pypi_sdist_build) and must be built in the container (Pass B).
+        # Sourcing from resolved_env — rather than the resolver's transient list
+        # — is correct on cache hits too (a re-deploy that loads the env from the
+        # conda manifest still sees the sdist specs) and is naturally scoped to
+        # this image. Non-web pypi packages are git/local builds handled as
+        # embedded wheels below; conda packages are excluded by TYPE.
         deferred_sdists: List[Any] = [
-            s for s in _all_deferred if s.get("filename") in _env_pypi_filenames
+            {
+                "name": p.package_name,
+                "version": p.package_version,
+                "url": p.url,
+                "filename": p.filename,
+            }
+            for p in resolved_env.packages
+            if p.TYPE == "pypi" and p.url_format != ".whl" and p.is_downloadable_url()
         ]
 
         # Materialize wheels for non-web-downloadable (git/local) pypi packages,

@@ -122,7 +122,9 @@ def _upload_context(bucket: str, key: str, data: bytes) -> None:
             )
         parts = bucket[5:].split("/", 1)
         bucket_name = parts[0]
-        prefix = parts[1] + "/" if len(parts) > 1 and parts[1] else ""
+        prefix = (
+            parts[1].strip("/") + "/" if len(parts) > 1 and parts[1].strip("/") else ""
+        )
         boto3.client("s3").put_object(Bucket=bucket_name, Key=prefix + key, Body=data)
     else:
         raise ValueError("Unsupported bucket scheme: %s (use gs:// or s3://)" % bucket)

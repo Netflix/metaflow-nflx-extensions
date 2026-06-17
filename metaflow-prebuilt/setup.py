@@ -36,7 +36,7 @@ setup(
     py_modules=[
         "metaflow_extensions",
     ],
-    python_requires=">=3.8",
+    python_requires=">=3.10",
     install_requires=["metaflow>=2.16.0", "metaflow-netflixext>=1.3.12"],
     extras_require={
         "ecr": ["boto3"],
