@@ -1671,16 +1671,22 @@ class Conda(object):
                 os.makedirs(os.path.join(dest_dir, pkg_spec.TYPE), exist_ok=True)
             else:
                 dl_local_path = os.path.join(dest_dir, "%s{format}" % pkg_spec.filename)
-            # Check for local files first
-            if self._mode != "remote":
-                for f in pkg_spec.allowed_formats():
-                    local_path = pkg_spec.local_file(f)
-                    if local_path:
-                        src = ("local", local_path)
-                        if most_preferred_source is None:
-                            most_preferred_source = src
-                            most_preferred_format = f
-                        available_formats[f] = src
+            # Check for local files first. We honor an explicitly-set local file
+            # even in mode="remote": normal remote tasks have search_dirs=[] and
+            # set no local files (so this is a no-op there), but the prebuilt
+            # build container runs Conda(mode="remote") and registers embedded
+            # wheels (for non-web-downloadable git/local packages) as local files
+            # via add_local_file — that already-built wheel on disk is the only
+            # source. The os.path.isfile guard ensures we only treat it as local
+            # when the file is actually present on disk.
+            for f in pkg_spec.allowed_formats():
+                local_path = pkg_spec.local_file(f)
+                if local_path and os.path.isfile(local_path):
+                    src = ("local", local_path)
+                    if most_preferred_source is None:
+                        most_preferred_source = src
+                        most_preferred_format = f
+                    available_formats[f] = src
 
             # Check for cache paths next.
             # Storage guard: without a datastore (e.g. datastore_type=local in

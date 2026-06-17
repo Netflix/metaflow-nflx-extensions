@@ -103,12 +103,15 @@ def _named_state_key(name: str) -> str:
 
 
 def _image_cache_key(env_id: EnvID) -> str:
-    # TODO(gpu-cache-key): keys only on env_id, so two steps with identical deps
-    # but different base images (CPU vs GPU @resources) share one cached image —
-    # a CPU-first flow could run a GPU step on a CPU base. Pre-existing (the
-    # inline implementation has the same gap). Fixing it needs the gpu dimension
-    # threaded into this key, the registry image tag, and bootstrap_commands —
-    # an image-tag schema bump best done as its own change.
+    # TODO(image-identity): keys only on req_id/full_id, so steps that share deps
+    # but need different images collide on one cached image / registry tag:
+    #   - CPU vs GPU base (@resources gpu) — a CPU-first flow could run a GPU
+    #     step on a CPU base; and
+    #   - a different target arch (env_id.arch is dropped here).
+    # In a single deploy all remote steps are normally one arch + base, so these
+    # are latent edge cases. A proper fix threads the base-image/arch dimension
+    # into this key, the registry image tag, and bootstrap_commands (an image-tag
+    # schema bump) — best done as its own change. Pre-existing (inline has it too).
     return "%s_%s" % (env_id.req_id, env_id.full_id)
 
 
@@ -285,6 +288,10 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
 
             if isinstance(env_id, str):
                 # fetch_at_exec named env — resolve alias to a concrete env_id.
+                # TODO(image-identity): env_id_from_alias resolves for the local
+                # arch; for a cross-arch deploy (deploy arch != remote step arch)
+                # it can pick the wrong concrete EnvID. Part of the image-identity
+                # follow-up noted on _image_cache_key.
                 named_alias = env_id
                 resolved_id = cast(Conda, self.conda).env_id_from_alias(named_alias)
                 if resolved_id is None:

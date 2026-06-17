@@ -106,7 +106,11 @@ def _upload_context(bucket: str, key: str, data: bytes) -> None:
             )
         client = storage.Client()
         bucket_name = bucket[5:].split("/")[0]
-        blob_path = "/".join(bucket[5:].split("/")[1:] + [key])
+        # Drop empty path components (e.g. from a trailing slash in
+        # gs://bucket/prefix/) so blob_path stays aligned with context_url, which
+        # is built from bucket.rstrip("/"); otherwise Kaniko looks for the context
+        # at prefix/<key> while we upload to prefix//<key>.
+        blob_path = "/".join([p for p in bucket[5:].split("/")[1:] if p] + [key])
         client.bucket(bucket_name).blob(blob_path).upload_from_string(data)
     elif bucket.startswith("s3://"):
         try:
