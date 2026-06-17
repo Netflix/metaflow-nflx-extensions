@@ -245,6 +245,12 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         wheels on the (possibly cross-arch) deploy machine. _get_or_build_image
         derives those sdists from the resolved env (so it also works on cache
         hits) and the container builds them in Pass B (see prebuilt_build_install).
+
+        NOTE: deferral applies to the whole flow's resolution. For a local /
+        non-remote step (e.g. ``python flow.py --environment=prebuilt run``) the
+        normal create path builds the deferred sdist at create time from the
+        lazy-fetched local source — fine for buildable sdists, subject to the
+        same build-requires limitation as Pass B.
         """
         return EnvsResolver(cast(Conda, self.conda), defer_pypi_sdist_build=True)
 
@@ -415,6 +421,11 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             }
             for p in resolved_env.packages
             if p.TYPE == "pypi" and p.url_format != ".whl" and p.is_downloadable_url()
+            # Exclude any package that already has a built wheel on disk: a
+            # resolver may keep a source url_format while carrying a built .whl
+            # (pylock/uv/legacy cache), which Pass A installs directly — it must
+            # not be reclassified as a deferred sdist and rebuilt in Pass B.
+            and not p.local_file(".whl")
         ]
 
         # Materialize wheels for non-web-downloadable (git/local) pypi packages,
