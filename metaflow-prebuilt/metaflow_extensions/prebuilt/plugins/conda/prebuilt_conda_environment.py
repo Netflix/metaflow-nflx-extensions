@@ -103,6 +103,12 @@ def _named_state_key(name: str) -> str:
 
 
 def _image_cache_key(env_id: EnvID) -> str:
+    # TODO(gpu-cache-key): keys only on env_id, so two steps with identical deps
+    # but different base images (CPU vs GPU @resources) share one cached image —
+    # a CPU-first flow could run a GPU step on a CPU base. Pre-existing (the
+    # inline implementation has the same gap). Fixing it needs the gpu dimension
+    # threaded into this key, the registry image tag, and bootstrap_commands —
+    # an image-tag schema bump best done as its own change.
     return "%s_%s" % (env_id.req_id, env_id.full_id)
 
 
@@ -404,13 +410,14 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             if self._envs_resolver_ref is not None
             else []
         )
-        _env_pkg_keys = {
-            (p.package_name.lower(), p.package_version) for p in resolved_env.packages
+        # Match on the exact sdist filename (unique per name/version/source) and
+        # restrict to pypi packages, so a conda package or a same-name/version
+        # package from a different source cannot pull in the wrong env's sdist.
+        _env_pypi_filenames = {
+            p.filename for p in resolved_env.packages if p.TYPE == "pypi"
         }
         deferred_sdists: List[Any] = [
-            s
-            for s in _all_deferred
-            if (s["name"].lower(), s["version"]) in _env_pkg_keys
+            s for s in _all_deferred if s.get("filename") in _env_pypi_filenames
         ]
 
         # Materialize wheels for non-web-downloadable (git/local) pypi packages,

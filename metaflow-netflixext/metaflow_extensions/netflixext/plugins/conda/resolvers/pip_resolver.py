@@ -616,6 +616,9 @@ class PipResolver(Resolver):
                             "name": _spec.package_name,
                             "version": _spec.package_version,
                             "url": _pkg.url,
+                            # Stable per-(name, version, source) identity the
+                            # prebuilt per-image scoping filter matches on.
+                            "filename": _spec.filename,
                         }
                     )
                     packages.append(_spec)
