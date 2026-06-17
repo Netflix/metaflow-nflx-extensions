@@ -394,12 +394,24 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             return None
 
         # Harvest the sdists deferred during init_environment resolution (empty
-        # unless _make_envs_resolver set defer_pypi_sdist_build=True).
-        deferred_sdists: List[Any] = (
+        # unless _make_envs_resolver set defer_pypi_sdist_build=True), then SCOPE
+        # them to THIS image's environment. The resolver aggregates deferred
+        # sdists across ALL of the flow's environments, so we must filter to the
+        # packages actually present in resolved_env — otherwise an unrelated
+        # step's image would run Pass B for an sdist it does not contain.
+        _all_deferred: List[Any] = (
             self._envs_resolver_ref.deferred_sdists
             if self._envs_resolver_ref is not None
             else []
         )
+        _env_pkg_keys = {
+            (p.package_name.lower(), p.package_version) for p in resolved_env.packages
+        }
+        deferred_sdists: List[Any] = [
+            s
+            for s in _all_deferred
+            if (s["name"].lower(), s["version"]) in _env_pkg_keys
+        ]
 
         # Materialize wheels for non-web-downloadable (git/local) pypi packages,
         # which the builder can neither fetch (no S3) nor rebuild (no git).
@@ -479,7 +491,18 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             'python -m %s.prebuilt_runtime_activate "%s"'
             % ("metaflow_extensions.prebuilt.plugins.conda", env_path),
             "export _METAFLOW_CONDA_ENV=$(cat _env_id)",
-            "export PYTHONPATH=$(pwd)/_escape_trampolines:$(printenv PYTHONPATH)",
+            # Sanitize host-inherited PYTHONPATH so the conda env uses its own
+            # stdlib: keep _escape_trampolines + the first entry + any
+            # site-packages/dist-packages entries, dropping bare host stdlib
+            # dirs that could shadow the conda stdlib. Save the original to
+            # MF_ORIG_PYTHONPATH so env-escape trampolines can restore it.
+            # Mirrors metaflow_extensions.nflx CondaEnvironment.bootstrap_commands.
+            "if printenv PYTHONPATH >/dev/null 2>&1; then "
+            "export MF_ORIG_PYTHONPATH=$(printenv PYTHONPATH); fi",
+            "export PYTHONPATH=$(pwd)/_escape_trampolines:"
+            "$(printenv PYTHONPATH | tr ':' '\\n' | "
+            "awk 'NR==1 || /site-packages/ || /dist-packages/' | "
+            "paste -sd:)",
             "if printenv LD_LIBRARY_PATH >/dev/null 2>&1; then "
             "export MF_ORIG_LD_LIBRARY_PATH=$(printenv LD_LIBRARY_PATH); "
             "export LD_LIBRARY_PATH=$(cat _env_path)/lib:$(printenv LD_LIBRARY_PATH); else "
