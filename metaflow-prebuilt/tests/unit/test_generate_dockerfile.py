@@ -4,12 +4,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import json
+
 from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment import (
     _generate_dockerfile,
     PREBUILT_BUILD_LOCAL_ROOT,
     PREBUILT_MAMBA_ROOT_PREFIX,
     PREBUILT_ENVS_DIR,
     PREBUILT_IMAGE_SCHEMA_VERSION,
+    _DEFERRED_BUILDS_CONTEXT_NAME,
     _env_path_for,
     _env_path_for_named,
 )
@@ -49,7 +52,47 @@ def test_generate_dockerfile_regular_has_required_instructions():
     assert env_id.req_id in dockerfile
     assert env_id.full_id in dockerfile
     assert ".metaflowenv" in dockerfile
-    assert context_files == {}  # code package added by caller
+
+    # The deferred-builds hand-off is ALWAYS written (empty here) and ALWAYS
+    # COPYed in, so it overwrites any stale hand-off a base image might carry.
+    # (The code package itself is added by the caller, not here.)
+    assert set(context_files) == {_DEFERRED_BUILDS_CONTEXT_NAME}
+    assert json.loads(context_files[_DEFERRED_BUILDS_CONTEXT_NAME]) == {
+        "schema_version": "2",
+        "sdists": [],
+        "wheels": [],
+    }
+    assert "COPY %s" % _DEFERRED_BUILDS_CONTEXT_NAME in dockerfile
+
+
+def test_generate_dockerfile_deferred_handoff_and_wheels():
+    """Deferred sdists + embedded wheels land in the hand-off and both COPYs."""
+    env_id = _make_env_id()
+    resolved_env = _make_resolved_env()
+    sdists = [{"name": "deepspeed", "version": "0.14.0", "url": "https://x/d.tar.gz"}]
+    wheels = [
+        {
+            "name": "mypkg",
+            "filename": "mypkg-1.0.tar.gz",
+            "wheel_file": "mypkg-1.0-py3-none-any.whl",
+        }
+    ]
+
+    dockerfile, context_files = _generate_dockerfile(
+        "ubuntu:22.04",
+        _env_path_for(env_id),
+        env_id,
+        "conda",
+        resolved_env,
+        deferred_sdists=sdists,
+        embedded_wheels=wheels,
+    )
+
+    handoff = json.loads(context_files[_DEFERRED_BUILDS_CONTEXT_NAME])
+    assert handoff == {"schema_version": "2", "sdists": sdists, "wheels": wheels}
+    # Hand-off COPY (always) + the embedded-wheels dir COPY (only when wheels).
+    assert "COPY %s" % _DEFERRED_BUILDS_CONTEXT_NAME in dockerfile
+    assert dockerfile.count("COPY ") >= 3  # code tarball + hand-off + wheels dir
 
 
 def test_generate_dockerfile_named_alias_adds_symlink():

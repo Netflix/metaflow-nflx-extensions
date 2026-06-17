@@ -657,16 +657,20 @@ def _generate_dockerfile(
     marker_json = json.dumps([env_id.req_id, env_id.full_id, env_id.arch])
     context_files: Dict[str, Any] = {}
 
-    # Write the deferred-builds hand-off (schema "2") into the build context.
-    # No-op when there are no deferred sdists and no embedded wheels.
+    # Write the CURRENT env's deferred-builds hand-off (schema "2") into the
+    # build context. It is ALWAYS written (even empty) and ALWAYS COPYed in
+    # below, so it OVERWRITES any stale hand-off a base image might already
+    # carry at the absolute container path (e.g. a prebuilt-on-prebuilt base set
+    # via METAFLOW_PREBUILT_BASE_IMAGE). prebuilt_build_install treats any file
+    # at that path as current, so an inherited stale file would otherwise be
+    # consumed (wrong env) or fail schema validation. An empty hand-off (no
+    # sdists, no wheels) is a valid no-op for the in-container installer.
     sdists = list(deferred_sdists or [])
     wheels = list(embedded_wheels or [])
-    has_deferred = bool(sdists or wheels)
-    if has_deferred:
-        context_files[_DEFERRED_BUILDS_CONTEXT_NAME] = json.dumps(
-            {"schema_version": "2", "sdists": sdists, "wheels": wheels},
-            indent=2,
-        ).encode("utf-8")
+    context_files[_DEFERRED_BUILDS_CONTEXT_NAME] = json.dumps(
+        {"schema_version": "2", "sdists": sdists, "wheels": wheels},
+        indent=2,
+    ).encode("utf-8")
 
     lines = [
         "# syntax=docker/dockerfile:1",
@@ -692,13 +696,12 @@ def _generate_dockerfile(
         "RUN mkdir -p %s" % PREBUILT_ENVS_DIR,
     ]
 
-    # COPY the deferred-builds hand-off + any embedded wheels into the image,
+    # COPY the current deferred-builds hand-off (ALWAYS — this overwrites any
+    # stale hand-off inherited from the base image) and any embedded wheels,
     # before the build-install step that consumes them.
-    if has_deferred:
-        lines.append(
-            "COPY %s %s"
-            % (_DEFERRED_BUILDS_CONTEXT_NAME, _DEFERRED_BUILDS_CONTAINER_PATH)
-        )
+    lines.append(
+        "COPY %s %s" % (_DEFERRED_BUILDS_CONTEXT_NAME, _DEFERRED_BUILDS_CONTAINER_PATH)
+    )
     if wheels:
         lines.append(
             "COPY %s %s"
