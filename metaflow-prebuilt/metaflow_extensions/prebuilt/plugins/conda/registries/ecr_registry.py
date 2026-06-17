@@ -55,6 +55,10 @@ class ECRRegistry(ImageRegistry):
         )
 
     def push_credentials(self) -> Dict[str, Any]:
+        # TODO(codebuild-region): CodeBuildService prefers this generic "region"
+        # over METAFLOW_PREBUILT_CODEBUILD_REGION, so a CodeBuild project in a
+        # different region than ECR would build in the wrong region. Expose a
+        # separate codebuild region (or omit this key) when pairing ECR+CodeBuild.
         return {
             "region": os.environ.get("METAFLOW_PREBUILT_ECR_REGION", ""),
             "s3_bucket": os.environ.get("METAFLOW_PREBUILT_CODEBUILD_S3_BUCKET", ""),

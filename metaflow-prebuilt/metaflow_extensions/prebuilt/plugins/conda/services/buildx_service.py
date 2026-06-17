@@ -40,6 +40,11 @@ class BuildxBuildService(DockerBuildService):
                     with open(full_path, "w") as f:
                         f.write(content)
 
+            # TODO(image-identity): for a cross-arch deploy (builder default
+            # platform != resolved remote env arch, e.g. an arm64 laptop
+            # deploying a linux-64 Batch step) thread the target arch in via
+            # `--platform`, else the in-container installer's arch_id() won't
+            # match the resolved manifest. Part of the image-identity follow-up.
             cmd = ["docker", "buildx", "build", "--push", "--tag", image_tag]
 
             builder = os.environ.get("METAFLOW_PREBUILT_BUILDX_BUILDER", "")

@@ -606,6 +606,11 @@ class PipResolver(Resolver):
                     # build_pypi_packages as before.
                     if not _spec.is_downloadable_url():
                         continue
+                    # NOTE: the sdist's sha256 is carried on the spec URL
+                    # (url#hash), so the resolved env full_id stays stable for a
+                    # given URL. A *mutable* URL serving different bytes at the
+                    # same URL (an anti-pattern; PyPI is immutable) could reuse
+                    # the same image identity — out of scope here.
                     packages.append(_spec)
                     deferred_keys.append(_k)
                     debug.conda_exec(
