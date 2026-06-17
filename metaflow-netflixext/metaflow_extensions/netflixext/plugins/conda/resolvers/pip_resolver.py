@@ -5,7 +5,7 @@ import shutil
 import tempfile
 
 from itertools import chain, product
-from typing import Dict, List, Optional, Tuple, cast
+from typing import Dict, List, Optional, Set, Tuple, cast
 
 from urllib.parse import unquote, urlparse
 
@@ -600,18 +600,24 @@ class PipResolver(Resolver):
                             )
                         )
             # Generic sdist-build deferral. When defer_pypi_sdist_build=True a
-            # caller (e.g. a container image builder) will build these sdists
-            # itself, so we must NOT build them here. We record (name, version,
-            # url) for that caller and keep the sdist spec in `packages` (so it
-            # stays in the manifest and is fetched), then drop it from
-            # to_build_pkg_info so build_pypi_packages skips it. pip has already
-            # resolved the full dependency closure (transitive deps are separate
-            # resolved packages), so deferring only skips the wheel COMPILE.
+            # downstream builder (e.g. the prebuilt image build container) will
+            # COMPILE these sdists itself, so we must not build them here. pip
+            # has already resolved the full dependency closure (transitive deps
+            # are separate resolved packages), so deferring only skips the wheel
+            # COMPILE -- the sdist spec stays in the manifest either way.
             #
-            # Default (defer_pypi_sdist_build=False): to_build_pkg_info is
-            # untouched and behavior is byte-for-byte identical to before.
+            # We collect the deferred keys and hand them to build_pypi_packages
+            # via `defer_keys` so its cache probe STILL runs for them: an
+            # already-built wheel is reused (attached as a cached version, later
+            # embedded) instead of needlessly rebuilt, and only sdists with no
+            # cached wheel keep their source spec for the downstream builder.
+            # build_pypi_packages returns the spec for every entry, so we no
+            # longer append/remove them by hand here.
+            #
+            # Default (defer_pypi_sdist_build=False): defer_keys stays empty and
+            # behavior is byte-for-byte identical to before.
+            defer_keys = set()  # type: Set[str]
             if self.defer_pypi_sdist_build and to_build_pkg_info:
-                deferred_keys = []
                 for _k, _pkg in to_build_pkg_info.items():
                     _spec = _pkg.spec
                     if _spec is None:
@@ -627,14 +633,24 @@ class PipResolver(Resolver):
                     # given URL. A *mutable* URL serving different bytes at the
                     # same URL (an anti-pattern; PyPI is immutable) could reuse
                     # the same image identity — out of scope here.
-                    packages.append(_spec)
-                    deferred_keys.append(_k)
+                    defer_keys.add(_k)
                     debug.conda_exec(
                         "Deferring sdist build %s==%s (%s)"
                         % (_spec.package_name, _spec.package_version, _pkg.url)
                     )
-                for _k in deferred_keys:
+
+            # Without a caching datastore we cannot probe for a pre-built wheel,
+            # so fall back to the historical defer path: keep the sdist spec,
+            # drop it from to_build_pkg_info, build nothing. (In practice the
+            # prebuilt resolve always has a remote datastore, so this only
+            # guards the storage-less edge and keeps its behavior unchanged.)
+            if defer_keys and not self._conda.storage:
+                for _k in defer_keys:
+                    packages.append(
+                        cast(PypiPackageSpecification, to_build_pkg_info[_k].spec)
+                    )
                     del to_build_pkg_info[_k]
+                defer_keys = set()
 
             if to_build_pkg_info:
                 if not self._conda.storage:
@@ -654,6 +670,7 @@ class PipResolver(Resolver):
                     architecture,
                     supported_tags,
                     sources.get("pypi", []),
+                    defer_keys=defer_keys,
                 )
 
                 packages.extend(built_pypi_packages)

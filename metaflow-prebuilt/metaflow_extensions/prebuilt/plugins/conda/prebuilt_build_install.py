@@ -26,6 +26,20 @@ import subprocess
 import sys
 import time
 
+# This module runs ONLY inside the prebuilt Docker build container. The image
+# was given the resolved-env *manifest* but NOT the deploy machine's package
+# cache (the build context copies the manifest, not the cache datastore). So
+# force conda to treat the container's "local" datastore as non-caching: with
+# no caching datastore, Conda._storage is None and lazy_fetch downloads conda /
+# wheel packages from their original web URLs (and installs the embedded wheels
+# we register) instead of probing a cache-less LocalStorage and failing.
+#
+# This must be set BEFORE importing metaflow: from_conf() freezes config values
+# at import time, and it parses list-valued configs with json.loads, so the
+# value is a JSON array. setdefault() respects an explicit override if one is
+# ever set in the generated Dockerfile.
+os.environ.setdefault("METAFLOW_CONDA_IGNORE_CACHING_DATASTORES", '["local"]')
+
 from metaflow.cli import echo_always
 
 try:
