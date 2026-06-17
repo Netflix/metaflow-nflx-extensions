@@ -1,7 +1,10 @@
 """Unit tests for GCRRegistry."""
+
 import pytest
 
-from metaflow_extensions.prebuilt.plugins.conda.registries.gcr_registry import GCRRegistry
+from metaflow_extensions.prebuilt.plugins.conda.registries.gcr_registry import (
+    GCRRegistry,
+)
 from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment import (
     PREBUILT_IMAGE_SCHEMA_VERSION,
 )
@@ -12,6 +15,7 @@ def _fake_env_id(req="abc", full="def"):
         req_id = req
         full_id = full
         arch = "linux-64"
+
     return _E()
 
 
@@ -19,7 +23,11 @@ def test_image_tag_format_real_gcr(monkeypatch):
     monkeypatch.delenv("METAFLOW_PREBUILT_GCR_HOST", raising=False)
     monkeypatch.setenv("METAFLOW_PREBUILT_GCR_PROJECT", "my-project")
     tag = GCRRegistry().image_tag(_fake_env_id(req="rrr", full="fff"))
-    assert tag == "gcr.io/my-project/metaflow-prebuilt:%s-rrr_fff" % PREBUILT_IMAGE_SCHEMA_VERSION
+    assert (
+        tag
+        == "gcr.io/my-project/metaflow-prebuilt:%s-rrr_fff"
+        % PREBUILT_IMAGE_SCHEMA_VERSION
+    )
 
 
 def test_image_tag_with_host_override(monkeypatch):

@@ -1,9 +1,12 @@
 """Unit tests for BuildxBuildService."""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from metaflow_extensions.prebuilt.plugins.conda.services.buildx_service import BuildxBuildService
+from metaflow_extensions.prebuilt.plugins.conda.services.buildx_service import (
+    BuildxBuildService,
+)
 
 
 def _echo(msg, **kw):
@@ -28,7 +31,9 @@ def _fail():
 def test_build_and_push_uses_push_flag():
     svc = BuildxBuildService()
     with patch("subprocess.run", return_value=_ok()) as mock_run:
-        result = svc.build_and_push("FROM scratch", {}, "localhost:5000/test:tag", {}, _echo)
+        result = svc.build_and_push(
+            "FROM scratch", {}, "localhost:5000/test:tag", {}, _echo
+        )
     assert result is True
     cmd = mock_run.call_args.args[0]
     assert "--push" in cmd

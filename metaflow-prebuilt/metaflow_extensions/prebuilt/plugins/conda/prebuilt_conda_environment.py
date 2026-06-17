@@ -28,7 +28,9 @@ try:
         CONDA_REMOTE_COMMANDS,  # type: ignore[attr-defined]
     )
     from metaflow_extensions.nflx.plugins.conda.conda import Conda
-    from metaflow_extensions.nflx.plugins.conda.conda_environment import CondaEnvironment
+    from metaflow_extensions.nflx.plugins.conda.conda_environment import (
+        CondaEnvironment,
+    )
     from metaflow_extensions.nflx.plugins.conda.env_descr import EnvID, EnvType
 except ImportError:
     # OSS metaflow — these Netflix-specific names are not available.
@@ -154,7 +156,8 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                 os.close(fd)
             except OSError as e:
                 raise MetaflowException(
-                    "Failed to allocate prebuilt state file in %s: %s." % (parent_dir, e)
+                    "Failed to allocate prebuilt state file in %s: %s."
+                    % (parent_dir, e)
                 ) from e
             os.environ[cls._STATE_FILE_ENV_VAR] = path
             atexit.register(cls._cleanup_prebuilt_state, path)

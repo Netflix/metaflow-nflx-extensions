@@ -16,6 +16,7 @@ def _resolve_entry_point(group: str, name: str) -> Any:
     mapping = {ep.name: ep for ep in eps}
     if name not in mapping:
         from metaflow.exception import MetaflowException  # noqa: PLC0415
+
         raise MetaflowException(
             "No entry point named %r in group %r. "
             "Installed: %s. "
@@ -71,7 +72,5 @@ class DockerBuildService(ABC):
         Raises ``MetaflowException`` if the name is not registered.
         """
         name = os.environ.get("METAFLOW_PREBUILT_BUILD_SERVICE", "docker")
-        service_cls = _resolve_entry_point(
-            "metaflow_prebuilt.build_services", name
-        )
+        service_cls = _resolve_entry_point("metaflow_prebuilt.build_services", name)
         return service_cls()

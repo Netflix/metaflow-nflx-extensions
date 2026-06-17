@@ -77,9 +77,7 @@ class KanikoBuildService(DockerBuildService):
         return success
 
 
-def _make_context_tarball(
-    dockerfile: str, context_files: Dict[str, Any]
-) -> bytes:
+def _make_context_tarball(dockerfile: str, context_files: Dict[str, Any]) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         df_bytes = dockerfile.encode("utf-8")
@@ -121,9 +119,7 @@ def _upload_context(bucket: str, key: str, data: bytes) -> None:
         parts = bucket[5:].split("/", 1)
         bucket_name = parts[0]
         prefix = parts[1] + "/" if len(parts) > 1 and parts[1] else ""
-        boto3.client("s3").put_object(
-            Bucket=bucket_name, Key=prefix + key, Body=data
-        )
+        boto3.client("s3").put_object(Bucket=bucket_name, Key=prefix + key, Body=data)
     else:
         raise ValueError("Unsupported bucket scheme: %s (use gs:// or s3://)" % bucket)
 
@@ -138,7 +134,10 @@ def _run_kaniko_job(
     echo: Callable[..., None],
 ) -> bool:
     try:
-        from kubernetes import client as k8s_client, config as k8s_config  # noqa: PLC0415
+        from kubernetes import (
+            client as k8s_client,
+            config as k8s_config,
+        )  # noqa: PLC0415
     except ImportError:
         raise ImportError(
             "kubernetes is required for kaniko builds. "
@@ -172,7 +171,11 @@ def _run_kaniko_job(
                 name="kaniko-secret",
                 secret=k8s_client.V1SecretVolumeSource(
                     secret_name=secret_name,
-                    items=[k8s_client.V1KeyToPath(key=".dockerconfigjson", path="config.json")],
+                    items=[
+                        k8s_client.V1KeyToPath(
+                            key=".dockerconfigjson", path="config.json"
+                        )
+                    ],
                 ),
             )
         )

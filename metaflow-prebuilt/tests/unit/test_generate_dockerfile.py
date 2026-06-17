@@ -1,4 +1,5 @@
 """Unit tests for _generate_dockerfile()."""
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -78,6 +79,7 @@ def test_generate_dockerfile_marker_uses_env_id_json():
     )
 
     import json
+
     expected_marker = json.dumps(["rrr", "fff", "linux-64"])
     assert expected_marker in dockerfile
 
@@ -106,4 +108,7 @@ def test_generate_dockerfile_custom_build_install_module():
         build_install_module=custom_module,
     )
     assert custom_module + ".prebuilt_build_install" in dockerfile
-    assert "metaflow_extensions.prebuilt.plugins.conda.prebuilt_build_install" not in dockerfile
+    assert (
+        "metaflow_extensions.prebuilt.plugins.conda.prebuilt_build_install"
+        not in dockerfile
+    )

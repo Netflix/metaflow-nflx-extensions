@@ -21,4 +21,5 @@ usage, where ``import metaflow`` always runs before any extension submodule is
 imported directly. pytest imports this conftest before collecting the test
 modules beneath ``tests/``, so the ordering is guaranteed.
 """
+
 import metaflow  # noqa: F401  (imported for its initialization side effect)

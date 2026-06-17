@@ -3,6 +3,7 @@
 GCR uses the Docker registry v2 protocol — registry:2 is a drop-in substitute.
 This test exercises GCRRegistry tag generation and push end-to-end.
 """
+
 import subprocess
 
 import pytest
@@ -11,7 +12,9 @@ from .conftest import REGISTRY_HOST, requires_docker_and_registry
 from metaflow_extensions.prebuilt.plugins.conda.services.docker_service import (
     LocalDockerBuildService,
 )
-from metaflow_extensions.prebuilt.plugins.conda.registries.gcr_registry import GCRRegistry
+from metaflow_extensions.prebuilt.plugins.conda.registries.gcr_registry import (
+    GCRRegistry,
+)
 
 
 pytestmark = requires_docker_and_registry

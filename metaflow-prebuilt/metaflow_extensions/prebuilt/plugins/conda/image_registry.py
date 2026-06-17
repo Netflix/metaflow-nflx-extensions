@@ -93,7 +93,5 @@ class ImageRegistry(ABC):
         Raises ``MetaflowException`` if the name is not registered.
         """
         name = os.environ.get("METAFLOW_PREBUILT_IMAGE_REGISTRY", "dockerhub")
-        registry_cls = _resolve_entry_point(
-            "metaflow_prebuilt.image_registries", name
-        )
+        registry_cls = _resolve_entry_point("metaflow_prebuilt.image_registries", name)
         return registry_cls()

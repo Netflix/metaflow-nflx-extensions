@@ -1,4 +1,5 @@
 """E2E: LocalDockerBuildService + LocalRegistry against registry:2."""
+
 import subprocess
 
 import pytest
@@ -7,7 +8,9 @@ from .conftest import REGISTRY_HOST, requires_docker_and_registry
 from metaflow_extensions.prebuilt.plugins.conda.services.docker_service import (
     LocalDockerBuildService,
 )
-from metaflow_extensions.prebuilt.plugins.conda.registries.local_registry import LocalRegistry
+from metaflow_extensions.prebuilt.plugins.conda.registries.local_registry import (
+    LocalRegistry,
+)
 
 
 pytestmark = requires_docker_and_registry

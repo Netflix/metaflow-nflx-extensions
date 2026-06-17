@@ -1,4 +1,5 @@
 """Unit tests for LocalDockerBuildService."""
+
 import subprocess
 from unittest.mock import MagicMock, call, patch
 
@@ -31,7 +32,9 @@ def _run_fail(**kwargs):
 
 def test_build_and_push_calls_docker_build_and_push(tmp_path):
     svc = LocalDockerBuildService()
-    with patch("subprocess.run", side_effect=[_run_success(), _run_success()]) as mock_run:
+    with patch(
+        "subprocess.run", side_effect=[_run_success(), _run_success()]
+    ) as mock_run:
         result = svc.build_and_push(
             dockerfile="FROM scratch",
             context_files={"hello.txt": "hello"},

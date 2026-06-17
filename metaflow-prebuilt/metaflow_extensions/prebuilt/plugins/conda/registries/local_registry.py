@@ -49,7 +49,11 @@ class LocalRegistry(ImageRegistry):
         return host
 
     def _tag_suffix(self, env_id: "EnvID") -> str:
-        return "%s-%s_%s" % (PREBUILT_IMAGE_SCHEMA_VERSION, env_id.req_id, env_id.full_id)
+        return "%s-%s_%s" % (
+            PREBUILT_IMAGE_SCHEMA_VERSION,
+            env_id.req_id,
+            env_id.full_id,
+        )
 
     def _named_tag_suffix(self, name: str) -> str:
         return "%s-name-%s" % (PREBUILT_IMAGE_SCHEMA_VERSION, _sanitize_named_env(name))
@@ -61,10 +65,18 @@ class LocalRegistry(ImageRegistry):
         )
 
     def push_tag(self, env_id: "EnvID") -> str:
-        return "%s/%s:%s" % (self._push_host(), self._namespace(), self._tag_suffix(env_id))
+        return "%s/%s:%s" % (
+            self._push_host(),
+            self._namespace(),
+            self._tag_suffix(env_id),
+        )
 
     def pull_tag(self, env_id: "EnvID") -> str:
-        return "%s/%s:%s" % (self._pull_host(), self._namespace(), self._tag_suffix(env_id))
+        return "%s/%s:%s" % (
+            self._pull_host(),
+            self._namespace(),
+            self._tag_suffix(env_id),
+        )
 
     def image_tag_for_named(self, name: str) -> str:
         raise NotImplementedError(
@@ -74,12 +86,16 @@ class LocalRegistry(ImageRegistry):
 
     def push_tag_for_named(self, name: str) -> str:
         return "%s/%s:%s" % (
-            self._push_host(), self._namespace(), self._named_tag_suffix(name)
+            self._push_host(),
+            self._namespace(),
+            self._named_tag_suffix(name),
         )
 
     def pull_tag_for_named(self, name: str) -> str:
         return "%s/%s:%s" % (
-            self._pull_host(), self._namespace(), self._named_tag_suffix(name)
+            self._pull_host(),
+            self._namespace(),
+            self._named_tag_suffix(name),
         )
 
     def push_credentials(self) -> Dict[str, Any]:

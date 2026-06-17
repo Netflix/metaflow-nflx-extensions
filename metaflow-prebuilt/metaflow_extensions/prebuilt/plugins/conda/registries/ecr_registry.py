@@ -2,7 +2,10 @@ import os
 from typing import Any, Dict, TYPE_CHECKING
 
 from ..image_registry import ImageRegistry
-from ..prebuilt_conda_environment import PREBUILT_IMAGE_SCHEMA_VERSION, _sanitize_named_env
+from ..prebuilt_conda_environment import (
+    PREBUILT_IMAGE_SCHEMA_VERSION,
+    _sanitize_named_env,
+)
 
 if TYPE_CHECKING:
     from metaflow_extensions.nflx.plugins.conda.env_descr import EnvID

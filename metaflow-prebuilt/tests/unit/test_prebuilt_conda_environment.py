@@ -1,4 +1,5 @@
 """Unit tests for PrebuiltCondaEnvironment state file machinery and bootstrap_commands."""
+
 import json
 import os
 import tempfile
@@ -110,8 +111,7 @@ class TestBuildInstallModule:
             _BUILD_INSTALL_MODULE = "some.other.conda.stack"
 
         assert (
-            CustomPrebuiltEnvironment._BUILD_INSTALL_MODULE
-            == "some.other.conda.stack"
+            CustomPrebuiltEnvironment._BUILD_INSTALL_MODULE == "some.other.conda.stack"
         )
         # Base class is unchanged
         assert (
@@ -182,9 +182,7 @@ class TestBootstrapCommands:
             cmds = env.bootstrap_commands("local_step", "local")
         assert cmds == ["standard"]
 
-    def test_bootstrap_commands_uses_prebuilt_module_path(
-        self, tmp_path, monkeypatch
-    ):
+    def test_bootstrap_commands_uses_prebuilt_module_path(self, tmp_path, monkeypatch):
         env_id = _make_env_id()
         key = _image_cache_key(env_id)
         monkeypatch.setenv("METAFLOW_TEMPDIR", str(tmp_path))

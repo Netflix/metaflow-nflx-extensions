@@ -6,6 +6,7 @@ Requires:
 
 Skipped automatically if Docker is unavailable or the registry is unreachable.
 """
+
 import os
 import subprocess
 
@@ -14,9 +15,7 @@ import pytest
 
 def _docker_available() -> bool:
     try:
-        r = subprocess.run(
-            ["docker", "info"], capture_output=True, timeout=10
-        )
+        r = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
@@ -90,9 +89,7 @@ def test_docker_build_and_push_to_local_registry(local_env, monkeypatch):
     pull_result = subprocess.run(
         ["docker", "pull", pull_tag], capture_output=True, text=True
     )
-    assert pull_result.returncode == 0, (
-        "docker pull failed: %s" % pull_result.stderr
-    )
+    assert pull_result.returncode == 0, "docker pull failed: %s" % pull_result.stderr
 
     # Cleanup
     subprocess.run(["docker", "rmi", push_tag], capture_output=True)

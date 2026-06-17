@@ -81,7 +81,11 @@ class CodeBuildService(DockerBuildService):
             response = cb.start_build(
                 projectName=project,
                 environmentVariablesOverride=[
-                    {"name": "BUILD_CONTEXT_KEY", "value": context_key, "type": "PLAINTEXT"},
+                    {
+                        "name": "BUILD_CONTEXT_KEY",
+                        "value": context_key,
+                        "type": "PLAINTEXT",
+                    },
                     {"name": "IMAGE_TAG", "value": image_tag, "type": "PLAINTEXT"},
                 ],
                 sourceTypeOverride="S3",

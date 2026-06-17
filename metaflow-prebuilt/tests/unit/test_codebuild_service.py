@@ -1,4 +1,5 @@
 """Unit tests for CodeBuildService — mocks boto3, no real AWS needed."""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,6 +30,7 @@ def _make_boto3_mock(build_status="SUCCEEDED"):
 
 def test_make_context_zip_contains_dockerfile():
     import zipfile, io
+
     data = _make_context_zip("FROM scratch", {"hello.txt": "hi"})
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         names = zf.namelist()
@@ -38,6 +40,7 @@ def test_make_context_zip_contains_dockerfile():
 
 def test_build_and_push_calls_s3_and_codebuild(monkeypatch):
     import sys
+
     svc = CodeBuildService()
     creds = {
         "s3_bucket": "my-bucket",
@@ -58,6 +61,7 @@ def test_build_and_push_returns_false_on_failure(monkeypatch):
     creds = {"s3_bucket": "b", "codebuild_project": "p", "region": "us-east-1"}
     boto3_mock, _, _ = _make_boto3_mock("FAILED")
     import sys
+
     with patch.dict(sys.modules, {"boto3": boto3_mock}):
         assert svc.build_and_push("FROM scratch", {}, "tag", creds, _echo) is False
 

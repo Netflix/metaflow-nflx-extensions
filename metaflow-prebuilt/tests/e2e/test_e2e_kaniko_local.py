@@ -3,6 +3,7 @@
 Runs kaniko as a plain Docker container — no Kubernetes required.
 Tests that the Dockerfiles we generate are buildable by kaniko.
 """
+
 import os
 import shutil
 import subprocess
@@ -65,10 +66,16 @@ def test_kaniko_builds_generated_dockerfile():
 
     # Simplify: strip the conda install RUN (not available in busybox test image)
     # Keep only the FROM + ENV lines to test that kaniko parses our Dockerfile correctly.
-    simple_dockerfile = "\n".join(
-        line for line in dockerfile.splitlines()
-        if line.startswith("FROM") or line.startswith("ENV") or line.startswith("LABEL")
-    ) + "\n"
+    simple_dockerfile = (
+        "\n".join(
+            line
+            for line in dockerfile.splitlines()
+            if line.startswith("FROM")
+            or line.startswith("ENV")
+            or line.startswith("LABEL")
+        )
+        + "\n"
+    )
 
     build_dir = tempfile.mkdtemp(prefix="metaflow_e2e_kaniko_")
     try:
@@ -79,9 +86,13 @@ def test_kaniko_builds_generated_dockerfile():
 
         result = subprocess.run(
             [
-                "docker", "run", "--rm",
-                "--network", "host",
-                "-v", "%s:/workspace" % build_dir,
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "host",
+                "-v",
+                "%s:/workspace" % build_dir,
                 _KANIKO_IMAGE,
                 "--dockerfile=/workspace/Dockerfile",
                 "--context=dir:///workspace",
@@ -93,9 +104,11 @@ def test_kaniko_builds_generated_dockerfile():
             text=True,
             timeout=300,
         )
-        assert result.returncode == 0, (
-            "kaniko build failed:\nstdout: %s\nstderr: %s"
-            % (result.stdout[-2000:], result.stderr[-2000:])
+        assert (
+            result.returncode == 0
+        ), "kaniko build failed:\nstdout: %s\nstderr: %s" % (
+            result.stdout[-2000:],
+            result.stderr[-2000:],
         )
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)

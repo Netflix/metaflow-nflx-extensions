@@ -1,11 +1,16 @@
 """E2E: BuildxBuildService + LocalRegistry against registry:2."""
+
 import subprocess
 
 import pytest
 
 from .conftest import REGISTRY_HOST, requires_docker_and_registry
-from metaflow_extensions.prebuilt.plugins.conda.services.buildx_service import BuildxBuildService
-from metaflow_extensions.prebuilt.plugins.conda.registries.local_registry import LocalRegistry
+from metaflow_extensions.prebuilt.plugins.conda.services.buildx_service import (
+    BuildxBuildService,
+)
+from metaflow_extensions.prebuilt.plugins.conda.registries.local_registry import (
+    LocalRegistry,
+)
 
 
 def _buildx_available() -> bool:
@@ -45,7 +50,9 @@ def test_buildx_builds_and_pushes_image(registry_env, monkeypatch):
     reg = LocalRegistry()
     env_id = _FakeEnvID()
 
-    dockerfile = "FROM busybox:latest\nLABEL test=e2e-buildx-local\nCMD [\"echo\", \"ok\"]\n"
+    dockerfile = (
+        'FROM busybox:latest\nLABEL test=e2e-buildx-local\nCMD ["echo", "ok"]\n'
+    )
     tag = reg.push_tag(env_id)
     messages = []
 

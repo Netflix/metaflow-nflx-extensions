@@ -1,7 +1,10 @@
 """Unit tests for ECRRegistry."""
+
 import pytest
 
-from metaflow_extensions.prebuilt.plugins.conda.registries.ecr_registry import ECRRegistry
+from metaflow_extensions.prebuilt.plugins.conda.registries.ecr_registry import (
+    ECRRegistry,
+)
 from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment import (
     PREBUILT_IMAGE_SCHEMA_VERSION,
 )
@@ -12,6 +15,7 @@ def _fake_env_id(req="abc", full="def"):
         req_id = req
         full_id = full
         arch = "linux-64"
+
     return _E()
 
 
@@ -20,7 +24,11 @@ def test_image_tag_format(monkeypatch):
     monkeypatch.setenv("METAFLOW_PREBUILT_ECR_REGION", "us-east-1")
     r = ECRRegistry()
     tag = r.image_tag(_fake_env_id(req="rrr", full="fff"))
-    assert tag == "123456789012.dkr.ecr.us-east-1.amazonaws.com/metaflow-prebuilt:%s-rrr_fff" % PREBUILT_IMAGE_SCHEMA_VERSION
+    assert (
+        tag
+        == "123456789012.dkr.ecr.us-east-1.amazonaws.com/metaflow-prebuilt:%s-rrr_fff"
+        % PREBUILT_IMAGE_SCHEMA_VERSION
+    )
 
 
 def test_image_tag_custom_namespace(monkeypatch):
