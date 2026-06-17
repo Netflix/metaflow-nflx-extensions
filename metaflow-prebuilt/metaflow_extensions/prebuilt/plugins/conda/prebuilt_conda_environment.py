@@ -403,15 +403,19 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             echo("    ERROR: failed to build metaflow code package: %s" % e)
             return None
 
-        # Derive the deferred sdists DIRECTLY from this image's resolved env:
-        # any pypi package that is a source dist (url_format != ".whl") with a
-        # real, web-downloadable URL was left unbuilt by the resolver
+        # Derive deferred sdists DIRECTLY from this image's resolved env: a pypi
+        # package that is a source dist (url_format != ".whl"), web-downloadable,
+        # and has NO pre-built wheel was left unbuilt by the resolver
         # (defer_pypi_sdist_build) and must be built in the container (Pass B).
-        # Sourcing from resolved_env — rather than the resolver's transient list
-        # — is correct on cache hits too (a re-deploy that loads the env from the
-        # conda manifest still sees the sdist specs) and is naturally scoped to
-        # this image. Non-web pypi packages are git/local builds handled as
-        # embedded wheels below; conda packages are excluded by TYPE.
+        # Sourcing from resolved_env (not the resolver's transient list) is also
+        # correct on cache hits and is naturally scoped to this image.
+        #
+        # The two wheel guards exclude packages that ALREADY have a built wheel
+        # (cases D/E — e.g. pylock/conda-lock specs that keep a source url_format
+        # but carry a built wheel): _gather_embedded_wheels fetches and embeds
+        # that wheel below, so they must NOT be deferred (the container would
+        # otherwise rebuild from source, and only_binary=True would drop the
+        # source archive in Pass A). Non-web and conda packages are excluded here.
         deferred_sdists: List[Any] = [
             {
                 "name": p.package_name,
@@ -420,16 +424,12 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                 "filename": p.filename,
             }
             for p in resolved_env.packages
-            if p.TYPE == "pypi" and p.url_format != ".whl" and p.is_downloadable_url()
+            if p.TYPE == "pypi"
+            and p.url_format != ".whl"
+            and p.is_downloadable_url()
+            and p.local_file(".whl") is None
+            and p.cached_version(".whl") is None
         ]
-        # KNOWN LIMITATION (out of scope here): the supported pip `@pypi` defer
-        # path never builds sdists on the deploy machine, so a deferred sdist is
-        # always an unbuilt source archive. Envs resolved via pylock/conda-lock
-        # can instead carry a source url_format with an already-built wheel; such
-        # a package is rebuilt in Pass B (loud if it fails) rather than reusing
-        # the deploy-built wheel. Reusing that wheel needs the container's
-        # only_binary install to prefer an embedded .whl over the spec's source
-        # url_format (a _gather/_register/_create change) — a tracked follow-up.
 
         # Materialize wheels for non-web-downloadable (git/local) pypi packages,
         # which the builder can neither fetch (no S3) nor rebuild (no git).
@@ -554,38 +554,74 @@ def _gather_embedded_wheels(
     resolved_env: Any,
     echo: Callable[..., None],
 ) -> Tuple[List[Dict[str, Any]], Dict[str, bytes]]:
-    """Materialize wheels for pypi packages that are NOT web-downloadable.
+    """Materialize wheels for pypi packages that need a built wheel embedded.
 
-    Packages built from a git/local source during resolution have
-    ``is_downloadable_url()==False``. The build container has no S3 or git
-    access, so the deploy machine fetches the already-built wheel from the
-    conda cache and embeds it in the build context under ``deferred_wheels/``.
-    The container's ``_register_embedded_wheels`` registers them as local files
-    so Pass A installs them offline.
+    Three cases require a wheel to be embedded in the build context:
+
+    B — non-web wheel (git/local, url_format == ".whl"): the build container has
+        no S3/git access, so the deploy machine fetches the already-built wheel
+        from the conda cache and embeds it.
+    D — web-downloadable source WITH a cached built wheel (url_format != ".whl",
+        cached_version(".whl") is not None): the container could fetch the source
+        but not the wheel, and only_binary=True would drop the source — embed the
+        wheel so Pass A installs it offline without a rebuild.
+    E — non-web source WITH a cached built wheel: neither source nor wheel is
+        web-accessible from the container — embed the wheel as in case D.
+
+    The wheel is retrieved by calling lazy_fetch_packages on the deploy machine
+    (where _storage is live), which resolves cached_version(".whl") via the cache
+    and populates local_file(".whl"). The record stores url_format=".whl" so
+    _register_embedded_wheels calls add_local_file(".whl", path); _create picks
+    .whl first (allowed_formats puts .whl before .tar.gz) and only_binary keeps it.
 
     Returns ``(records, files)`` where ``records`` populates
     ``deferred_builds.json["wheels"]`` and ``files`` maps context paths to bytes.
     """
-    nonweb = [
+    candidates = [
         p
         for p in resolved_env.packages
-        if p.TYPE == "pypi" and not p.is_downloadable_url()
+        if p.TYPE == "pypi"
+        and (
+            # Cases B + E: not web-downloadable (git/local source or wheel).
+            not p.is_downloadable_url()
+            # Case D: web-downloadable source but a built wheel is in the cache.
+            or (p.url_format != ".whl" and p.cached_version(".whl") is not None)
+        )
     ]
     records: List[Dict[str, Any]] = []
     files: Dict[str, bytes] = {}
-    if not nonweb:
+    if not candidates:
         return records, files
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        conda.lazy_fetch_packages(nonweb, None, tmpdir, require_url_format=True)
-        for p in nonweb:
-            whl = p.local_file(p.url_format)
+        # On the deploy machine self._storage is live, so allowed_formats() puts
+        # ".whl" first and a cached_version(".whl") wins the source race, landing
+        # the wheel in local_file(".whl"). (require_url_format is intentionally
+        # omitted — it is a no-op for pypi and would mis-target a ".tar.gz" spec.)
+        conda.lazy_fetch_packages(candidates, None, tmpdir)
+        for p in candidates:
+            # Prefer the wheel: iterate allowed_formats() (same order _create
+            # uses) and take the first local file that is a .whl, so we never
+            # embed a source archive.
+            whl = None
+            for f in p.allowed_formats():
+                candidate_path = p.local_file(f)
+                if candidate_path and candidate_path.endswith(".whl"):
+                    whl = candidate_path
+                    break
             if whl is None or not os.path.isfile(whl):
                 raise CondaException(
-                    "Prebuilt: could not materialize the built wheel for "
-                    "non-web-downloadable package '%s' (%s). It must have been "
-                    "built during resolution and be fetchable from the conda cache."
-                    % (p.package_name, p.filename)
+                    "Prebuilt: could not materialize a built wheel for package "
+                    "'%s' (%s); expected a .whl in the conda cache "
+                    "(cached_version('.whl')=%r, url_format=%r). The package must "
+                    "have been built during resolution and its wheel be fetchable "
+                    "from the conda cache on the deploy machine."
+                    % (
+                        p.package_name,
+                        p.filename,
+                        p.cached_version(".whl"),
+                        p.url_format,
+                    )
                 )
             wheel_file = os.path.basename(whl)
             with open(whl, "rb") as fh:
@@ -596,12 +632,13 @@ def _gather_embedded_wheels(
                     "version": p.package_version,
                     "filename": p.filename,
                     "wheel_file": wheel_file,
-                    "url_format": p.url_format,
+                    # Always ".whl": _register adds it as a .whl local file, which
+                    # _create finds first and only_binary keeps.
+                    "url_format": ".whl",
                 }
             )
             echo(
-                "    Embedding prebuilt wheel for non-web-downloadable "
-                "package: %s" % wheel_file
+                "    Embedding prebuilt wheel for %s: %s" % (p.package_name, wheel_file)
             )
     return records, files
 
