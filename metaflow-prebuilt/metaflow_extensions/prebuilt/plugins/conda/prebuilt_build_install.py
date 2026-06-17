@@ -118,13 +118,17 @@ def _register_embedded_wheels(resolved_env):  # type: ignore[no-untyped-def]
         _echo("    Registered embedded wheel: %s" % wheel_file)
 
 
-def _run_deferred_sdist_builds(env_dir: str) -> None:
+def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untyped-def]
     """Pass B: build sdists that were deferred from the deploy machine.
 
     Reads ``/app/deferred_builds.json`` (schema_version "2"). For each entry in
     ``["sdists"]`` runs::
 
-        <env>/bin/uv pip install --no-build-isolation --no-deps <url>
+        <env>/bin/uv pip install --no-build-isolation --no-deps <source>
+
+    where ``<source>`` is the local artifact Pass A's lazy_fetch already fetched
+    and hash-verified (preferred — correct bits, no second un-credentialed
+    download), falling back to the recorded URL only if no local file is present.
 
     The sdist's runtime deps were resolved on the deploy machine and installed
     in Pass A, so ``--no-deps`` is correct. Pre-check: assert setuptools+wheel
@@ -203,6 +207,17 @@ def _run_deferred_sdist_builds(env_dir: str) -> None:
                 "auto-install in %s.\nstderr: %s" % (env_dir, recheck.stderr)
             )
 
+    # Map filename -> the local artifact Pass A's lazy_fetch already downloaded
+    # and hash-verified, so Pass B installs the verified bits instead of
+    # re-downloading the raw URL (which lacks creds/hash and may have changed).
+    local_by_filename = {}
+    for p in resolved_env.packages:
+        if getattr(p, "TYPE", None) != "pypi":
+            continue
+        lf = p.local_file(p.url_format)
+        if lf and os.path.isfile(lf):
+            local_by_filename[p.filename] = lf
+
     _echo(
         " (Pass B: %d deferred sdist(s)) ..." % len(deferred_sdists),
         timestamp=False,
@@ -211,11 +226,12 @@ def _run_deferred_sdist_builds(env_dir: str) -> None:
     for sdist in deferred_sdists:
         name = sdist.get("name", "<unknown>")
         version = sdist.get("version", "")
-        url = sdist.get("url", "")
-        if not url:
+        # Prefer the verified local artifact; fall back to the recorded URL.
+        source = local_by_filename.get(sdist.get("filename")) or sdist.get("url", "")
+        if not source:
             raise CondaException(
-                "Deferred sdist entry for %r has no 'url' in %s. Re-deploy to "
-                "regenerate." % (name, _DEFERRED_BUILDS_PATH)
+                "Deferred sdist %r has neither a fetched local file nor a 'url' "
+                "in %s. Re-deploy to regenerate." % (name, _DEFERRED_BUILDS_PATH)
             )
         _echo(" (building %s==%s) ..." % (name, version), timestamp=False, nl=False)
         if os.path.isfile(uv_bin):
@@ -232,7 +248,7 @@ def _run_deferred_sdist_builds(env_dir: str) -> None:
                 "--no-cache",
                 "--no-config",
                 "--no-progress",
-                url,
+                source,
             ]
         else:
             build_args = [
@@ -245,14 +261,14 @@ def _run_deferred_sdist_builds(env_dir: str) -> None:
                 "--no-cache-dir",
                 "--no-input",
                 "--disable-pip-version-check",
-                url,
+                source,
             ]
         result = subprocess.run(build_args, capture_output=True, text=True)
         if result.returncode != 0:
             raise CondaException(
                 "Failed to build deferred sdist %s==%s from %s\n"
                 "stdout:\n%s\nstderr:\n%s"
-                % (name, version, url, result.stdout, result.stderr)
+                % (name, version, source, result.stdout, result.stderr)
             )
         _echo(" done.", timestamp=False)
 
@@ -294,7 +310,7 @@ def install_env(req_id: str, full_id: str) -> str:
     _echo("    Pass A done in %ds." % int(time.time() - install_start))
 
     # Pass B: build the deferred sdists inside the env (on the target arch).
-    _run_deferred_sdist_builds(env_path)
+    _run_deferred_sdist_builds(env_path, resolved_env)
 
     _echo("    Env installed at %s (%ds total)" % (env_path, int(time.time() - start)))
     return env_path

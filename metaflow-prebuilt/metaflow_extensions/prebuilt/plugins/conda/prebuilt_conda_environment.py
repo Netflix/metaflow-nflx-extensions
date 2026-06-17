@@ -464,6 +464,10 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             return super().bootstrap_commands(step_name, datastore_type)
 
         if isinstance(env_id, str):
+            # Apply @{VAR} substitution to match how _build_prebuilt_images
+            # stored the state (it resolves the alias via sub_envvars_in_envname);
+            # otherwise the raw name would miss the registered entry.
+            env_id = self.sub_envvars_in_envname(env_id)
             key = _named_state_key(env_id)
             key_descr = "named-alias=%r" % env_id
         elif EnvID is not None and isinstance(env_id, EnvID):
