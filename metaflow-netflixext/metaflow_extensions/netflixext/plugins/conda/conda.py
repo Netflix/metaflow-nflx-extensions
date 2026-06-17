@@ -1676,12 +1676,10 @@ class Conda(object):
             # set no local files (so this is a no-op there), but the prebuilt
             # build container runs Conda(mode="remote") and registers embedded
             # wheels (for non-web-downloadable git/local packages) as local files
-            # via add_local_file — that already-built wheel on disk is the only
-            # source. The os.path.isfile guard ensures we only treat it as local
-            # when the file is actually present on disk.
+            # via add_local_file — that already-built wheel is the only source.
             for f in pkg_spec.allowed_formats():
                 local_path = pkg_spec.local_file(f)
-                if local_path and os.path.isfile(local_path):
+                if local_path:
                     src = ("local", local_path)
                     if most_preferred_source is None:
                         most_preferred_source = src
