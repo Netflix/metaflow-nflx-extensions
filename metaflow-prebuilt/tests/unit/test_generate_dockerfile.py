@@ -98,7 +98,7 @@ def test_generate_dockerfile_custom_build_install_module():
     """build_install_module is forwarded into the RUN step."""
     env_id = _make_env_id()
     resolved_env = _make_resolved_env()
-    custom_module = "metaflow_extensions.nflx.plugins.conda"
+    custom_module = "metaflow_extensions.netflixext.plugins.conda"
     dockerfile, _ = _generate_dockerfile(
         "ubuntu:22.04",
         _env_path_for(env_id),

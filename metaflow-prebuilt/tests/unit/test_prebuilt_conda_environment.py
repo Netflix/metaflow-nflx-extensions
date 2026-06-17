@@ -99,11 +99,12 @@ class TestStateFilePersistLoad:
 
 class TestBuildInstallModule:
     def test_default_build_install_module(self):
-        # The package couples to the Netflix conda stack, which ships the real
-        # prebuilt_build_install implementation.
+        # This package ships the real prebuilt_build_install (it imports Conda
+        # from metaflow-netflixext at runtime), so the container runs it from
+        # the prebuilt namespace.
         assert (
             PrebuiltCondaEnvironment._BUILD_INSTALL_MODULE
-            == "metaflow_extensions.nflx.plugins.conda"
+            == "metaflow_extensions.prebuilt.plugins.conda"
         )
 
     def test_subclass_can_override_build_install_module(self):
@@ -116,7 +117,7 @@ class TestBuildInstallModule:
         # Base class is unchanged
         assert (
             PrebuiltCondaEnvironment._BUILD_INSTALL_MODULE
-            == "metaflow_extensions.nflx.plugins.conda"
+            == "metaflow_extensions.prebuilt.plugins.conda"
         )
 
 

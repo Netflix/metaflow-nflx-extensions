@@ -64,7 +64,7 @@ if TYPE_CHECKING:
 
 
 class EnvsResolver(object):
-    def __init__(self, conda: "Conda"):
+    def __init__(self, conda: "Conda", defer_pypi_sdist_build: bool = False):
         # key: EnvID; value: dict containing:
         #  - "id": key
         #  - "steps": steps using this environment
@@ -85,6 +85,15 @@ class EnvsResolver(object):
         self._conda = conda
         self._non_step_envs = False
         self._co_resolved_force_resolve = set()  # type: Set[str]
+        # When True, PipResolver records sdist packages in its deferred_sdists
+        # attribute instead of building wheels during resolution (useful for
+        # cross-arch builds or callers that will build sdists separately).
+        # Non-PipResolver resolvers are unaffected (they have no sdists to defer).
+        # Defaults False: all existing callers are byte-for-byte unchanged.
+        self.defer_pypi_sdist_build = defer_pypi_sdist_build
+        # Aggregated deferred-sdist records from all PipResolver instances after
+        # resolve() completes. Empty when defer_pypi_sdist_build=False.
+        self.deferred_sdists = []  # type: List[Dict[str, Any]]
 
     @staticmethod
     def find_resolved_environment(
@@ -889,6 +898,9 @@ class EnvsResolver(object):
 
             # Create the resolver object
             resolver = self.get_resolver_cls(env_desc)(self._conda)
+            # Propagate the generic sdist-deferral flag to the resolver (a no-op
+            # for non-pip resolvers, which simply never read it).
+            resolver.defer_pypi_sdist_build = self.defer_pypi_sdist_build
 
             python_version_requested = env_desc["python_version_requested"]
             # Resolve the environment
@@ -936,6 +948,11 @@ class EnvsResolver(object):
                 env_desc["file_paths"],
                 env_desc["full_id_unique_keys"],
             )
+
+            # Aggregate deferred sdists from this resolver (no-op when
+            # defer_pypi_sdist_build=False — getattr returns [] by default).
+            if self.defer_pypi_sdist_build:
+                self.deferred_sdists.extend(getattr(resolver, "deferred_sdists", []))
 
             if env_desc["base"]:
                 # We try to copy things over from the base environment as it contains

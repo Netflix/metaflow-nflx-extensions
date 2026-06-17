@@ -446,6 +446,7 @@ class Conda(object):
         step_name: str,
         env: ResolvedEnvironment,
         do_symlink: bool = False,
+        only_binary: bool = False,
     ) -> str:
         """
         Creates a local instance of the resolved environment
@@ -472,7 +473,9 @@ class Conda(object):
             to_return = None
             s = time.time()
             with _system_monitor.measure("metaflow.conda.create_for_step"):
-                to_return = self.create_for_name(env_name, env, do_symlink)
+                to_return = self.create_for_name(
+                    env_name, env, do_symlink, only_binary=only_binary
+                )
 
             _system_logger.log_event(
                 level="info",
@@ -517,6 +520,7 @@ class Conda(object):
         env: ResolvedEnvironment,
         do_symlink: bool = False,
         quiet: bool = False,
+        only_binary: bool = False,
     ) -> str:
         """
         Creates a local instance of the resolved environment
@@ -558,7 +562,7 @@ class Conda(object):
                 if quiet:
                     techo = self.echo
                     self.echo = self._no_echo
-                env_path = self._create(env, name)
+                env_path = self._create(env, name, only_binary=only_binary)
                 if quiet:
                     self.echo = techo
 
@@ -2495,7 +2499,9 @@ class Conda(object):
 
         return self._cached_info
 
-    def _create(self, env: ResolvedEnvironment, env_name: str) -> str:
+    def _create(
+        self, env: ResolvedEnvironment, env_name: str, only_binary: bool = False
+    ) -> str:
         # We first check to see if the environment exists -- if it does, we skip it
         env_dir = os.path.join(self.root_env_dir, env_name)
 
@@ -2685,6 +2691,14 @@ class Conda(object):
                     else "conda"
                 ),
             )
+
+        # Binary-only install (analogous to `uv/pip install --only-binary=:all:`):
+        # when only_binary=True, install only pre-built wheels and leave any
+        # sdists for a separate caller to build. Default only_binary=False
+        # leaves pypi_paths untouched, so the block below is byte-for-byte
+        # unchanged for every existing caller.
+        if only_binary and pypi_paths:
+            pypi_paths = [p for p in pypi_paths if p.rstrip("\n").endswith(".whl")]
 
         if pypi_paths:
             self.echo(" (pypi packages) ...", timestamp=False, nl=False)

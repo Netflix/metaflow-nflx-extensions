@@ -32,6 +32,8 @@ try:
         CondaEnvironment,
     )
     from metaflow_extensions.netflixext.plugins.conda.env_descr import EnvID, EnvType
+    from metaflow_extensions.netflixext.plugins.conda.envsresolver import EnvsResolver
+    from metaflow_extensions.netflixext.plugins.conda.utils import CondaException
 except ImportError:
     # OSS metaflow — these Netflix-specific names are not available.
     # The environment class still registers and its pure functions are usable;
@@ -41,6 +43,8 @@ except ImportError:
     Conda = None  # type: ignore[assignment]
     EnvID = None  # type: ignore[assignment]
     EnvType = None  # type: ignore[assignment]
+    EnvsResolver = None  # type: ignore[assignment]
+    CondaException = RuntimeError  # type: ignore[assignment,misc]
     try:
         from metaflow.plugins.pypi.conda_environment import CondaEnvironment
     except ImportError:
@@ -65,6 +69,14 @@ PREBUILT_BUILD_LOCAL_ROOT = "/opt/metaflow/code-package"
 
 # Name under which the MetaflowPackage tarball lives in the docker build context.
 _CODE_PACKAGE_TARBALL_NAME = "job.tar"
+
+# Wire-format names for the deferred-builds hand-off (schema_version "2"),
+# OWNED by metaflow-prebuilt. Must stay in sync with the container-side
+# constants in prebuilt_build_install (_DEFERRED_BUILDS_PATH / _DEFERRED_WHEELS_DIR).
+_DEFERRED_BUILDS_CONTEXT_NAME = "deferred_builds.json"
+_DEFERRED_BUILDS_CONTAINER_PATH = "/app/deferred_builds.json"
+_DEFERRED_WHEELS_CONTEXT_DIR = "deferred_wheels"
+_DEFERRED_WHEELS_CONTAINER_DIR = "/app/deferred_wheels"
 
 
 def _env_path_for(env_id: EnvID) -> str:
@@ -117,16 +129,21 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
 
     TYPE = "prebuilt"
 
-    # The Python package that provides prebuilt_build_install — the RUN step
-    # in the generated Dockerfile calls
-    # `python -m <_BUILD_INSTALL_MODULE>.prebuilt_build_install`. Defaults to
-    # the Netflix conda stack (metaflow-netflixext), which ships the real
-    # implementation that imports the Conda class. Subclasses may override.
-    _BUILD_INSTALL_MODULE: str = "metaflow_extensions.nflx.plugins.conda"
+    # The Python package that provides prebuilt_build_install — the RUN step in
+    # the generated Dockerfile calls
+    # `python -m <_BUILD_INSTALL_MODULE>.prebuilt_build_install`. This package
+    # ships the real installer (it imports the Conda class from
+    # metaflow-netflixext, which must also be installed in the build image).
+    # Subclasses may override.
+    _BUILD_INSTALL_MODULE: str = "metaflow_extensions.prebuilt.plugins.conda"
 
     _prebuilt_images: Dict[str, str] = {}
     _prebuilt_env_paths: Dict[str, str] = {}
     _STATE_FILE_ENV_VAR = "METAFLOW_PREBUILT_STATE_FILE"
+    # Stashed by _make_envs_resolver so _get_or_build_image can harvest the
+    # deferred sdists recorded during init_environment. Class-level default so
+    # access is safe even before __init__ runs.
+    _envs_resolver_ref: Optional["EnvsResolver"] = None
 
     @classmethod
     def _state_file_path(cls) -> Optional[str]:
@@ -217,6 +234,21 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
 
     def __init__(self, flow: FlowSpec):
         super().__init__(flow)
+        # Stashed by _make_envs_resolver (below) so _get_or_build_image can
+        # harvest resolver.deferred_sdists after init_environment completes.
+        self._envs_resolver_ref: Optional["EnvsResolver"] = None
+
+    def _make_envs_resolver(self) -> "EnvsResolver":
+        """Enable sdist-build deferral for the prebuilt resolution path.
+
+        ``defer_pypi_sdist_build=True`` makes the pip resolver record sdist
+        packages in ``resolver.deferred_sdists`` instead of building wheels on
+        the (possibly cross-arch) deploy machine. The container builds them in
+        Pass B (see prebuilt_build_install).
+        """
+        resolver = EnvsResolver(cast(Conda, self.conda), defer_pypi_sdist_build=True)
+        self._envs_resolver_ref = resolver
+        return resolver
 
     def init_environment(self, echo: Callable[..., None]):
         if PrebuiltCondaEnvironment._init_in_progress:
@@ -361,6 +393,24 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             echo("    ERROR: failed to build metaflow code package: %s" % e)
             return None
 
+        # Harvest the sdists deferred during init_environment resolution (empty
+        # unless _make_envs_resolver set defer_pypi_sdist_build=True).
+        deferred_sdists: List[Any] = (
+            self._envs_resolver_ref.deferred_sdists
+            if self._envs_resolver_ref is not None
+            else []
+        )
+
+        # Materialize wheels for non-web-downloadable (git/local) pypi packages,
+        # which the builder can neither fetch (no S3) nor rebuild (no git).
+        try:
+            embedded_wheels, embedded_wheel_files = _gather_embedded_wheels(
+                cast(Conda, self.conda), resolved_env, echo
+            )
+        except Exception as e:
+            echo("    ERROR: failed to gather embedded wheels: %s" % e)
+            return None
+
         dockerfile, context_files = _generate_dockerfile(
             base_image,
             env_path,
@@ -369,7 +419,10 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             resolved_env,
             named_alias=named_alias,
             build_install_module=type(self)._BUILD_INSTALL_MODULE,
+            deferred_sdists=deferred_sdists,
+            embedded_wheels=embedded_wheels,
         )
+        context_files.update(embedded_wheel_files)
         context_files[_CODE_PACKAGE_TARBALL_NAME] = code_package_blob
 
         build_svc = DockerBuildService.from_config()
@@ -451,6 +504,63 @@ def _build_metaflow_code_package(
     return data
 
 
+def _gather_embedded_wheels(
+    conda: "Conda",
+    resolved_env: Any,
+    echo: Callable[..., None],
+) -> Tuple[List[Dict[str, Any]], Dict[str, bytes]]:
+    """Materialize wheels for pypi packages that are NOT web-downloadable.
+
+    Packages built from a git/local source during resolution have
+    ``is_downloadable_url()==False``. The build container has no S3 or git
+    access, so the deploy machine fetches the already-built wheel from the
+    conda cache and embeds it in the build context under ``deferred_wheels/``.
+    The container's ``_register_embedded_wheels`` registers them as local files
+    so Pass A installs them offline.
+
+    Returns ``(records, files)`` where ``records`` populates
+    ``deferred_builds.json["wheels"]`` and ``files`` maps context paths to bytes.
+    """
+    nonweb = [
+        p
+        for p in resolved_env.packages
+        if p.TYPE == "pypi" and not p.is_downloadable_url()
+    ]
+    records: List[Dict[str, Any]] = []
+    files: Dict[str, bytes] = {}
+    if not nonweb:
+        return records, files
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conda.lazy_fetch_packages(nonweb, None, tmpdir, require_url_format=True)
+        for p in nonweb:
+            whl = p.local_file(p.url_format)
+            if whl is None or not os.path.isfile(whl):
+                raise CondaException(
+                    "Prebuilt: could not materialize the built wheel for "
+                    "non-web-downloadable package '%s' (%s). It must have been "
+                    "built during resolution and be fetchable from the conda cache."
+                    % (p.package_name, p.filename)
+                )
+            wheel_file = os.path.basename(whl)
+            with open(whl, "rb") as fh:
+                files["%s/%s" % (_DEFERRED_WHEELS_CONTEXT_DIR, wheel_file)] = fh.read()
+            records.append(
+                {
+                    "name": p.package_name,
+                    "version": p.package_version,
+                    "filename": p.filename,
+                    "wheel_file": wheel_file,
+                    "url_format": p.url_format,
+                }
+            )
+            echo(
+                "    Embedding prebuilt wheel for non-web-downloadable "
+                "package: %s" % wheel_file
+            )
+    return records, files
+
+
 def _generate_dockerfile(
     base_image: str,
     env_path: str,
@@ -459,9 +569,22 @@ def _generate_dockerfile(
     resolved_env: Any,
     named_alias: Optional[str] = None,
     build_install_module: str = "metaflow_extensions.prebuilt.plugins.conda",
+    deferred_sdists: Optional[List[Any]] = None,
+    embedded_wheels: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     marker_json = json.dumps([env_id.req_id, env_id.full_id, env_id.arch])
     context_files: Dict[str, Any] = {}
+
+    # Write the deferred-builds hand-off (schema "2") into the build context.
+    # No-op when there are no deferred sdists and no embedded wheels.
+    sdists = list(deferred_sdists or [])
+    wheels = list(embedded_wheels or [])
+    has_deferred = bool(sdists or wheels)
+    if has_deferred:
+        context_files[_DEFERRED_BUILDS_CONTEXT_NAME] = json.dumps(
+            {"schema_version": "2", "sdists": sdists, "wheels": wheels},
+            indent=2,
+        ).encode("utf-8")
 
     lines = [
         "# syntax=docker/dockerfile:1",
@@ -485,9 +608,24 @@ def _generate_dockerfile(
         "WORKDIR %s" % PREBUILT_BUILD_LOCAL_ROOT,
         "",
         "RUN mkdir -p %s" % PREBUILT_ENVS_DIR,
-        "RUN python -m %s.prebuilt_build_install %s %s"
-        % (build_install_module, env_id.req_id, env_id.full_id),
     ]
+
+    # COPY the deferred-builds hand-off + any embedded wheels into the image,
+    # before the build-install step that consumes them.
+    if has_deferred:
+        lines.append(
+            "COPY %s %s"
+            % (_DEFERRED_BUILDS_CONTEXT_NAME, _DEFERRED_BUILDS_CONTAINER_PATH)
+        )
+    if wheels:
+        lines.append(
+            "COPY %s %s"
+            % (_DEFERRED_WHEELS_CONTEXT_DIR, _DEFERRED_WHEELS_CONTAINER_DIR)
+        )
+    lines.append(
+        "RUN python -m %s.prebuilt_build_install %s %s"
+        % (build_install_module, env_id.req_id, env_id.full_id)
+    )
 
     if named_alias is not None:
         real_env_path = _env_path_for(env_id)
