@@ -31,7 +31,11 @@ try:
     from metaflow_extensions.netflixext.plugins.conda.conda_environment import (
         CondaEnvironment,
     )
-    from metaflow_extensions.netflixext.plugins.conda.env_descr import EnvID, EnvType
+    from metaflow_extensions.netflixext.plugins.conda.env_descr import (
+        EnvID,
+        EnvType,
+        PypiPackageSpecification,
+    )
     from metaflow_extensions.netflixext.plugins.conda.envsresolver import EnvsResolver
     from metaflow_extensions.netflixext.plugins.conda.utils import CondaException
 except ImportError:
@@ -43,6 +47,7 @@ except ImportError:
     Conda = None  # type: ignore[assignment]
     EnvID = None  # type: ignore[assignment]
     EnvType = None  # type: ignore[assignment]
+    PypiPackageSpecification = None  # type: ignore[assignment]
     EnvsResolver = None  # type: ignore[assignment]
     CondaException = RuntimeError  # type: ignore[assignment,misc]
     try:
@@ -568,11 +573,16 @@ def _gather_embedded_wheels(
     E — non-web source WITH a cached built wheel: neither source nor wheel is
         web-accessible from the container — embed the wheel as in case D.
 
-    The wheel is retrieved by calling lazy_fetch_packages on the deploy machine
-    (where _storage is live), which resolves cached_version(".whl") via the cache
-    and populates local_file(".whl"). The record stores url_format=".whl" so
-    _register_embedded_wheels calls add_local_file(".whl", path); _create picks
-    .whl first (allowed_formats puts .whl before .tar.gz) and only_binary keeps it.
+    The wheel is retrieved with lazy_fetch_packages on the deploy machine (where
+    _storage is live). For a wheel package (B) we fetch it directly; for a
+    source package with a cached wheel (D/E) we fetch a synthetic wheel-only,
+    cache-only spec — NOT the package itself — because lazy_fetch materializes
+    only a package's single most-preferred source and a local source archive
+    (which D/E packages may carry from resolution) outranks the cached wheel,
+    which would leave the wheel unfetched. The record stores url_format=".whl"
+    so _register_embedded_wheels calls add_local_file(".whl", path); _create
+    picks .whl first (allowed_formats puts .whl before .tar.gz) and only_binary
+    keeps it.
 
     Returns ``(records, files)`` where ``records`` populates
     ``deferred_builds.json["wheels"]`` and ``files`` maps context paths to bytes.
@@ -594,22 +604,48 @@ def _gather_embedded_wheels(
         return records, files
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # On the deploy machine self._storage is live, so allowed_formats() puts
-        # ".whl" first and a cached_version(".whl") wins the source race, landing
-        # the wheel in local_file(".whl"). (require_url_format is intentionally
-        # omitted — it is a no-op for pypi and would mis-target a ".tar.gz" spec.)
-        conda.lazy_fetch_packages(candidates, None, tmpdir)
         for p in candidates:
-            # Prefer the wheel: iterate allowed_formats() (same order _create
-            # uses) and take the first local file that is a .whl, so we never
-            # embed a source archive.
+            # We must land the BUILT WHEEL in a local file. lazy_fetch only
+            # materializes a package's single most-preferred source, and a local
+            # file outranks a cached version (conda.lazy_fetch_packages). So for a
+            # source-format package that ALSO carries a local source archive (e.g.
+            # a local/git sdist registered during resolution), fetching the
+            # package itself would materialize the sdist and leave the cached wheel
+            # untouched. We therefore fetch the wheel through a dedicated spec.
+            if p.url_format == ".whl":
+                # Case B: the package itself IS a (git/local) wheel — fetch it
+                # directly (it has no competing source format).
+                fetch_spec = p
+            else:
+                # Cases D/E: a source-format package whose built wheel lives in the
+                # conda cache. Fetch a synthetic wheel-only, cache-only spec that
+                # carries NO source local file, so the cached ".whl" is the
+                # preferred (and only) source and is always materialized.
+                cache_whl = p.cached_version(".whl")
+                if cache_whl is not None and cache_whl.url:
+                    wheel_basename = os.path.basename(cache_whl.url)
+                    wheel_fname = wheel_basename[: -len(cache_whl.format)]
+                    fetch_spec = PypiPackageSpecification(
+                        wheel_fname,
+                        p.url,
+                        is_real_url=False,  # built wheel: cache-only, never web
+                        url_format=".whl",
+                        hashes={".whl": cache_whl.hash},
+                    )
+                    fetch_spec.add_cached_version(".whl", cache_whl)
+                else:
+                    # Non-web source with no built wheel in cache: it can be
+                    # neither fetched nor built in the container — fall through to
+                    # the loud failure below.
+                    fetch_spec = None
+
             whl = None
-            for f in p.allowed_formats():
-                candidate_path = p.local_file(f)
-                if candidate_path and candidate_path.endswith(".whl"):
-                    whl = candidate_path
-                    break
-            if whl is None or not os.path.isfile(whl):
+            if fetch_spec is not None:
+                conda.lazy_fetch_packages([fetch_spec], None, tmpdir)
+                fetched = fetch_spec.local_file(".whl")
+                if fetched and os.path.isfile(fetched):
+                    whl = fetched
+            if whl is None:
                 raise CondaException(
                     "Prebuilt: could not materialize a built wheel for package "
                     "'%s' (%s); expected a .whl in the conda cache "

@@ -200,3 +200,81 @@ class TestBootstrapCommands:
         activate_cmd = next(c for c in cmds if "prebuilt_runtime_activate" in c)
         assert "metaflow_extensions.prebuilt" in activate_cmd
         assert "metaflow_extensions.nflx" not in activate_cmd
+
+
+def test_gather_embedded_wheels_prefers_cached_wheel_over_local_sdist():
+    """Codex r13 regression: a source-format package that carries a competing
+    local sdist AND has a cached built wheel must embed the WHEEL — not be
+    defeated by lazy_fetch preferring the local source archive (it only
+    materializes a package's single most-preferred source, and a local file
+    outranks a cached version). _gather must fetch a wheel-only spec, not the
+    package itself."""
+    from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment import (
+        _gather_embedded_wheels,
+    )
+
+    try:
+        from metaflow_extensions.nflx.plugins.conda.env_descr import (
+            PypiCachePackage,
+            PypiPackageSpecification,
+        )
+    except ImportError:
+        pytest.skip("requires metaflow-netflixext")
+
+    src_url = "https://pypi.example/foo-1.0.tar.gz"
+    whl_hash = "0" * 64
+    # Cache URL layout: .../<filename.whl>/<hash>/<filename.whl>
+    cache_url = (
+        "pypi/example/foo-1.0-py3-none-any.whl/%s/foo-1.0-py3-none-any.whl" % whl_hash
+    )
+
+    with tempfile.TemporaryDirectory() as d:
+        cand = PypiPackageSpecification("foo-1.0", src_url, url_format=".tar.gz")
+        # The competing local source archive that would wrongly win the race.
+        sdist_path = os.path.join(d, "foo-1.0.tar.gz")
+        with open(sdist_path, "wb") as f:
+            f.write(b"sdist-bytes")
+        cand.add_local_file(".tar.gz", sdist_path)
+        # A built wheel for it lives in the conda cache.
+        cand.add_cached_version(".whl", PypiCachePackage(cache_url))
+
+        captured = {}
+
+        def fake_lazy_fetch(pkgs, auth, dest, **kwargs):
+            spec = list(pkgs)[0]
+            captured["spec"] = spec
+            # Faithfully reproduce lazy_fetch: it materializes only the single
+            # most-preferred source, and a LOCAL file outranks a cached version.
+            # So if a local source archive is already present, the cached wheel
+            # is NOT fetched (this is exactly the bug). Fetching the package
+            # itself (old behavior) thus leaves no .whl; fetching a wheel-only
+            # spec (the fix) materializes it.
+            if any(spec.local_file(f) for f in spec.allowed_formats()):
+                return
+            if spec.cached_version(".whl") is not None:
+                os.makedirs(os.path.join(dest, "pypi"), exist_ok=True)
+                whl_path = os.path.join(dest, "pypi", "foo-1.0-py3-none-any.whl")
+                with open(whl_path, "wb") as f:
+                    f.write(b"wheel-bytes")
+                spec.add_local_file(".whl", whl_path, pkg_hash=whl_hash)
+
+        conda = MagicMock()
+        conda.lazy_fetch_packages.side_effect = fake_lazy_fetch
+        resolved_env = MagicMock()
+        resolved_env.packages = [cand]
+
+        records, files = _gather_embedded_wheels(
+            conda, resolved_env, lambda *a, **k: None
+        )
+
+    # It embedded the WHEEL (not the sdist) ...
+    assert len(records) == 1
+    assert records[0]["wheel_file"] == "foo-1.0-py3-none-any.whl"
+    assert records[0]["url_format"] == ".whl"
+    assert any(k.endswith("foo-1.0-py3-none-any.whl") for k in files)
+    assert list(files.values()) == [b"wheel-bytes"]
+    # ... by fetching a wheel-only spec, NOT the source candidate carrying the
+    # local sdist (which is what previously defeated this).
+    assert captured["spec"] is not cand
+    assert captured["spec"].url_format == ".whl"
+    assert captured["spec"].local_file(".tar.gz") is None
