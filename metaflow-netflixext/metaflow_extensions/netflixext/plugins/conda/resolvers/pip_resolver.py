@@ -628,11 +628,23 @@ class PipResolver(Resolver):
                     # build_pypi_packages as before.
                     if not _spec.is_downloadable_url():
                         continue
-                    # NOTE: the sdist's sha256 is carried on the spec URL
-                    # (url#hash), so the resolved env full_id stays stable for a
-                    # given URL. A *mutable* URL serving different bytes at the
-                    # same URL (an anti-pattern; PyPI is immutable) could reuse
-                    # the same image identity — out of scope here.
+                    # Only defer sdists that carry a content hash. A deferred
+                    # sdist's source spec BECOMES the resolved-env identity (it is
+                    # no longer replaced by a locally built wheel), so without a
+                    # hash the env full_id would depend on `filename#None` and
+                    # different bytes served at the same URL could silently reuse
+                    # the same prebuilt image. Leave hashless sdists (e.g. a direct
+                    # archive URL with no #sha256) to build_pypi_packages, which
+                    # builds the wheel and derives a stable content-hash identity
+                    # (the pre-defer behavior). With a hash present the full_id is
+                    # content-pinned for that URL.
+                    if _spec.pkg_hash(_spec.url_format) is None:
+                        debug.conda_exec(
+                            "Not deferring hashless sdist %s==%s (%s); building it "
+                            "for a stable content-hash identity"
+                            % (_spec.package_name, _spec.package_version, _pkg.url)
+                        )
+                        continue
                     defer_keys.add(_k)
                     debug.conda_exec(
                         "Deferring sdist build %s==%s (%s)"

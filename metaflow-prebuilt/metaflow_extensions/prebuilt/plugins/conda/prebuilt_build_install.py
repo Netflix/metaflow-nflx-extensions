@@ -67,6 +67,23 @@ _DEFERRED_BUILDS_PATH = "/app/deferred_builds.json"
 _DEFERRED_WHEELS_DIR = "/app/deferred_wheels"
 _SCHEMA_VERSION = "2"
 
+# Pass B builds sdists with ``--no-build-isolation``, so the build backend is
+# the env's OWN setuptools. setuptools 82 removed the bundled ``pkg_resources``,
+# which many legacy ``setup.py`` files still import — exactly why the deploy-side
+# builder constrains ``setuptools<82``. This probe exits 0 only when setuptools
+# (and wheel) are importable AND setuptools' major version is < 82; any other
+# outcome (missing, >=82, or unparseable) exits non-zero so the caller installs
+# / downgrades to ``setuptools<82``.
+_SETUPTOOLS_CHECK = (
+    "import sys\n"
+    "try:\n"
+    "    import setuptools, wheel\n"
+    "    major = int(setuptools.__version__.split('.')[0])\n"
+    "except Exception:\n"
+    "    sys.exit(3)\n"
+    "sys.exit(0 if major < 82 else 4)\n"
+)
+
 
 def _echo(*args, **kwargs):
     kwargs["err"] = False
@@ -145,9 +162,13 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
     download), falling back to the recorded URL only if no local file is present.
 
     The sdist's runtime deps were resolved on the deploy machine and installed
-    in Pass A, so ``--no-deps`` is correct. Pre-check: assert setuptools+wheel
-    import in the env (the build backends); auto-install if missing. A missing
-    manifest is a no-op (the env has no deferred sdists).
+    in Pass A, so ``--no-deps`` is correct. Pre-check: require importable
+    ``wheel`` + a ``setuptools`` whose major version is < 82 (the build backends),
+    installing/downgrading to ``setuptools<82`` otherwise — because the
+    ``--no-build-isolation`` build below uses the env's own setuptools and a >=82
+    setuptools dropped ``pkg_resources``, which legacy ``setup.py`` files import
+    (the deploy-side builder applies the same constraint). A missing manifest is
+    a no-op (the env has no deferred sdists).
 
     ``--no-build-isolation`` is deliberate: by Pass B the env already contains
     the sdist's *runtime* deps, so its ``setup.py`` can import them at build
@@ -170,10 +191,13 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
     if not deferred_sdists:
         return  # Wheels-only or empty; Pass B is a no-op.
 
-    # Pre-check: setuptools + wheel are required as build backends.
-    _echo(" (Pass B pre-check: setuptools+wheel) ...", timestamp=False, nl=False)
+    # Pre-check: setuptools (major < 82) + wheel are required as build backends.
+    # Because Pass B builds with --no-build-isolation, the env's own setuptools
+    # is used; a >=82 setuptools (no pkg_resources) would break legacy setup.py
+    # builds, so we downgrade/install setuptools<82 if the probe is not satisfied.
+    _echo(" (Pass B pre-check: setuptools<82 + wheel) ...", timestamp=False, nl=False)
     check_result = subprocess.run(
-        [python_bin, "-c", "import setuptools, wheel"],
+        [python_bin, "-c", _SETUPTOOLS_CHECK],
         capture_output=True,
         text=True,
     )
@@ -204,21 +228,23 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
                 "setuptools<82",
                 "wheel",
             ]
+        _echo(" (installing setuptools<82 + wheel) ...", timestamp=False, nl=False)
         auto_result = subprocess.run(auto_args, capture_output=True, text=True)
         if auto_result.returncode != 0:
             raise CondaException(
-                "Pass B pre-check: setuptools/wheel not in env %s and "
-                "auto-install failed.\nstderr: %s" % (env_dir, auto_result.stderr)
+                "Pass B pre-check: could not install setuptools<82 / wheel into "
+                "env %s.\nstderr: %s" % (env_dir, auto_result.stderr)
             )
         recheck = subprocess.run(
-            [python_bin, "-c", "import setuptools, wheel"],
+            [python_bin, "-c", _SETUPTOOLS_CHECK],
             capture_output=True,
             text=True,
         )
         if recheck.returncode != 0:
             raise CondaException(
-                "Pass B pre-check: setuptools/wheel still not importable after "
-                "auto-install in %s.\nstderr: %s" % (env_dir, recheck.stderr)
+                "Pass B pre-check: setuptools<82 + wheel still not satisfied after "
+                "install in %s (a >=82 setuptools breaks legacy setup.py builds "
+                "under --no-build-isolation).\nstderr: %s" % (env_dir, recheck.stderr)
             )
 
     # Map filename -> the local artifact Pass A's lazy_fetch already downloaded
