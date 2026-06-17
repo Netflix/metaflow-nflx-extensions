@@ -2115,7 +2115,14 @@ class Conda(object):
             )
 
     def _ensure_remote_conda(self):
-        if CONDA_REMOTE_INSTALLER is not None:
+        # Truthy (not `is not None`): an EMPTY CONDA_REMOTE_INSTALLER means "no
+        # datastore installer configured" and must take the self-install path
+        # below, not _install_remote_conda (which requires a datastore _storage
+        # to fetch the installer). The prebuilt build container deliberately sets
+        # METAFLOW_CONDA_REMOTE_INSTALLER="" to disable the datastore installer
+        # and runs with _storage=None, so an `is not None` check would wrongly
+        # route it to _install_remote_conda and fail the image build.
+        if CONDA_REMOTE_INSTALLER:
             self._install_remote_conda()
         else:
             # If we don't have a REMOTE_INSTALLER, we check if we need to install one
