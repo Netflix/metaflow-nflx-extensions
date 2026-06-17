@@ -1682,10 +1682,17 @@ class Conda(object):
                             most_preferred_format = f
                         available_formats[f] = src
 
-            # Check for cache paths next
+            # Check for cache paths next.
+            # Storage guard: without a datastore (e.g. datastore_type=local in
+            # the prebuilt build container, where self._storage is None), the
+            # cache_downloads branch below is a no-op — but marking the source
+            # as "cache" would still win the most_preferred_source race, leaving
+            # the package neither cache-fetched nor web-fetched, so the install
+            # later errors out finding no local file. Only treat the cache as a
+            # preferred source when we actually have storage to fetch it from.
             for f in pkg_spec.allowed_formats():
                 cache_info = pkg_spec.cached_version(f)
-                if cache_info and cache_info.url:
+                if cache_info and cache_info.url and self._storage:
                     src = ("cache", dl_local_path.format(format=f))
                     if most_preferred_source is None:
                         most_preferred_source = src
@@ -2598,7 +2605,11 @@ class Conda(object):
                 if not found_local_dir:
                     for f in CONDA_FORMATS:
                         cache_info = p.cached_version(f)
-                        if cache_info:
+                        # Storage guard (see lazy_fetch_packages): with no
+                        # datastore (self._storage is None, e.g. the prebuilt
+                        # build container) fall through to the package's web URL
+                        # rather than a cache URL we cannot fetch / reconstruct.
+                        if cache_info and cache_info.url and self._storage:
                             debug.conda_exec(
                                 "For %s, using cached package from '%s'"
                                 % (p.filename, cache_info.url)

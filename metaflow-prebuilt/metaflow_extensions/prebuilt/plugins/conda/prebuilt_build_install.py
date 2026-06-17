@@ -130,6 +130,16 @@ def _run_deferred_sdist_builds(env_dir: str) -> None:
     in Pass A, so ``--no-deps`` is correct. Pre-check: assert setuptools+wheel
     import in the env (the build backends); auto-install if missing. A missing
     manifest is a no-op (the env has no deferred sdists).
+
+    ``--no-build-isolation`` is deliberate: by Pass B the env already contains
+    the sdist's *runtime* deps, so its ``setup.py`` can import them at build
+    time (e.g. ``deepspeed`` imports ``torch``); build isolation would create a
+    clean env without them and fail. KNOWN LIMITATION: an sdist whose
+    ``pyproject.toml`` ``[build-system].requires`` lists *build* deps beyond
+    setuptools/wheel (e.g. ``Cython``, ``setuptools_scm``, ``maturin``) will not
+    have those auto-installed here and may fail to build. This matches the
+    pre-OSS inline implementation; supplying build requirements is tracked as a
+    follow-up (extend deferred_builds.json with a per-sdist ``build_requires``).
     """
     python_bin = os.path.join(env_dir, "bin", "python")
     uv_bin = os.path.join(env_dir, "bin", "uv")
