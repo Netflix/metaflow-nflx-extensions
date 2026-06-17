@@ -421,12 +421,15 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             }
             for p in resolved_env.packages
             if p.TYPE == "pypi" and p.url_format != ".whl" and p.is_downloadable_url()
-            # Exclude any package that already has a built wheel on disk: a
-            # resolver may keep a source url_format while carrying a built .whl
-            # (pylock/uv/legacy cache), which Pass A installs directly — it must
-            # not be reclassified as a deferred sdist and rebuilt in Pass B.
-            and not p.local_file(".whl")
         ]
+        # KNOWN LIMITATION (out of scope here): the supported pip `@pypi` defer
+        # path never builds sdists on the deploy machine, so a deferred sdist is
+        # always an unbuilt source archive. Envs resolved via pylock/conda-lock
+        # can instead carry a source url_format with an already-built wheel; such
+        # a package is rebuilt in Pass B (loud if it fails) rather than reusing
+        # the deploy-built wheel. Reusing that wheel needs the container's
+        # only_binary install to prefer an embedded .whl over the spec's source
+        # url_format (a _gather/_register/_create change) — a tracked follow-up.
 
         # Materialize wheels for non-web-downloadable (git/local) pypi packages,
         # which the builder can neither fetch (no S3) nor rebuild (no git).
