@@ -216,6 +216,13 @@ class PipResolver(Resolver):
                     platforms.append(tag.platform)
                 implementations = [x.interpreter for x in supported_tags]
                 extra_args = [
+                    # NOTE: cross-arch resolution forces binary-only because
+                    # pip's --platform requires --only-binary=:all:, so a
+                    # *deferred* sdist-only dep still can't be resolved cross-arch
+                    # (e.g. macOS/arm64 -> linux-64). Same-arch deferral (the
+                    # common workbench->Titus linux-64 path) is unaffected.
+                    # Cross-arch sdist deferral would need arch-independent sdist
+                    # metadata extraction — tracked as a follow-up.
                     "--only-binary=:all:",
                     # Seems to overly constrain stuff
                     # *(
@@ -555,6 +562,15 @@ class PipResolver(Resolver):
                             parse_result.url,
                             is_real_url=is_real_url,
                             url_format=parse_result.url_format,
+                            # Carry the resolved archive hash (as the wheel branch
+                            # below does) so a deferred sdist contributes its
+                            # sha256 to the env full_id and the build container can
+                            # verify the bytes it builds.
+                            hashes=(
+                                {parse_result.url_format: parse_result.hash}
+                                if parse_result.hash
+                                else None
+                            ),
                         )
                         to_build_pkg_info[cache_base_url] = PackageToBuild(
                             dl_info["url"],

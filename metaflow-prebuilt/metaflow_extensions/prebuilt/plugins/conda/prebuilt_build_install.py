@@ -218,6 +218,14 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
         if lf and os.path.isfile(lf):
             local_by_filename[p.filename] = lf
 
+    # Pass B builds invoke the conda env's own tools (compilers, cmake/ninja,
+    # console scripts) that Pass A installed; put <env>/bin first on PATH so the
+    # build subprocess finds them rather than the Docker build image's PATH.
+    build_env = dict(os.environ)
+    build_env["PATH"] = (
+        os.path.dirname(python_bin) + os.pathsep + build_env.get("PATH", "")
+    )
+
     _echo(
         " (Pass B: %d deferred sdist(s)) ..." % len(deferred_sdists),
         timestamp=False,
@@ -263,7 +271,9 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
                 "--disable-pip-version-check",
                 source,
             ]
-        result = subprocess.run(build_args, capture_output=True, text=True)
+        result = subprocess.run(
+            build_args, capture_output=True, text=True, env=build_env
+        )
         if result.returncode != 0:
             raise CondaException(
                 "Failed to build deferred sdist %s==%s from %s\n"
