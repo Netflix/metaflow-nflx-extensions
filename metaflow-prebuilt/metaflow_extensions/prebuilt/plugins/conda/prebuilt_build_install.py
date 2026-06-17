@@ -26,6 +26,8 @@ import subprocess
 import sys
 import time
 
+from typing import Optional
+
 # This module runs ONLY inside the prebuilt Docker build container. The image
 # was given the resolved-env *manifest* but NOT the deploy machine's package
 # cache (the build context copies the manifest, not the cache datastore). So
@@ -191,19 +193,10 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
     if not deferred_sdists:
         return  # Wheels-only or empty; Pass B is a no-op.
 
-    # Pre-check: setuptools (major < 82) + wheel are required as build backends.
-    # Because Pass B builds with --no-build-isolation, the env's own setuptools
-    # is used; a >=82 setuptools (no pkg_resources) would break legacy setup.py
-    # builds, so we downgrade/install setuptools<82 if the probe is not satisfied.
-    _echo(" (Pass B pre-check: setuptools<82 + wheel) ...", timestamp=False, nl=False)
-    check_result = subprocess.run(
-        [python_bin, "-c", _SETUPTOOLS_CHECK],
-        capture_output=True,
-        text=True,
-    )
-    if check_result.returncode != 0:
+    def _install_args(*specs):
+        # uv (preferred) or pip install of `specs` into the env at env_dir.
         if os.path.isfile(uv_bin):
-            auto_args = [
+            return [
                 uv_bin,
                 "pip",
                 "install",
@@ -213,23 +206,53 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
                 env_dir,
                 "--no-cache",
                 "--no-config",
-                "setuptools<82",
-                "wheel",
+                *specs,
             ]
-        else:
-            auto_args = [
+        return [
+            python_bin,
+            "-m",
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "--no-input",
+            "--disable-pip-version-check",
+            *specs,
+        ]
+
+    # Pre-check: setuptools (major < 82) + wheel are required as build backends.
+    # Because Pass B builds with --no-build-isolation, the env's own setuptools
+    # is used; a >=82 setuptools (no pkg_resources) would break legacy setup.py
+    # builds, so we install setuptools<82 if the probe is not satisfied.
+    #
+    # If a setuptools is already RESOLVED in the env (the common conda-forge case
+    # ships >=82), we record its version and RESTORE it after the builds: the
+    # shipped runtime env must keep the resolved version so the image still
+    # matches its manifest full_id — the <82 pin is only needed transiently while
+    # building. (If setuptools was absent we just add <82 for the build; an env
+    # with no setuptools is degenerate and there is nothing to preserve.)
+    restore_setuptools = None  # type: Optional[str]
+    _echo(" (Pass B pre-check: setuptools<82 + wheel) ...", timestamp=False, nl=False)
+    check_result = subprocess.run(
+        [python_bin, "-c", _SETUPTOOLS_CHECK],
+        capture_output=True,
+        text=True,
+    )
+    if check_result.returncode != 0:
+        cur = subprocess.run(
+            [
                 python_bin,
-                "-m",
-                "pip",
-                "install",
-                "--no-cache-dir",
-                "--no-input",
-                "--disable-pip-version-check",
-                "setuptools<82",
-                "wheel",
-            ]
+                "-c",
+                "import setuptools,sys;sys.stdout.write(setuptools.__version__)",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if cur.returncode == 0 and cur.stdout.strip():
+            restore_setuptools = cur.stdout.strip()
         _echo(" (installing setuptools<82 + wheel) ...", timestamp=False, nl=False)
-        auto_result = subprocess.run(auto_args, capture_output=True, text=True)
+        auto_result = subprocess.run(
+            _install_args("setuptools<82", "wheel"), capture_output=True, text=True
+        )
         if auto_result.returncode != 0:
             raise CondaException(
                 "Pass B pre-check: could not install setuptools<82 / wheel into "
@@ -319,6 +342,30 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
                 "Failed to build deferred sdist %s==%s from %s\n"
                 "stdout:\n%s\nstderr:\n%s"
                 % (name, version, source, result.stdout, result.stderr)
+            )
+        _echo(" done.", timestamp=False)
+
+    # Restore the resolved setuptools we transiently downgraded for the builds,
+    # so the shipped env matches the image's manifest full_id. The built wheels
+    # are already installed and do not depend on the build-time setuptools.
+    if restore_setuptools is not None:
+        _echo(
+            " (restoring resolved setuptools==%s) ..." % restore_setuptools,
+            timestamp=False,
+            nl=False,
+        )
+        restore_result = subprocess.run(
+            _install_args("setuptools==%s" % restore_setuptools),
+            capture_output=True,
+            text=True,
+        )
+        if restore_result.returncode != 0:
+            raise CondaException(
+                "Pass B: built the deferred sdists with a transient setuptools<82 "
+                "but failed to restore the resolved setuptools==%s into env %s, so "
+                "the image would not match its manifest. Refusing to ship a "
+                "mismatched env.\nstderr: %s"
+                % (restore_setuptools, env_dir, restore_result.stderr)
             )
         _echo(" done.", timestamp=False)
 
