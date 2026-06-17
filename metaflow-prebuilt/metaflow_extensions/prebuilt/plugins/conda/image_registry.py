@@ -5,7 +5,7 @@ from typing import Any, Dict, TYPE_CHECKING
 from .build_service import _resolve_entry_point
 
 if TYPE_CHECKING:
-    from .env_descr import EnvID
+    from metaflow_extensions.nflx.plugins.conda.env_descr import EnvID
 
 
 class ImageRegistry(ABC):

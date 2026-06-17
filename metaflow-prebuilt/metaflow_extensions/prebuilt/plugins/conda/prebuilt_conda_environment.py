@@ -27,9 +27,9 @@ try:
         CONDA_MAGIC_FILE_V2,  # type: ignore[attr-defined]
         CONDA_REMOTE_COMMANDS,  # type: ignore[attr-defined]
     )
-    from .conda import Conda
-    from .conda_environment import CondaEnvironment
-    from .env_descr import EnvID, EnvType
+    from metaflow_extensions.nflx.plugins.conda.conda import Conda
+    from metaflow_extensions.nflx.plugins.conda.conda_environment import CondaEnvironment
+    from metaflow_extensions.nflx.plugins.conda.env_descr import EnvID, EnvType
 except ImportError:
     # OSS metaflow — these Netflix-specific names are not available.
     # The environment class still registers and its pure functions are usable;
@@ -115,13 +115,12 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
 
     TYPE = "prebuilt"
 
-    # Subclasses must set this to the Python package that provides
-    # prebuilt_build_install — the RUN step in the generated Dockerfile
-    # calls `python -m <_BUILD_INSTALL_MODULE>.prebuilt_build_install`.
-    # The default points to the OSS module for documentation purposes;
-    # in practice you need a conda stack (nflx-metaflow or similar) to
-    # provide the real implementation.
-    _BUILD_INSTALL_MODULE: str = "metaflow_extensions.prebuilt.plugins.conda"
+    # The Python package that provides prebuilt_build_install — the RUN step
+    # in the generated Dockerfile calls
+    # `python -m <_BUILD_INSTALL_MODULE>.prebuilt_build_install`. Defaults to
+    # the Netflix conda stack (metaflow-netflixext), which ships the real
+    # implementation that imports the Conda class. Subclasses may override.
+    _BUILD_INSTALL_MODULE: str = "metaflow_extensions.nflx.plugins.conda"
 
     _prebuilt_images: Dict[str, str] = {}
     _prebuilt_env_paths: Dict[str, str] = {}

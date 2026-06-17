@@ -5,7 +5,7 @@ from ..image_registry import ImageRegistry
 from ..prebuilt_conda_environment import PREBUILT_IMAGE_SCHEMA_VERSION, _sanitize_named_env
 
 if TYPE_CHECKING:
-    from ..env_descr import EnvID
+    from metaflow_extensions.nflx.plugins.conda.env_descr import EnvID
 
 
 class ECRRegistry(ImageRegistry):

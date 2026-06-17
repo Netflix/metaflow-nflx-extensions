@@ -8,7 +8,7 @@ from ..prebuilt_conda_environment import (
 )
 
 if TYPE_CHECKING:
-    from ..env_descr import EnvID
+    from metaflow_extensions.nflx.plugins.conda.env_descr import EnvID
 
 
 class DockerHubRegistry(ImageRegistry):

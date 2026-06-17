@@ -28,6 +28,17 @@ def reset_class_state():
 
 
 def _make_env_id(req="abc", full="def"):
+    # Prefer the real nflx EnvID when it is importable (the package couples to
+    # metaflow-netflixext), so the `isinstance(env_id, EnvID)` check in
+    # bootstrap_commands takes the prebuilt path. Fall back to a duck-typed mock
+    # on a pure-OSS install, where EnvID is None and the hash-based branch runs.
+    from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment import (
+        EnvID,
+    )
+
+    if EnvID is not None:
+        return EnvID(req_id=req, full_id=full, arch="linux-64")
+
     env_id = MagicMock()
     env_id.req_id = req
     env_id.full_id = full
@@ -87,23 +98,25 @@ class TestStateFilePersistLoad:
 
 class TestBuildInstallModule:
     def test_default_build_install_module(self):
+        # The package couples to the Netflix conda stack, which ships the real
+        # prebuilt_build_install implementation.
         assert (
             PrebuiltCondaEnvironment._BUILD_INSTALL_MODULE
-            == "metaflow_extensions.prebuilt.plugins.conda"
+            == "metaflow_extensions.nflx.plugins.conda"
         )
 
     def test_subclass_can_override_build_install_module(self):
-        class NflxPrebuiltEnvironment(PrebuiltCondaEnvironment):
-            _BUILD_INSTALL_MODULE = "metaflow_extensions.nflx.plugins.conda"
+        class CustomPrebuiltEnvironment(PrebuiltCondaEnvironment):
+            _BUILD_INSTALL_MODULE = "some.other.conda.stack"
 
         assert (
-            NflxPrebuiltEnvironment._BUILD_INSTALL_MODULE
-            == "metaflow_extensions.nflx.plugins.conda"
+            CustomPrebuiltEnvironment._BUILD_INSTALL_MODULE
+            == "some.other.conda.stack"
         )
         # Base class is unchanged
         assert (
             PrebuiltCondaEnvironment._BUILD_INSTALL_MODULE
-            == "metaflow_extensions.prebuilt.plugins.conda"
+            == "metaflow_extensions.nflx.plugins.conda"
         )
 
 
