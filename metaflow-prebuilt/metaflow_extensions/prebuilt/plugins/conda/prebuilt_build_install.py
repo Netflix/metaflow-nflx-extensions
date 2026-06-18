@@ -91,6 +91,12 @@ _SETUPTOOLS_CHECK = (
 
 def _echo(*args, **kwargs):
     kwargs["err"] = False
+    # echo_always() forwards **kwargs to click.secho(), which has no "timestamp"
+    # kwarg (it raises TypeError in style()). The Pass B progress lines pass
+    # timestamp=False (a porting artifact from the pre-OSS inline echo helper);
+    # drop it so Pass B doesn't crash. This never surfaced in the Netflix flow
+    # because Pass B only runs when a deferred sdist has no embedded/cached wheel.
+    kwargs.pop("timestamp", None)
     echo_always(*args, **kwargs)
 
 
