@@ -1,3 +1,7 @@
+from ..nflx_compat import install as _install_nflx_compat
+
+_install_nflx_compat()
+
 try:
     from .nflxext_version import nflxext_version
 except ImportError:
