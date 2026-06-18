@@ -25,6 +25,7 @@ from ..pypi_package_builder import PackageToBuild, build_pypi_packages
 
 from ..utils import (
     CondaException,
+    _safe_netloc,
     arch_id,
     channel_or_url,
     filter_user_reqs_by_markers,
@@ -324,11 +325,7 @@ class CondaLockResolver(Resolver):
                                 base_build_url = components[4]
                                 parse = urlparse(base_build_url)
                                 clean_path, clean_commit = parse.path.split("@")
-                                # Use hostname (not netloc) to avoid leaking embedded credentials
-                                safe_netloc = parse.hostname or ""
-                                if parse.port:
-                                    safe_netloc += ":%d" % parse.port
-                                clean_url = parse.scheme[4:] + safe_netloc + clean_path
+                                clean_url = parse.scheme[4:] + _safe_netloc(parse) + clean_path
                                 base_pkg_url = "%s/%s" % (clean_url, clean_commit)
                                 # TODO: Do we need to handle subdirectories
                                 cache_base_url = (
