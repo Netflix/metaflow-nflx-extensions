@@ -56,7 +56,9 @@ class TestPackageSpecificationFakeurlStripsCredentials:
             is_real_url=False,
         )
         assert "user" not in spec._url, "credential 'user' found in URL: %s" % spec._url
-        assert "secret" not in spec._url, "credential 'secret' found in URL: %s" % spec._url
+        assert "secret" not in spec._url, (
+            "credential 'secret' found in URL: %s" % spec._url
+        )
         assert "private-pypi.example.com" in spec._url
 
     def test_pypi_fakeurl_real_url_path_passes_through(self):

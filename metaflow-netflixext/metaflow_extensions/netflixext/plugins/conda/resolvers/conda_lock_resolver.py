@@ -325,7 +325,9 @@ class CondaLockResolver(Resolver):
                                 base_build_url = components[4]
                                 parse = urlparse(base_build_url)
                                 clean_path, clean_commit = parse.path.split("@")
-                                clean_url = parse.scheme[4:] + _safe_netloc(parse) + clean_path
+                                clean_url = (
+                                    parse.scheme[4:] + _safe_netloc(parse) + clean_path
+                                )
                                 base_pkg_url = "%s/%s" % (clean_url, clean_commit)
                                 # TODO: Do we need to handle subdirectories
                                 cache_base_url = (
