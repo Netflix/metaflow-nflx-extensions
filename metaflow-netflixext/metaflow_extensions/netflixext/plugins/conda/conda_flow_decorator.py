@@ -10,6 +10,7 @@ from .conda_common_decorator import (
     SysPackagesRequirementDecoratorMixin,
     PypiRequirementDecoratorMixin,
 )
+from .conda_environment import CondaEnvironment
 
 
 class PackageRequirementFlowDecorator(FlowDecorator):
@@ -36,7 +37,9 @@ class PackageRequirementFlowDecorator(FlowDecorator):
     def flow_init(
         self, flow, graph, environment, flow_datastore, metadata, logger, echo, options
     ):
-        if environment.TYPE != "conda":
+        # Accept conda-based environments incl. subclasses (e.g. prebuilt); a
+        # strict TYPE != "conda" check wrongly rejects --environment=prebuilt.
+        if not isinstance(environment, CondaEnvironment):
             raise InvalidEnvironmentException(
                 "The *%s* decorator requires " "--environment=conda" % self.name
             )
