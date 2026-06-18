@@ -621,7 +621,7 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             # site-packages/dist-packages entries, dropping bare host stdlib
             # dirs that could shadow the conda stdlib. Save the original to
             # MF_ORIG_PYTHONPATH so env-escape trampolines can restore it.
-            # Mirrors metaflow_extensions.nflx CondaEnvironment.bootstrap_commands.
+            # Mirrors metaflow_extensions.netflixext CondaEnvironment.bootstrap_commands.
             "if printenv PYTHONPATH >/dev/null 2>&1; then "
             "export MF_ORIG_PYTHONPATH=$(printenv PYTHONPATH); fi",
             "export PYTHONPATH=$(pwd)/_escape_trampolines:"
