@@ -15,6 +15,7 @@ own metaflow_extensions.nflx.* subpackages.
 """
 
 import importlib
+import importlib.machinery
 import importlib.util
 import sys
 
@@ -22,25 +23,56 @@ _NFLX_PREFIX = "metaflow_extensions.nflx."
 _NETFLIXEXT_PREFIX = "metaflow_extensions.netflixext."
 
 
+class _NflxCompatLoader:
+    def __init__(self, real_name):
+        self._real_name = real_name
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        real = importlib.import_module(self._real_name)
+        module.__dict__.update(real.__dict__)
+        if hasattr(real, "__path__"):
+            module.__path__ = real.__path__
+
+
 class _NflxCompatFinder:
-    def find_module(self, fullname, path=None):
-        if not fullname.startswith(_NFLX_PREFIX):
+    def __init__(self):
+        self._checking = False
+
+    def find_spec(self, fullname, path, target=None):
+        if self._checking or not fullname.startswith(_NFLX_PREFIX):
             return None
+
+        # Check if the nflx module exists on disk via other finders.
+        # Only redirect when the nflx path would genuinely fail — this
+        # avoids hijacking intermediate packages (like nflx.plugins) that
+        # nflx-metaflow legitimately owns.
+        self._checking = True
+        try:
+            nflx_spec = importlib.util.find_spec(fullname)
+        except (ValueError, ModuleNotFoundError):
+            nflx_spec = None
+        finally:
+            self._checking = False
+
+        if nflx_spec is not None:
+            return None
+
         netflixext_name = _NETFLIXEXT_PREFIX + fullname[len(_NFLX_PREFIX):]
         try:
-            if importlib.util.find_spec(netflixext_name) is not None:
-                return self
+            real_spec = importlib.util.find_spec(netflixext_name)
+            if real_spec is not None:
+                return importlib.machinery.ModuleSpec(
+                    fullname,
+                    _NflxCompatLoader(netflixext_name),
+                    origin=real_spec.origin,
+                    is_package=real_spec.submodule_search_locations is not None,
+                )
         except (ValueError, ModuleNotFoundError):
             pass
         return None
-
-    def load_module(self, fullname):
-        if fullname in sys.modules:
-            return sys.modules[fullname]
-        netflixext_name = _NETFLIXEXT_PREFIX + fullname[len(_NFLX_PREFIX):]
-        module = importlib.import_module(netflixext_name)
-        sys.modules[fullname] = module
-        return module
 
 
 def install():
