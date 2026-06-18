@@ -159,6 +159,23 @@ def _tag_with_variant(tag: str, variant: str) -> str:
     return "%s-%s" % (tag, variant)
 
 
+# conda subdir -> docker --platform, for cross-arch builds (build for the REMOTE
+# step's arch, not the deploy machine's). Only linux subdirs are remote-runnable
+# as containers; anything else (osx/win/unknown) maps to None => builder default.
+_CONDA_ARCH_TO_DOCKER_PLATFORM = {
+    "linux-64": "linux/amd64",
+    "linux-aarch64": "linux/arm64",
+    "linux-ppc64le": "linux/ppc64le",
+    "linux-s390x": "linux/s390x",
+}
+
+
+def _docker_platform_for_arch(arch: str) -> Optional[str]:
+    """Docker ``--platform`` for a resolved env's conda arch, or None to leave the
+    build service on its builder default (same-arch deploy)."""
+    return _CONDA_ARCH_TO_DOCKER_PLATFORM.get(arch or "")
+
+
 def _base_image_for_step(gpu: bool) -> str:
     if gpu:
         return os.environ.get("METAFLOW_PREBUILT_GPU_BASE_IMAGE", "")
@@ -528,7 +545,12 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
 
         build_svc = DockerBuildService.from_config()
         success = build_svc.build_and_push(
-            dockerfile, context_files, push_tag, registry.push_credentials(), echo
+            dockerfile,
+            context_files,
+            push_tag,
+            registry.push_credentials(),
+            echo,
+            target_platform=_docker_platform_for_arch(getattr(env_id, "arch", "")),
         )
         if not success:
             echo("    ERROR: Prebuilt image build/push failed")

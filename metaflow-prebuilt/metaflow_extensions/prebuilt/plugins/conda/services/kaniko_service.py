@@ -3,7 +3,7 @@ import os
 import tarfile
 import tempfile
 import time
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from ..build_service import DockerBuildService
 
@@ -33,6 +33,7 @@ class KanikoBuildService(DockerBuildService):
         image_tag: str,
         push_credentials: Dict[str, Any],
         echo: Callable[..., None],
+        target_platform: Optional[str] = None,
     ) -> bool:
         bucket = os.environ.get("METAFLOW_PREBUILT_KANIKO_CONTEXT_BUCKET", "")
         if not bucket:
@@ -69,6 +70,7 @@ class KanikoBuildService(DockerBuildService):
                 image_tag=image_tag,
                 secret_name=secret_name,
                 echo=echo,
+                target_platform=target_platform,
             )
         except Exception as e:
             echo("    ERROR: kaniko Job failed: %s" % e)
@@ -138,6 +140,7 @@ def _run_kaniko_job(
     image_tag: str,
     secret_name: str,
     echo: Callable[..., None],
+    target_platform: Optional[str] = None,
 ) -> bool:
     try:
         from kubernetes import (
@@ -162,6 +165,10 @@ def _run_kaniko_job(
         "--dockerfile=Dockerfile",
         "--destination=%s" % image_tag,
     ]
+    # Build for the REMOTE step's arch (not the kaniko pod's default node arch),
+    # so the image matches the resolved manifest on a cross-arch deploy.
+    if target_platform:
+        args.append("--custom-platform=%s" % target_platform)
 
     volume_mounts = []
     volumes = []

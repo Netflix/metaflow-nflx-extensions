@@ -1,7 +1,7 @@
 import importlib.metadata
 import os
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass
@@ -42,6 +42,7 @@ class DockerBuildService(ABC):
         image_tag: str,
         push_credentials: Dict[str, Any],
         echo: Callable[..., None],
+        target_platform: Optional[str] = None,
     ) -> bool:
         """Build a Docker image and push it to the registry.
 
@@ -56,6 +57,14 @@ class DockerBuildService(ABC):
             push_credentials: Opaque dict from ``ImageRegistry.push_credentials()``.
                 Schema is defined by the paired registry implementation.
             echo: Callable for user-visible progress output.
+            target_platform: Docker platform string for the REMOTE step's arch
+                (e.g. ``"linux/amd64"``, ``"linux/arm64"``), derived from the
+                resolved env's arch. ``None`` means build for the builder's default
+                platform. Local builders (buildx/docker/kaniko) should honor it so a
+                cross-arch deploy (e.g. an arm64 laptop deploying a linux-64 step)
+                produces an image whose arch matches the resolved manifest; remote
+                builders where the platform is fixed by the build environment
+                (CodeBuild project compute, Cloudbuild) may ignore it.
 
         Returns:
             ``True`` on success, ``False`` on recoverable failure.

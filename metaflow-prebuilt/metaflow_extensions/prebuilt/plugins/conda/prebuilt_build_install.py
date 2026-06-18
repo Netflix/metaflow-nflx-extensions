@@ -268,12 +268,16 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
     ``--no-build-isolation`` is deliberate: by Pass B the env already contains
     the sdist's *runtime* deps, so its ``setup.py`` can import them at build
     time (e.g. ``deepspeed`` imports ``torch``); build isolation would create a
-    clean env without them and fail. KNOWN LIMITATION: an sdist whose
-    ``pyproject.toml`` ``[build-system].requires`` lists *build* deps beyond
-    setuptools/wheel (e.g. ``Cython``, ``setuptools_scm``, ``maturin``) will not
-    have those auto-installed here and may fail to build. This matches the
-    pre-OSS inline implementation; supplying build requirements is tracked as a
-    follow-up (extend deferred_builds.json with a per-sdist ``build_requires``).
+    clean env without them and fail. Extra ``[build-system].requires`` (e.g.
+    ``Cython``, ``setuptools_scm``, ``maturin``) ARE supported:
+    ``_build_requires_from_sdist`` reads them from the sdist's ``pyproject.toml``
+    and they are staged into the build overlay (with setuptools<82 + wheel) before
+    the build. RESIDUAL LIMITATIONS: (a) the overlay is shared across an image's
+    sdists rather than isolated per-sdist, so conflicting build-dep versions across
+    sdists could interfere (rare; consistent with --no-build-isolation); and
+    (b) build requirements needed as on-PATH *binaries* (not import-only) or
+    declared only in a URL-only source whose pyproject can't be read without a
+    download are not staged.
     """
     python_bin = os.path.join(env_dir, "bin", "python")
     uv_bin = os.path.join(env_dir, "bin", "uv")

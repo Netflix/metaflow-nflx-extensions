@@ -2,7 +2,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from ..build_service import DockerBuildService
 
@@ -24,6 +24,7 @@ class BuildxBuildService(DockerBuildService):
         image_tag: str,
         push_credentials: Dict[str, Any],
         echo: Callable[..., None],
+        target_platform: Optional[str] = None,
     ) -> bool:
         build_dir = tempfile.mkdtemp(prefix="metaflow_prebuilt_buildx_")
         try:
@@ -40,19 +41,27 @@ class BuildxBuildService(DockerBuildService):
                     with open(full_path, "w") as f:
                         f.write(content)
 
-            # TODO(image-identity): for a cross-arch deploy (builder default
-            # platform != resolved remote env arch, e.g. an arm64 laptop
-            # deploying a linux-64 Batch step) thread the target arch in via
-            # `--platform`, else the in-container installer's arch_id() won't
-            # match the resolved manifest. Part of the image-identity follow-up.
             cmd = ["docker", "buildx", "build", "--push", "--tag", image_tag]
+
+            # Build for the REMOTE step's arch, not the builder's default. Without
+            # this, an arm64 laptop deploying a linux-64 step would bake an arm64
+            # image whose in-container installer arch_id() mismatches the resolved
+            # manifest. None => builder default (same-arch deploy, unchanged).
+            if target_platform:
+                cmd += ["--platform", target_platform]
 
             builder = os.environ.get("METAFLOW_PREBUILT_BUILDX_BUILDER", "")
             if builder:
                 cmd += ["--builder", builder]
 
             cmd.append(".")
-            echo("    docker buildx build --push -t %s ..." % image_tag)
+            echo(
+                "    docker buildx build --push%s -t %s ..."
+                % (
+                    " --platform %s" % target_platform if target_platform else "",
+                    image_tag,
+                )
+            )
 
             try:
                 result = subprocess.run(

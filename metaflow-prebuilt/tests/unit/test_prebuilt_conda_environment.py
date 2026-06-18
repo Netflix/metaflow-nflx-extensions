@@ -356,3 +356,16 @@ class TestImageIdentity:
         cmds = env.bootstrap_commands("start", "local")
         assert any("prebuilt_runtime_activate" in c for c in cmds)
         assert any(env_path in c for c in cmds)
+
+
+def test_docker_platform_for_arch():
+    from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment import (
+        _docker_platform_for_arch,
+    )
+
+    assert _docker_platform_for_arch("linux-64") == "linux/amd64"
+    assert _docker_platform_for_arch("linux-aarch64") == "linux/arm64"
+    # non-linux / unknown / empty -> None (builder default, no --platform forced)
+    assert _docker_platform_for_arch("osx-arm64") is None
+    assert _docker_platform_for_arch("") is None
+    assert _docker_platform_for_arch(None) is None

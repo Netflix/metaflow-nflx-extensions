@@ -2,7 +2,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from ..build_service import DockerBuildService
 
@@ -24,6 +24,7 @@ class LocalDockerBuildService(DockerBuildService):
         image_tag: str,
         push_credentials: Dict[str, Any],
         echo: Callable[..., None],
+        target_platform: Optional[str] = None,
     ) -> bool:
         build_dir = tempfile.mkdtemp(prefix="metaflow_prebuilt_docker_")
         try:
@@ -40,9 +41,22 @@ class LocalDockerBuildService(DockerBuildService):
                     with open(full_path, "w") as f:
                         f.write(content)
 
-            echo("    docker build -t %s ..." % image_tag)
+            # --platform builds for the REMOTE step's arch (not the daemon's
+            # default), so a cross-arch deploy bakes an image matching the resolved
+            # manifest. None => daemon default (same-arch deploy, unchanged).
+            build_cmd = ["docker", "build", "-t", image_tag]
+            if target_platform:
+                build_cmd += ["--platform", target_platform]
+            build_cmd.append(".")
+            echo(
+                "    docker build%s -t %s ..."
+                % (
+                    " --platform %s" % target_platform if target_platform else "",
+                    image_tag,
+                )
+            )
             build_result = subprocess.run(
-                ["docker", "build", "-t", image_tag, "."],
+                build_cmd,
                 cwd=build_dir,
                 capture_output=True,
                 text=True,
