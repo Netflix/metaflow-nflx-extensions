@@ -117,3 +117,25 @@ class TestEnsureLocalCondaPathProbing(unittest.TestCase):
             # have been selected.
             if conda._bins is not None:
                 self.assertNotEqual(conda._bins.get("micromamba"), binary_path)
+
+    def test_parent_conda_env_takes_priority_over_cwd(self):
+        """../conda_env/micromamba is preferred over ./conda_env/micromamba when both exist."""
+        with tempfile.TemporaryDirectory() as base:
+            task_dir = os.path.join(base, "task")
+            os.makedirs(task_dir)
+            parent_binary = os.path.join(base, "conda_env", "micromamba")
+            cwd_binary = os.path.join(task_dir, "conda_env", "micromamba")
+            _make_executable(parent_binary)
+            _make_executable(cwd_binary)
+
+            os.chdir(task_dir)
+            conda = self._conda()
+
+            with patch(
+                "metaflow_extensions.netflixext.plugins.conda.conda.CONDA_LOCAL_PATH",
+                None,
+            ):
+                conda._ensure_local_conda()
+
+            self.assertEqual(conda._bins.get("micromamba"), parent_binary)
+            self.assertEqual(conda._bins.get("conda"), parent_binary)
