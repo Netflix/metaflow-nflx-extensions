@@ -23,7 +23,7 @@ from ..plugins.conda.conda_flow_mutator import (
 from metaflow import Runner as FlowAPI
 
 _addl_stubgen_modules = [
-    "metaflow_extensions.nflx.plugins.environment_cli",
+    "metaflow_extensions.netflixext.plugins.environment_cli",
 ]
 
 __mf_extensions__ = "netflix-ext"

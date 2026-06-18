@@ -25,7 +25,7 @@ from metaflow.metaflow_current import current
 
 _BUILTIN_AUTH_PROVIDERS = {
     "env": (
-        "metaflow_extensions.nflx.plugins.huggingface.env_auth_provider."
+        "metaflow_extensions.netflixext.plugins.huggingface.env_auth_provider."
         "EnvHuggingFaceAuthProvider"
     )
 }

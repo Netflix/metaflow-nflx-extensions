@@ -19,7 +19,7 @@ from typing import (
 
 if TYPE_CHECKING:
     import metaflow.datastore.datastore_storage
-    import metaflow_extensions.nflx.plugins.conda.conda
+    import metaflow_extensions.netflixext.plugins.conda.conda
 
 from metaflow.debug import debug
 
@@ -57,7 +57,7 @@ class PackageToBuild:
 
 
 def build_pypi_packages(
-    conda: "metaflow_extensions.nflx.plugins.conda.conda.Conda",
+    conda: "metaflow_extensions.netflixext.plugins.conda.conda.Conda",
     storage: "metaflow.datastore.datastore_storage.DataStoreStorage",
     python_version: str,
     to_build_pkg_info: Dict[str, PackageToBuild],
@@ -338,7 +338,7 @@ def build_pypi_packages(
 
 
 def _build_with_pip(
-    conda: "metaflow_extensions.nflx.plugins.conda.conda.Conda",
+    conda: "metaflow_extensions.netflixext.plugins.conda.conda.Conda",
     binary: str,
     dest_path: str,
     key: str,
