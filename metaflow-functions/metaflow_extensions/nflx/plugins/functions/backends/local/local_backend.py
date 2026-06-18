@@ -87,13 +87,32 @@ class LocalBackend(AbstractBackend):
         if parameters is None:
             parameters = create_function_parameters(func_instance.spec)
 
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            load_component_classes,
+            start_components,
+            stop_components,
+            before_call_components,
+            after_call_components,
+        )
+
+        component_classes = load_component_classes(
+            [
+                f"{c.__module__}.{c.__qualname__}"
+                for c in getattr(func_instance, "_runtime_components", [])
+            ]
+        )
+        component_instances = start_components(component_classes)
         try:
-            return func_instance.execute(data, parameters, **kwargs)
+            before_call_components(component_instances)
+            result = func_instance.execute(data, parameters, **kwargs)
+            after_call_components(component_instances)
+            return result
         except Exception as e:
-            # Wrap user exceptions for consistency with other backends
             raise MetaflowFunctionUserException(
                 f"Exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
             )
+        finally:
+            stop_components(component_instances)
 
     @classmethod
     def apply_binary(cls, func_instance, data: bytes, **kwargs) -> bytes:
