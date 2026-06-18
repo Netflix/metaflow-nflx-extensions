@@ -15,7 +15,7 @@ import pytest
 from typing import Dict, List, Optional
 
 from metaflow._vendor.click.testing import CliRunner
-from metaflow_extensions.nflx.cmd.environment.environment_cmd import environment
+from metaflow_extensions.netflixext.cmd.environment.environment_cmd import environment
 from metaflow_extensions.netflixext.plugins.conda.env_descr import EnvType
 from metaflow_extensions.netflixext.plugins.conda.utils import (
     arch_id,
@@ -119,7 +119,7 @@ def mock_resolver_add_environment():
     Also mock other methods that would require actual resolution.
     """
     with patch(
-        "metaflow_extensions.nflx.cmd.environment.environment_cmd.EnvsResolver"
+        "metaflow_extensions.netflixext.cmd.environment.environment_cmd.EnvsResolver"
     ) as mock_resolver_cls:
         # Create a mock resolver instance
         mock_resolver = MagicMock()

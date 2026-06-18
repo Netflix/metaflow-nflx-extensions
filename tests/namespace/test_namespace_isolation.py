@@ -34,9 +34,7 @@ def test_no_netflixext_files_under_nflx_namespace():
     Any file at that path would appear in nflx-metaflow's pip RECORD blast radius
     and get wiped on upgrade, recreating the original bug.
     """
-    offenders = [
-        str(p) for p in _installed_py_files() if p.parts[0] == "nflx"
-    ]
+    offenders = [str(p) for p in _installed_py_files() if p.parts[0] == "nflx"]
     assert offenders == [], (
         "metaflow-netflixext ships files under metaflow_extensions/nflx/ — "
         "these are in nflx-metaflow's pip RECORD blast radius and will be "
@@ -46,9 +44,7 @@ def test_no_netflixext_files_under_nflx_namespace():
 
 def test_netflixext_files_exist_under_netflixext_namespace():
     """Sanity check: metaflow-netflixext actually ships files under netflixext/."""
-    netflixext_files = [
-        p for p in _installed_py_files() if p.parts[0] == "netflixext"
-    ]
+    netflixext_files = [p for p in _installed_py_files() if p.parts[0] == "netflixext"]
     assert len(netflixext_files) > 0, (
         "No files found under metaflow_extensions/netflixext/ — "
         "the namespace move may not have been applied."
@@ -58,8 +54,7 @@ def test_netflixext_files_exist_under_netflixext_namespace():
 def test_conda_plugin_under_netflixext():
     """The conda plugin specifically must be at netflixext/, not nflx/."""
     conda_files = [
-        p for p in _installed_py_files()
-        if "plugins" in p.parts and "conda" in p.parts
+        p for p in _installed_py_files() if "plugins" in p.parts and "conda" in p.parts
     ]
     assert len(conda_files) > 0, "No conda plugin files found in metaflow-netflixext"
     for f in conda_files:

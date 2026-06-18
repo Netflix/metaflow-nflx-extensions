@@ -19,7 +19,8 @@ def clean_nflx_compat_modules(request):
     don't bleed cached entries into each other."""
     yield
     to_remove = [
-        k for k in list(sys.modules)
+        k
+        for k in list(sys.modules)
         if k.startswith("metaflow_extensions.nflx.")
         and sys.modules[k] is not None
         and getattr(sys.modules[k], "__name__", k).startswith(
@@ -32,12 +33,16 @@ def clean_nflx_compat_modules(request):
 
 def _install_shim():
     from metaflow_extensions.netflixext.nflx_compat import install
+
     install()
 
 
 def _uninstall_shim():
     from metaflow_extensions.netflixext.nflx_compat import _NflxCompatFinder
-    sys.meta_path[:] = [f for f in sys.meta_path if not isinstance(f, _NflxCompatFinder)]
+
+    sys.meta_path[:] = [
+        f for f in sys.meta_path if not isinstance(f, _NflxCompatFinder)
+    ]
 
 
 @pytest.fixture
@@ -55,6 +60,7 @@ class TestNflxCompatShim:
     def test_shim_idempotent(self):
         """Installing the shim twice must not add duplicate finders."""
         from metaflow_extensions.netflixext.nflx_compat import _NflxCompatFinder
+
         _install_shim()
         _install_shim()
         count = sum(1 for f in sys.meta_path if isinstance(f, _NflxCompatFinder))
@@ -76,12 +82,12 @@ class TestNflxCompatShim:
 
     def test_nflx_conda_import_registered_in_sys_modules(self, shim_installed):
         """Resolved nflx.* aliases must be cached in sys.modules."""
-        importlib.import_module(
-            "metaflow_extensions.nflx.plugins.conda.env_descr"
-        )
+        importlib.import_module("metaflow_extensions.nflx.plugins.conda.env_descr")
         assert "metaflow_extensions.nflx.plugins.conda.env_descr" in sys.modules
 
-    def test_shim_does_not_intercept_nonexistent_netflixext_module(self, shim_installed):
+    def test_shim_does_not_intercept_nonexistent_netflixext_module(
+        self, shim_installed
+    ):
         """Shim must not claim to handle nflx.* paths with no netflixext.* counterpart."""
         with pytest.raises(ImportError):
             importlib.import_module(
@@ -98,13 +104,11 @@ class TestNflxCompatShim:
         # not metaflow-netflixext, so there's no netflixext.plugins.datatools.
         # The shim should NOT intercept this — it should pass through unchanged.
         try:
-            mod = importlib.import_module(
-                "metaflow_extensions.nflx.plugins.datatools"
-            )
+            mod = importlib.import_module("metaflow_extensions.nflx.plugins.datatools")
             # If it succeeded, the shim didn't route it to a non-existent netflixext path
-            assert not mod.__name__.startswith("metaflow_extensions.netflixext"), (
-                "Shim incorrectly routed nflx-fastdata-owned module to netflixext"
-            )
+            assert not mod.__name__.startswith(
+                "metaflow_extensions.netflixext"
+            ), "Shim incorrectly routed nflx-fastdata-owned module to netflixext"
         except ImportError:
             # nflx-fastdata not installed in this environment — shim correctly did
             # not intercept (would have been a different error if it had tried)
