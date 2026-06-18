@@ -43,6 +43,7 @@ class TestEnsureLocalCondaPathProbing(unittest.TestCase):
     def test_finds_micromamba_in_parent_conda_env(self):
         """../conda_env/micromamba is found when Runner runs inside a remote step."""
         with tempfile.TemporaryDirectory() as base:
+            base = os.path.realpath(base)  # macOS: /var/folders → /private/var/folders
             # Layout _install_remote_conda() produces when parent dir is writable:
             #   base/conda_env/micromamba   ← installed binary
             #   base/task/                  ← CWD of step execution
@@ -68,6 +69,7 @@ class TestEnsureLocalCondaPathProbing(unittest.TestCase):
     def test_finds_micromamba_in_cwd_conda_env(self):
         """./conda_env/micromamba is found as fallback when ../conda_env doesn't exist."""
         with tempfile.TemporaryDirectory() as base:
+            base = os.path.realpath(base)  # macOS: /var/folders → /private/var/folders
             # Layout when parent dir is not writable:
             #   base/conda_env/micromamba   ← installed binary (same dir as CWD)
             binary_path = os.path.join(base, "conda_env", "micromamba")
@@ -90,6 +92,7 @@ class TestEnsureLocalCondaPathProbing(unittest.TestCase):
     def test_non_executable_binary_not_used(self):
         """A non-executable file in conda_env/ is skipped (falls through to which())."""
         with tempfile.TemporaryDirectory() as base:
+            base = os.path.realpath(base)  # macOS: /var/folders → /private/var/folders
             task_dir = os.path.join(base, "task")
             os.makedirs(task_dir)
             binary_path = os.path.join(base, "conda_env", "micromamba")
@@ -121,6 +124,7 @@ class TestEnsureLocalCondaPathProbing(unittest.TestCase):
     def test_parent_conda_env_takes_priority_over_cwd(self):
         """../conda_env/micromamba is preferred over ./conda_env/micromamba when both exist."""
         with tempfile.TemporaryDirectory() as base:
+            base = os.path.realpath(base)  # macOS: /var/folders → /private/var/folders
             task_dir = os.path.join(base, "task")
             os.makedirs(task_dir)
             parent_binary = os.path.join(base, "conda_env", "micromamba")
