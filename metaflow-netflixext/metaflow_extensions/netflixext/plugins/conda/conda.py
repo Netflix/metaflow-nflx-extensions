@@ -1978,26 +1978,38 @@ class Conda(object):
                         if err:
                             raise err
         else:
-            self._bins = {
-                self._conda_executable_type: which(self._conda_executable_type),
-                "conda-lock": which("conda-lock"),
-                # We can install micromamba in $HOME/.local/bin so we look there too
-                "micromamba": which(
-                    "micromamba",
-                    path=":".join(
-                        [
-                            os.environ.get("PATH", ""),
-                            "%s/.local/bin" % os.environ.get("HOME", ""),
-                        ]
+            _remote_micromamba = os.environ.get("_METAFLOW_CONDA_MICROMAMBA")
+            if _remote_micromamba and os.path.isfile(_remote_micromamba):
+                # The outer step already bootstrapped micromamba remotely (e.g. via
+                # _install_remote_conda). Reuse it so Runner-spawned inner flows
+                # don't need it on PATH.
+                self._conda_executable_type = "micromamba"
+                self.is_non_conda_exec = True
+                self._bins = {
+                    "conda": _remote_micromamba,
+                    "micromamba": _remote_micromamba,
+                }
+            else:
+                self._bins = {
+                    self._conda_executable_type: which(self._conda_executable_type),
+                    "conda-lock": which("conda-lock"),
+                    # We can install micromamba in $HOME/.local/bin so we look there too
+                    "micromamba": which(
+                        "micromamba",
+                        path=":".join(
+                            [
+                                os.environ.get("PATH", ""),
+                                "%s/.local/bin" % os.environ.get("HOME", ""),
+                            ]
+                        ),
                     ),
-                ),
-                "cph": which("cph"),
-                "pip": which("pip"),
-            }
-            self._bins["conda"] = self._bins[self._conda_executable_type]
-            err = self._validate_conda_installation()
-            if err:
-                raise err
+                    "cph": which("cph"),
+                    "pip": which("pip"),
+                }
+                self._bins["conda"] = self._bins[self._conda_executable_type]
+                err = self._validate_conda_installation()
+                if err:
+                    raise err
 
     def _ensure_micromamba(self) -> str:
         args = [
@@ -2135,6 +2147,9 @@ class Conda(object):
         self._bins = {"conda": final_path, "micromamba": final_path}
         self._conda_executable_type = "micromamba"
         self.is_non_conda_exec = True
+        # Advertise the binary path so that child processes (e.g. Runner-spawned
+        # inner flows) can find it without needing it on PATH.
+        os.environ["_METAFLOW_CONDA_MICROMAMBA"] = final_path
 
     def _validate_conda_installation(self) -> Optional[Exception]:
         # If this is installed in CONDA_LOCAL_PATH look for special marker
