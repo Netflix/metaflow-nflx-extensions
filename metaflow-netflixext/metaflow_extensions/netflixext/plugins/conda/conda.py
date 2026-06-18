@@ -96,7 +96,7 @@ from metaflow.datastore.datastore_storage import DataStoreStorage
 
 from metaflow.debug import debug
 from metaflow.exception import MetaflowException, MetaflowNotFound
-from metaflow_extensions.nflx.retry import retry_exp_backoff
+from metaflow_extensions.netflixext.retry import retry_exp_backoff
 from metaflow.metaflow_config import (
     CONDA_DEPENDENCY_RESOLVER,
     CONDA_HACK_CHANNEL_ALIAS,
@@ -2758,7 +2758,7 @@ class Conda(object):
 
         entrypoint = os.path.join(env_dir, "bin", "python")
         if os.environ.get("METAFLOW_COVERAGE_S3_PATH"):
-            from metaflow_extensions.nflx.plugins.coverage.setup_coverage import (
+            from metaflow_extensions.netflixext.plugins.coverage.setup_coverage import (
                 setup_coverage,
             )
 

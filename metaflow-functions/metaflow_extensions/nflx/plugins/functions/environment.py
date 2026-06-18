@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 from metaflow.plugins.env_escape import generate_trampolines
 
 try:
-    from metaflow_extensions.nflx.plugins.conda.conda import Conda  # type: ignore
+    from metaflow_extensions.netflixext.plugins.conda.conda import Conda  # type: ignore
 except ImportError:
     from metaflow_extensions.netflix_ext.plugins.conda.conda import Conda  # type: ignore
 from metaflow_extensions.nflx.plugins.functions.debug import debug

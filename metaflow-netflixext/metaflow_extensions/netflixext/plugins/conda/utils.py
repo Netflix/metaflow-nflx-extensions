@@ -54,7 +54,7 @@ from metaflow.metaflow_config import CONDA_SYS_DEPENDENCIES  # type: ignore
 from metaflow.metaflow_config import CONDA_SYS_MARKERS  # type: ignore
 from metaflow.metaflow_environment import InvalidEnvironmentException
 from metaflow.util import walk_without_cycles
-from metaflow_extensions.nflx.config.mfextinit_netflixext import (  # type: ignore
+from metaflow_extensions.netflixext.config.mfextinit_netflixext import (  # type: ignore
     CONDA_HACK_CHANNEL_ALIAS,
 )
 
@@ -62,8 +62,8 @@ from requests import PreparedRequest, Response, Session
 from requests.auth import AuthBase, HTTPBasicAuth
 
 if TYPE_CHECKING:
-    import metaflow_extensions.nflx.plugins.conda.env_descr
-    from metaflow_extensions.nflx.plugins.conda.env_descr import (
+    import metaflow_extensions.netflixext.plugins.conda.env_descr
+    from metaflow_extensions.netflixext.plugins.conda.env_descr import (
         PackageSpecification,
         ResolvedEnvironment,
     )
@@ -572,7 +572,7 @@ def is_alias_mutable(alias_type: AliasType, resolved_alias: str) -> bool:
 
 def dict_to_tstr(
     deps: Dict[str, List[str]],
-) -> List["metaflow_extensions.nflx.plugins.conda.env_descr.TStr"]:
+) -> List["metaflow_extensions.netflixext.plugins.conda.env_descr.TStr"]:
     from .env_descr import TStr  # Avoid circular import
 
     result = []  # type: List[TStr]
@@ -582,7 +582,7 @@ def dict_to_tstr(
 
 
 def tstr_to_dict(
-    deps: List["metaflow_extensions.nflx.plugins.conda.env_descr.TStr"],
+    deps: List["metaflow_extensions.netflixext.plugins.conda.env_descr.TStr"],
 ) -> Dict[str, List[str]]:
     result = {}  # type: Dict[str, List[str]]
     for dep in deps:

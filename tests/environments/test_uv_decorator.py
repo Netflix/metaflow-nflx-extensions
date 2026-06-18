@@ -6,15 +6,15 @@ from contextlib import nullcontext as does_not_raise
 import tempfile
 
 from metaflow import resolved_uv as ResolvedUVEnvFlowDecorator
-from metaflow_extensions.nflx.plugins.conda.conda_flow_mutator import (
+from metaflow_extensions.netflixext.plugins.conda.conda_flow_mutator import (
     ResolvedEnvironmentBaseFlowMutator,
     ResolvedReqFlowDecorator,
 )
 
-from metaflow_extensions.nflx.plugins.conda.resolvers.pylock_toml_resolver import (
+from metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver import (
     PylockTomlResolver,
 )
-from metaflow_extensions.nflx.plugins.conda.utils import compute_file_hash
+from metaflow_extensions.netflixext.plugins.conda.utils import compute_file_hash
 
 
 this_dir = str(Path(__file__).parent)
