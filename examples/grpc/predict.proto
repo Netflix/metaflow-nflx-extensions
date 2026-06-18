@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package predict;
+
+service Predictor {
+  // Single prediction
+  rpc Predict (PredictRequest) returns (PredictResponse);
+
+  // Batch prediction — client streams N requests, server streams N responses
+  rpc PredictStream (stream PredictRequest) returns (stream PredictResponse);
+}
+
+message PredictRequest {
+  repeated float features = 1;
+}
+
+message PredictResponse {
+  float  prediction = 1;
+  string error      = 2;
+}

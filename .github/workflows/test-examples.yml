@@ -1,0 +1,174 @@
+name: test-examples
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+
+    env:
+      AWS_ENDPOINT_URL: http://localhost:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+      METAFLOW_DEFAULT_DATASTORE: s3
+      METAFLOW_DATASTORE_SYSROOT_S3: s3://metaflow-test
+      METAFLOW_DEFAULT_FUNCTIONS_S3_ROOT: s3://metaflow-test/functions
+      METAFLOW_FUNCTION_RUNTIME_PATH: /tmp/mf_functions
+      METAFLOW_CONDA_DEPENDENCY_RESOLVER: micromamba
+      METAFLOW_FEAT_ALWAYS_UPLOAD_CODE_PACKAGE: "true"
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      # -----------------------------------------------------------------
+      # Infrastructure
+      # -----------------------------------------------------------------
+      - name: Start MinIO
+        run: |
+          docker run -d \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio server /data
+          until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done
+          echo "MinIO ready"
+
+      - name: Create MinIO bucket
+        run: |
+          python -c "
+          import boto3, botocore
+          s3 = boto3.client(
+              's3',
+              endpoint_url='http://localhost:9000',
+              aws_access_key_id='minioadmin',
+              aws_secret_access_key='minioadmin',
+              region_name='us-east-1',
+              config=botocore.config.Config(signature_version='s3v4'),
+          )
+          s3.create_bucket(Bucket='metaflow-test')
+          print('Bucket metaflow-test created')
+          "
+
+      - uses: mamba-org/setup-micromamba@b09ef9b599704322748535812ca03efb2625677b # v2.0.5
+        with:
+          environment-name: nflxext-dev
+          condarc: |
+            channels:
+              - conda-forge
+            channel_alias: https://prefix.dev
+          create-args: python=${{ matrix.python-version }}
+
+      # -----------------------------------------------------------------
+      # Install
+      # -----------------------------------------------------------------
+      - name: Install packages
+        shell: bash -eo pipefail -l {0}
+        run: |
+          pip install metaflow
+          pip install -e metaflow-netflixext/
+          pip install -e metaflow-functions/
+          pip install fastapi "uvicorn[standard]" httpx \
+                      grpcio grpcio-tools \
+                      scikit-learn numpy fastavro psutil \
+                      boto3
+
+      # -----------------------------------------------------------------
+      # Phase 1: Run training flow — produces both function references
+      # -----------------------------------------------------------------
+      - name: Run training flow
+        shell: bash -eo pipefail -l {0}
+        working-directory: examples/shared
+        run: python training_flow.py --environment=conda run
+
+      - name: Capture function references
+        shell: bash -eo pipefail -l {0}
+        run: |
+          python -c "
+          from metaflow import Flow
+          run = Flow('PredictionTrainingFlow').latest_run
+          task = run['bind_functions'].task
+          print('JSON_REF=' + task.data.json_predict_fn.reference)
+          print('AVRO_REF=' + task.data.avro_predict_fn.reference)
+          " >> $GITHUB_ENV
+
+      - name: Verify references are S3 paths
+        run: |
+          echo "JSON ref: $JSON_REF"
+          echo "Avro ref: $AVRO_REF"
+          [[ "$JSON_REF" == s3://* ]] || (echo "JSON_REF is not an S3 path" && exit 1)
+          [[ "$AVRO_REF" == s3://* ]] || (echo "AVRO_REF is not an S3 path" && exit 1)
+
+      # -----------------------------------------------------------------
+      # Phase 2: FastAPI
+      # -----------------------------------------------------------------
+      - name: Start FastAPI server
+        shell: bash -eo pipefail -l {0}
+        env:
+          METAFLOW_FUNCTION_REFERENCE: ${{ env.JSON_REF }}
+        run: |
+          cd examples/fastapi
+          uvicorn server:app --port 8000 &
+          echo "FASTAPI_PID=$!" >> $GITHUB_ENV
+          # Wait for server to be ready
+          timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 2; done'
+          echo "FastAPI server ready"
+
+      - name: Run FastAPI client
+        shell: bash -eo pipefail -l {0}
+        run: python examples/fastapi/client.py http://localhost:8000
+
+      - name: Stop FastAPI server
+        if: always()
+        run: kill $FASTAPI_PID 2>/dev/null || true
+
+      # -----------------------------------------------------------------
+      # Phase 3: gRPC
+      # -----------------------------------------------------------------
+      - name: Generate protobuf stubs
+        shell: bash -eo pipefail -l {0}
+        working-directory: examples/grpc
+        run: bash generate_proto.sh
+
+      - name: Start gRPC server
+        shell: bash -eo pipefail -l {0}
+        env:
+          METAFLOW_FUNCTION_REFERENCE: ${{ env.AVRO_REF }}
+        run: |
+          cd examples/grpc
+          python server.py &
+          echo "GRPC_PID=$!" >> $GITHUB_ENV
+          # Wait for gRPC port to open
+          timeout 60 bash -c 'until nc -z localhost 50051; do sleep 2; done'
+          echo "gRPC server ready"
+
+      - name: Run gRPC client
+        shell: bash -eo pipefail -l {0}
+        working-directory: examples/grpc
+        run: python client.py localhost:50051
+
+      - name: Stop gRPC server
+        if: always()
+        run: kill $GRPC_PID 2>/dev/null || true
+
+      # -----------------------------------------------------------------
+      # Verify no zombie subprocesses left behind
+      # -----------------------------------------------------------------
+      - name: Check for zombie metaflow subprocesses
+        if: always()
+        run: |
+          zombies=$(ps aux | grep "mf_functions\|memory_cli" | grep -v grep || true)
+          if [ -n "$zombies" ]; then
+            echo "WARNING: zombie metaflow subprocesses found:"
+            echo "$zombies"
+          else
+            echo "No zombie subprocesses — clean shutdown confirmed"
+          fi

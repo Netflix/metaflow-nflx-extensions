@@ -28,8 +28,9 @@ from metaflow_extensions.nflx.plugins.functions.utils import load_module_from_st
 class MetaflowFunctionPackage:
     def __init__(
         self,
-        function_spec: FunctionSpec,
+        function_spec: Optional[FunctionSpec] = None,
         suffixes: Optional[str] = None,
+        root: Optional[str] = None,
     ) -> None:
         self.suffixes: List[str]
         if suffixes is None:
@@ -39,9 +40,14 @@ class MetaflowFunctionPackage:
                 set().union(suffixes.split(","), DEFAULT_SUFFIXES_LIST)
             )
         self.metaflow_root: str = os.path.dirname(metaflow.__file__)
-        self.name: Optional[str] = function_spec.name
-        self.function_spec: FunctionSpec = function_spec
-        self.function_roots: Set[str] = self._build_function_roots()
+        self.name: Optional[str] = function_spec.name if function_spec else None
+        self.function_spec: Optional[FunctionSpec] = function_spec
+
+        if root is not None:
+            self.function_roots: Set[str] = {root}
+        else:
+            self.function_roots: Set[str] = self._build_function_roots()
+
         self.create_time: Optional[float] = None
         self._package_blob: Optional[bytes] = None
         self._package_hash: Optional[str] = None

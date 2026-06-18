@@ -5,7 +5,9 @@ Provides local Ray cluster execution with automatic resource allocation
 from @resources decorator metadata.
 """
 
-from typing import Any, Dict
+import asyncio
+import os
+from typing import Any, Dict, Optional
 
 import ray
 
@@ -174,7 +176,28 @@ class RayBackend(AbstractBackend):
         MetaflowFunctionUserException
             If user code raises an exception
         """
-        return cls.apply(func_instance, data, **kwargs)
+        cls._ensure_cluster()
+        cls._sync_serializers()
+
+        actor = cls._get_or_create_actor(func_instance)
+
+        try:
+            result_ref = actor.execute.remote(data, **kwargs)
+            # ray.get blocks — offload to thread pool so the event loop stays free
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, ray.get, result_ref)
+            return result
+
+        except ray.exceptions.RayActorError as e:
+            cls._actor_pool.pop(func_instance.uuid, None)
+            raise MetaflowFunctionRuntimeException(
+                f"Ray actor crashed while executing function '{func_instance.name}': {str(e)}"
+            )
+
+        except ray.exceptions.RayTaskError as e:
+            raise MetaflowFunctionUserException(
+                f"Function '{func_instance.name}' raised an exception: {str(e)}"
+            )
 
     @classmethod
     def _extract_conda_env_from_spec(cls, func_instance) -> str:
@@ -212,6 +235,31 @@ class RayBackend(AbstractBackend):
         return python_path
 
     @classmethod
+    def _extract_resources_from_spec(cls, func_instance) -> Dict[str, Any]:
+        """
+        Extract Ray resource requirements from function spec.
+
+        Resources are stored in system_metadata["resources"] at bind time.
+        Populate them by passing resources= to the Function constructor:
+
+            JsonFunction(fn, task=task, resources={"num_cpus": 2, "num_gpus": 1})
+
+        Supported keys (all optional):
+            num_cpus : float   — fractional CPUs allowed (e.g. 0.5)
+            num_gpus : float   — fractional GPUs allowed
+            memory   : int     — bytes of heap memory to reserve
+
+        Returns
+        -------
+        Dict[str, Any]
+            Resource dict ready to unpack into ray.remote(). Empty if not set.
+        """
+        system_metadata = getattr(func_instance.spec, "system_metadata", None) or {}
+        resources = system_metadata.get("resources", {})
+        debug.functions_exec(f"Extracted resources from spec: {resources}")
+        return resources
+
+    @classmethod
     def _get_or_create_actor(cls, func_instance):
         """
         Get existing actor or create new one with resource requirements.
@@ -232,20 +280,33 @@ class RayBackend(AbstractBackend):
         if uuid in cls._actor_pool:
             return cls._actor_pool[uuid]
 
-        # Extract conda environment for runtime_env
+        # Derive conda env root from python binary path and pass as runtime_env.
+        # Ray accepts an absolute path to a conda env directory for runtime_env["conda"].
         python_path = cls._extract_conda_env_from_spec(func_instance)
-        runtime_env = {"python": python_path}
-        debug.functions_exec(f"Using conda environment: {python_path}")
+        conda_env_root = os.path.dirname(os.path.dirname(python_path))
+        runtime_env = {"conda": conda_env_root}
+        debug.functions_exec(f"Using conda env root: {conda_env_root}")
 
-        # Create Ray actor with conda runtime_env
-        # Ray will use all available resources by default
-        FunctionActor = ray.remote(runtime_env=runtime_env)(FunctionActorClass)
+        # Extract resource requirements stored at bind time.
+        # Set via: JsonFunction(fn, task=task, resources={"num_cpus": 2, "num_gpus": 1})
+        resources = cls._extract_resources_from_spec(func_instance)
 
-        # Instantiate actor with function reference
+        # Build ray.remote() options — only pass resource kwargs that are set
+        remote_kwargs: Dict[str, Any] = {"runtime_env": runtime_env}
+        if resources.get("num_cpus") is not None:
+            remote_kwargs["num_cpus"] = resources["num_cpus"]
+        if resources.get("num_gpus") is not None:
+            remote_kwargs["num_gpus"] = resources["num_gpus"]
+        if resources.get("memory") is not None:
+            remote_kwargs["memory"] = resources["memory"]
+
+        FunctionActor = ray.remote(**remote_kwargs)(FunctionActorClass)
+
         cls._actor_pool[uuid] = FunctionActor.remote(func_instance.spec.reference)
 
         debug.functions_exec(
-            f"Created Ray actor for function '{func_instance.name}' with runtime_env: {runtime_env}"
+            f"Created Ray actor for function '{func_instance.name}' "
+            f"with runtime_env={runtime_env} resources={resources}"
         )
 
         return cls._actor_pool[uuid]
