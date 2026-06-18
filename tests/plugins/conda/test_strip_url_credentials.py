@@ -15,7 +15,7 @@ sys.path.insert(
 )
 
 from urllib.parse import urlparse
-from metaflow_extensions.nflx.plugins.conda.utils import (
+from metaflow_extensions.netflixext.plugins.conda.utils import (
     strip_url_credentials,
     _safe_netloc,
 )

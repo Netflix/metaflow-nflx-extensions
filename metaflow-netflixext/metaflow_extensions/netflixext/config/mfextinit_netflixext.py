@@ -1,4 +1,18 @@
 import os
+
+# Install the nflx->netflixext backward-compat import shim as early as possible.
+# This config descriptor is imported during Metaflow's extension *discovery*
+# (metaflow_config bootstrap), which runs BEFORE plugin resolution. Other
+# extensions (e.g. the internal nflx-metaflow) contribute step decorators whose
+# classes import `metaflow_extensions.nflx.plugins.conda.*` and are imported
+# during `resolve_plugins(...)`. The toplevel module (which also calls install())
+# is merged into metaflow's namespace only AFTER plugin resolution, so relying on
+# it alone leaves the shim inactive when those plugin classes load. install() is
+# idempotent, so the redundant toplevel call is harmless.
+from ..nflx_compat import install as _install_nflx_compat
+
+_install_nflx_compat()
+
 from metaflow.metaflow_config import (
     DATASTORE_SYSROOT_S3,
     DATASTORE_SYSROOT_AZURE,
