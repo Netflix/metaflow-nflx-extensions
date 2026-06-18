@@ -60,7 +60,7 @@ class _NflxCompatFinder:
         if nflx_spec is not None:
             return None
 
-        netflixext_name = _NETFLIXEXT_PREFIX + fullname[len(_NFLX_PREFIX):]
+        netflixext_name = _NETFLIXEXT_PREFIX + fullname[len(_NFLX_PREFIX) :]
         try:
             real_spec = importlib.util.find_spec(netflixext_name)
             if real_spec is not None:
