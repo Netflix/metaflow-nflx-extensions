@@ -10,7 +10,7 @@ calling _safe_netloc would cause these tests to fail.
 
 import metaflow  # must be imported first to initialize the extension system
 
-from metaflow_extensions.nflx.plugins.conda.env_descr import (
+from metaflow_extensions.netflixext.plugins.conda.env_descr import (
     CondaCachePackage,
     PypiCachePackage,
     PypiPackageSpecification,

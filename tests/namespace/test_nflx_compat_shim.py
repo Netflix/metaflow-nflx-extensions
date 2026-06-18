@@ -175,9 +175,7 @@ class TestShimInstalledEarly:
             importlib.import_module(
                 "metaflow_extensions.netflixext.config.mfextinit_netflixext"
             )
-            assert any(
-                isinstance(f, _NflxCompatFinder) for f in sys.meta_path
-            ), (
+            assert any(isinstance(f, _NflxCompatFinder) for f in sys.meta_path), (
                 "importing the netflixext config descriptor must install the "
                 "nflx_compat finder (it loads before plugin resolution); a "
                 "toplevel-only install is too late for other extensions' plugins"
