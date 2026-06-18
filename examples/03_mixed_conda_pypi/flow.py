@@ -1,7 +1,7 @@
 from metaflow import FlowSpec, conda, conda_base, pypi, step
 
 
-@conda_base(libraries={"numpy": "1.24.4"}, python=">=3.10,<3.11")
+@conda_base(libraries={"numpy": "1.26.4"}, python=">=3.10,<3.11")
 class MixedFlow(FlowSpec):
     """
     `@conda_base` sets defaults for the whole flow (numpy + python here).
@@ -12,7 +12,7 @@ class MixedFlow(FlowSpec):
     def start(self):
         import numpy as np
 
-        assert np.__version__ == "1.24.4"
+        assert np.__version__ == "1.26.4"
         print("start: numpy %s (from @conda_base)" % np.__version__)
         self.next(self.conda_step, self.pypi_step)
 

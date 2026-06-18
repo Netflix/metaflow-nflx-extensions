@@ -2,7 +2,8 @@
 
 Use the `metaflow environment` CLI to resolve dependencies described in an
 `environment.yml`. The resolved environment gets cached and can be referenced
-by alias from any flow (see [example 06](../06_named_environment/)).
+by alias from any flow with `@named_env`—see [example 06](../06_named_environment/)
+for a full walkthrough of that pattern (using its own alias).
 
 The `environment.yml` here mixes Conda packages (numpy, pandas, python) with
 PyPI packages (requests via the `pip:` section).

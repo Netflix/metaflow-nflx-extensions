@@ -12,8 +12,8 @@ python flow.py --environment=conda run
 
 ## What to expect
 
-- `start` runs in an environment with `pandas==1.4.0` installed from PyPI.
-- `end` runs in an environment with `pandas==1.5.0` installed from PyPI.
+- `start` runs in an environment with `pandas==2.1.4` installed from PyPI.
+- `end` runs in an environment with `pandas==2.2.2` installed from PyPI.
 
 ## When to choose `@pypi` over `@conda`
 

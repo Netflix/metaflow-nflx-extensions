@@ -18,7 +18,7 @@ This pattern is useful for:
 metaflow --environment=conda environment resolve \
     --python ">=3.10,<3.11" \
     --alias examples/named_demo \
-    --conda-pkg "numpy==1.24.4"
+    --conda-pkg "numpy==1.26.4"
 ```
 
 Or, equivalently, from a yaml file:
@@ -29,7 +29,7 @@ channels:
   - conda-forge
 dependencies:
   - python=3.10
-  - numpy=1.24.4
+  - numpy=1.26.4
 EOF
 
 metaflow --environment=conda environment resolve \

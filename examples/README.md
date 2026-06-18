@@ -1,8 +1,10 @@
 # Examples
 
 Self-contained runnable examples demonstrating common metaflow-netflixext use
-cases. Each directory contains a flow and any auxiliary files (requirements,
-environment yaml) needed to run it.
+cases. Examples 01–03 and 06 each contain a runnable `flow.py`. Examples 04
+and 05 demonstrate CLI-based environment resolution; their directories contain
+the input file (`environment.yml` / `requirements.txt`) and a README with a
+sample flow you can copy and run.
 
 Every example assumes you have `metaflow` and `metaflow-netflixext` installed,
 and uses `--environment=conda` to activate the extension's environment
