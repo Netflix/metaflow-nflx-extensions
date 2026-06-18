@@ -1978,16 +1978,28 @@ class Conda(object):
                         if err:
                             raise err
         else:
-            _remote_micromamba = os.environ.get("_METAFLOW_CONDA_MICROMAMBA")
-            if _remote_micromamba and os.path.isfile(_remote_micromamba):
-                # The outer step already bootstrapped micromamba remotely (e.g. via
-                # _install_remote_conda). Reuse it so Runner-spawned inner flows
-                # don't need it on PATH.
+            # Check whether _install_remote_conda() already placed a micromamba binary
+            # in a well-known location (../conda_env/ or ./conda_env/).  This happens
+            # when Runner is invoked inside a step that bootstrapped remotely — the
+            # binary is on disk but not on PATH, so which() won't find it.
+            _parent = os.path.dirname(os.getcwd())
+            _remote_bin = next(
+                (
+                    p
+                    for p in [
+                        os.path.join(_parent, "conda_env", "micromamba"),
+                        os.path.join(os.getcwd(), "conda_env", "micromamba"),
+                    ]
+                    if os.path.isfile(p) and os.access(p, os.X_OK)
+                ),
+                None,
+            )
+            if _remote_bin is not None:
                 self._conda_executable_type = "micromamba"
                 self.is_non_conda_exec = True
                 self._bins = {
-                    "conda": _remote_micromamba,
-                    "micromamba": _remote_micromamba,
+                    "conda": _remote_bin,
+                    "micromamba": _remote_bin,
                 }
             else:
                 self._bins = {
@@ -2147,9 +2159,6 @@ class Conda(object):
         self._bins = {"conda": final_path, "micromamba": final_path}
         self._conda_executable_type = "micromamba"
         self.is_non_conda_exec = True
-        # Advertise the binary path so that child processes (e.g. Runner-spawned
-        # inner flows) can find it without needing it on PATH.
-        os.environ["_METAFLOW_CONDA_MICROMAMBA"] = final_path
 
     def _validate_conda_installation(self) -> Optional[Exception]:
         # If this is installed in CONDA_LOCAL_PATH look for special marker
