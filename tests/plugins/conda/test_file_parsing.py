@@ -16,8 +16,8 @@ from typing import Dict, List, Optional
 
 from metaflow._vendor.click.testing import CliRunner
 from metaflow_extensions.nflx.cmd.environment.environment_cmd import environment
-from metaflow_extensions.nflx.plugins.conda.env_descr import EnvType
-from metaflow_extensions.nflx.plugins.conda.utils import (
+from metaflow_extensions.netflixext.plugins.conda.env_descr import EnvType
+from metaflow_extensions.netflixext.plugins.conda.utils import (
     arch_id,
     dict_to_strlist,
     merge_dep_dicts,
@@ -25,7 +25,7 @@ from metaflow_extensions.nflx.plugins.conda.utils import (
 )
 
 from metaflow.metaflow_config import DEFAULT_DATASTORE, get_pinned_conda_libs
-from metaflow_extensions.nflx.plugins.conda.conda import Conda
+from metaflow_extensions.netflixext.plugins.conda.conda import Conda
 
 
 # Get the test data directory
@@ -627,7 +627,7 @@ def test_toml_with_poetry_sources(cli_runner, mock_resolver_add_environment):
 
 def test_req_parser_error_index_url():
     """Test that using -i or --index-url in requirements.txt emits a warning."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import req_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser
 
     content = "--index-url https://pypi.custom.com/simple\npandas"
     with pytest.warns(UserWarning, match="METAFLOW_CONDA_DEFAULT_PYPI_SOURCE"):
@@ -636,7 +636,7 @@ def test_req_parser_error_index_url():
 
 def test_req_parser_error_unsupported_line():
     """Test that unsupported lines starting with - raise an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import req_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser
 
     content = "--unsupported-option value\npandas"
     with pytest.raises(Exception) as exc_info:
@@ -646,7 +646,7 @@ def test_req_parser_error_unsupported_line():
 
 def test_req_parser_error_invalid_requirement():
     """Test that invalid requirements raise an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import req_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser
 
     content = "pandas[[[invalid"
     with pytest.raises(Exception) as exc_info:
@@ -656,7 +656,7 @@ def test_req_parser_error_invalid_requirement():
 
 def test_req_parser_error_sys_pkg_not_allowed():
     """Test that --sys-pkg raises an error in decorator context."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import req_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser
 
     content = "--sys-pkg __cuda>=11.8"
     with pytest.raises(Exception) as exc_info:
@@ -666,7 +666,7 @@ def test_req_parser_error_sys_pkg_not_allowed():
 
 def test_req_parser_error_conda_channel_not_allowed():
     """Test that --conda-channel raises an error (only pypi sources allowed)."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import req_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser
 
     content = "--conda-channel conda-forge\npandas"
     with pytest.raises(Exception) as exc_info:
@@ -676,7 +676,7 @@ def test_req_parser_error_conda_channel_not_allowed():
 
 def test_req_parser_with_extra_index_url():
     """Test that --extra-index-url is correctly parsed."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import req_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser
 
     content = "--extra-index-url https://pypi.custom.com/simple\npandas>=1.0"
     result = req_parser(content)
@@ -687,7 +687,7 @@ def test_req_parser_with_extra_index_url():
 
 def test_req_parser_with_python_version():
     """Test that python version is correctly extracted from requirements."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import req_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser
 
     content = "python>=3.9\npandas>=1.0"
     result = req_parser(content)
@@ -697,7 +697,7 @@ def test_req_parser_with_python_version():
 
 def test_req_parser_with_extras_and_url():
     """Test parsing requirements with extras and URLs."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import req_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser
 
     content = "requests[security]>=2.0\npackage @ git+https://github.com/user/repo.git"
     result = req_parser(content)
@@ -709,7 +709,7 @@ def test_req_parser_with_extras_and_url():
 
 def test_req_parser_with_markers():
     """Test parsing requirements with environment markers."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import req_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser
 
     content = 'pandas>=1.0; python_version >= "3.8"'
     result = req_parser(content)
@@ -725,7 +725,7 @@ def test_req_parser_with_markers():
 
 def test_yml_parser_error_sys_deps_not_allowed():
     """Test that sys dependencies in YAML raise an error in decorator context."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import yml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import yml_parser
 
     content = """
 dependencies:
@@ -741,7 +741,7 @@ dependencies:
 
 def test_yml_parser_error_sys_pkg_no_version():
     """Test that sys packages without version raise an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import (
+    from metaflow_extensions.netflixext.plugins.conda.parsers import (
         parse_yml_value,
     )
 
@@ -762,7 +762,7 @@ dependencies:
 
 def test_yml_parser_error_sys_pkg_invalid_operator():
     """Test that sys packages with invalid operators raise an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import (
+    from metaflow_extensions.netflixext.plugins.conda.parsers import (
         parse_yml_value,
     )
 
@@ -783,7 +783,7 @@ dependencies:
 
 def test_yml_parser_error_sys_pkg_not_allowed():
     """Test that invalid sys package names raise an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import (
+    from metaflow_extensions.netflixext.plugins.conda.parsers import (
         parse_yml_value,
     )
 
@@ -804,7 +804,7 @@ dependencies:
 
 def test_yml_parser_error_multiple_python_versions():
     """Test that specifying python multiple times raises an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import yml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import yml_parser
 
     content = """
 dependencies:
@@ -818,7 +818,7 @@ dependencies:
 
 def test_yml_parser_with_channels():
     """Test that channels are correctly extracted."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import yml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import yml_parser
 
     content = """
 channels:
@@ -836,7 +836,7 @@ dependencies:
 
 def test_yml_parser_with_pypi_indices():
     """Test that pypi-indices are correctly extracted."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import yml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import yml_parser
 
     content = """
 pypi-indices:
@@ -853,7 +853,7 @@ dependencies:
 
 def test_yml_parser_with_mixed_deps():
     """Test parsing YAML with both conda and pip dependencies."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import yml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import yml_parser
 
     content = """
 dependencies:
@@ -873,7 +873,7 @@ dependencies:
 
 def test_yml_parser_with_url_deps():
     """Test parsing YAML with URL-based dependencies."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import yml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import yml_parser
 
     content = """
 dependencies:
@@ -894,7 +894,7 @@ dependencies:
 
 def test_toml_parser_error_no_tomllib():
     """Test that missing TOML library raises an appropriate error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import toml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import toml_parser
     import sys
     from unittest.mock import patch
 
@@ -914,7 +914,7 @@ dependencies = ["pandas"]
 
 def test_toml_parser_error_invalid_toml():
     """Test that invalid TOML content raises an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import toml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import toml_parser
 
     content = """
 [project
@@ -927,7 +927,7 @@ dependencies = ["pandas"]
 
 def test_toml_parser_error_python_in_deps():
     """Test that python in dependencies raises an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import toml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import toml_parser
 
     content = """
 [project]
@@ -941,7 +941,7 @@ dependencies = ["python>=3.9", "pandas"]
 
 def test_toml_parser_error_invalid_requirement():
     """Test that invalid requirements in TOML raise an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import toml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import toml_parser
 
     content = """
 [project]
@@ -955,7 +955,7 @@ dependencies = ["pandas[[[invalid"]
 
 def test_toml_parser_error_non_pypi_sources():
     """Test that non-PYPI sources raise an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import toml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import toml_parser
 
     # TOML parser doesn't support conda sources, only PYPI
     # This test would need a way to trigger the sources error
@@ -965,7 +965,7 @@ def test_toml_parser_error_non_pypi_sources():
 
 def test_toml_parser_with_requires_python():
     """Test that requires-python is correctly extracted."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import toml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import toml_parser
 
     content = """
 [project]
@@ -980,7 +980,7 @@ dependencies = ["pandas>=1.0"]
 
 def test_toml_parser_with_extras():
     """Test parsing TOML with package extras."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import toml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import toml_parser
 
     content = """
 [project]
@@ -994,7 +994,7 @@ dependencies = ["requests[security]>=2.0"]
 
 def test_toml_parser_with_url():
     """Test parsing TOML with URL-based dependencies."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import toml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import toml_parser
 
     content = """
 [project]
@@ -1009,7 +1009,7 @@ dependencies = ["package @ git+https://github.com/user/repo.git"]
 
 def test_toml_parser_with_markers():
     """Test parsing TOML with environment markers."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import toml_parser
+    from metaflow_extensions.netflixext.plugins.conda.parsers import toml_parser
 
     content = """
 [project]
@@ -1028,7 +1028,7 @@ dependencies = ["pandas>=1.0; python_version >= '3.8'"]
 
 def test_parse_req_value_conda_pkg_invalid():
     """Test that invalid --conda-pkg format raises an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import parse_req_value
+    from metaflow_extensions.netflixext.plugins.conda.parsers import parse_req_value
 
     content = "--conda-pkg"
     extra_args = {}
@@ -1045,7 +1045,7 @@ def test_parse_req_value_conda_pkg_invalid():
 
 def test_parse_req_value_sys_pkg_invalid():
     """Test that invalid --sys-pkg format raises an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import parse_req_value
+    from metaflow_extensions.netflixext.plugins.conda.parsers import parse_req_value
 
     content = "--sys-pkg __invalid_pkg=1.0"
     extra_args = {}
@@ -1061,7 +1061,7 @@ def test_parse_req_value_sys_pkg_invalid():
 
 def test_parse_req_value_sys_pkg_no_version():
     """Test that --sys-pkg without version raises an error."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import parse_req_value
+    from metaflow_extensions.netflixext.plugins.conda.parsers import parse_req_value
 
     content = "--sys-pkg __cuda"
     extra_args = {}
@@ -1077,7 +1077,7 @@ def test_parse_req_value_sys_pkg_no_version():
 
 def test_parse_req_value_find_links():
     """Test that --find-links is correctly parsed."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import parse_req_value
+    from metaflow_extensions.netflixext.plugins.conda.parsers import parse_req_value
 
     content = "--find-links https://download.pytorch.org/whl/torch_stable.html"
     extra_args = {}
@@ -1093,7 +1093,7 @@ def test_parse_req_value_find_links():
 
 def test_parse_req_value_trusted_host():
     """Test that --trusted-host is correctly parsed."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import parse_req_value
+    from metaflow_extensions.netflixext.plugins.conda.parsers import parse_req_value
 
     content = "--trusted-host pypi.custom.com"
     extra_args = {}
@@ -1109,7 +1109,7 @@ def test_parse_req_value_trusted_host():
 
 def test_parse_req_value_no_index():
     """Test that --no-index is correctly parsed."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import parse_req_value
+    from metaflow_extensions.netflixext.plugins.conda.parsers import parse_req_value
 
     content = "--no-index"
     extra_args = {}
@@ -1125,7 +1125,7 @@ def test_parse_req_value_no_index():
 
 def test_parse_req_value_conda_channel():
     """Test that --conda-channel is correctly parsed."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import parse_req_value
+    from metaflow_extensions.netflixext.plugins.conda.parsers import parse_req_value
 
     content = "--conda-channel conda-forge"
     extra_args = {}
@@ -1141,7 +1141,7 @@ def test_parse_req_value_conda_channel():
 
 def test_parse_req_value_conda_pkg():
     """Test that --conda-pkg is correctly parsed."""
-    from metaflow_extensions.nflx.plugins.conda.parsers import parse_req_value
+    from metaflow_extensions.netflixext.plugins.conda.parsers import parse_req_value
 
     content = "--conda-pkg numpy>=1.20"
     extra_args = {}

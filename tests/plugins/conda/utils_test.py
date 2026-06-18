@@ -1,8 +1,8 @@
 from itertools import chain
-from metaflow_extensions.nflx.plugins.conda.utils import (
+from metaflow_extensions.netflixext.plugins.conda.utils import (
     filter_packages_by_markers,
 )
-from metaflow_extensions.nflx.plugins.conda.resolvers.pylock_toml_resolver import (
+from metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver import (
     PylockTomlResolver,
 )
 

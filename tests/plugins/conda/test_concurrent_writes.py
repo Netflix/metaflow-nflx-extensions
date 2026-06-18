@@ -5,13 +5,13 @@ import os
 import tempfile
 from unittest.mock import patch
 
-from metaflow_extensions.nflx.plugins.conda.env_descr import (
+from metaflow_extensions.netflixext.plugins.conda.env_descr import (
     CachedEnvironmentInfo,
     ResolvedEnvironment,
     write_to_conda_manifest,
     read_conda_manifest,
 )
-from metaflow_extensions.nflx.plugins.conda.utils import get_conda_manifest_path
+from metaflow_extensions.netflixext.plugins.conda.utils import get_conda_manifest_path
 
 
 def test_write_to_conda_manifest_concurrent_access():

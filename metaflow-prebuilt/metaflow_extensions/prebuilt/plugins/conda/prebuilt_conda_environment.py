@@ -27,11 +27,11 @@ try:
         CONDA_MAGIC_FILE_V2,  # type: ignore[attr-defined]
         CONDA_REMOTE_COMMANDS,  # type: ignore[attr-defined]
     )
-    from metaflow_extensions.nflx.plugins.conda.conda import Conda
-    from metaflow_extensions.nflx.plugins.conda.conda_environment import (
+    from metaflow_extensions.netflixext.plugins.conda.conda import Conda
+    from metaflow_extensions.netflixext.plugins.conda.conda_environment import (
         CondaEnvironment,
     )
-    from metaflow_extensions.nflx.plugins.conda.env_descr import EnvID, EnvType
+    from metaflow_extensions.netflixext.plugins.conda.env_descr import EnvID, EnvType
 except ImportError:
     # OSS metaflow — these Netflix-specific names are not available.
     # The environment class still registers and its pure functions are usable;

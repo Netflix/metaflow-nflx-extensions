@@ -11,25 +11,25 @@ from unittest.mock import Mock
 # Import metaflow first to avoid circular import issues
 import metaflow
 
-from metaflow_extensions.nflx.plugins.conda.envsresolver import EnvsResolver
-from metaflow_extensions.nflx.plugins.conda.resolvers import Resolver
-from metaflow_extensions.nflx.plugins.conda.resolvers.conda_resolver import (
+from metaflow_extensions.netflixext.plugins.conda.envsresolver import EnvsResolver
+from metaflow_extensions.netflixext.plugins.conda.resolvers import Resolver
+from metaflow_extensions.netflixext.plugins.conda.resolvers.conda_resolver import (
     CondaResolver,
 )
-from metaflow_extensions.nflx.plugins.conda.resolvers.pip_resolver import (
+from metaflow_extensions.netflixext.plugins.conda.resolvers.pip_resolver import (
     PipResolver,
 )
-from metaflow_extensions.nflx.plugins.conda.resolvers.conda_lock_resolver import (
+from metaflow_extensions.netflixext.plugins.conda.resolvers.conda_lock_resolver import (
     CondaLockResolver,
 )
-from metaflow_extensions.nflx.plugins.conda.resolvers.pylock_toml_resolver import (
+from metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver import (
     PylockTomlResolver,
 )
-from metaflow_extensions.nflx.plugins.conda.resolvers.builder_envs_resolver import (
+from metaflow_extensions.netflixext.plugins.conda.resolvers.builder_envs_resolver import (
     BuilderEnvsResolver,
 )
-from metaflow_extensions.nflx.plugins.conda.utils import CondaException
-from metaflow_extensions.nflx.plugins.conda.env_descr import EnvType
+from metaflow_extensions.netflixext.plugins.conda.utils import CondaException
+from metaflow_extensions.netflixext.plugins.conda.env_descr import EnvType
 
 
 # ===== Resolver Base Class Tests =====

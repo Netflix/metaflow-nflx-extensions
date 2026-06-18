@@ -3,11 +3,11 @@ import itertools
 
 import metaflow
 
-from metaflow_extensions.nflx.plugins.conda.resolvers.pylock_toml_resolver import (
+from metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver import (
     PylockTomlResolver,
 )
-from metaflow_extensions.nflx.plugins.conda.conda import Conda
-from metaflow_extensions.nflx.plugins.conda.env_descr import (
+from metaflow_extensions.netflixext.plugins.conda.conda import Conda
+from metaflow_extensions.netflixext.plugins.conda.env_descr import (
     CondaPackageSpecification,
     EnvID,
     PackageSpecification,
@@ -16,7 +16,7 @@ from metaflow_extensions.nflx.plugins.conda.env_descr import (
     ResolvedEnvironment,
 )
 
-from metaflow_extensions.nflx.plugins.conda.utils import (
+from metaflow_extensions.netflixext.plugins.conda.utils import (
     get_best_compatible_packages,
     get_maximum_glibc_version,
     pypi_tags_from_arch,
@@ -26,7 +26,7 @@ from metaflow_extensions.nflx.plugins.conda.utils import (
 from metaflow._vendor.packaging.tags import (
     Tag,
 )
-from metaflow_extensions.nflx.plugins.conda.conda import CondaException
+from metaflow_extensions.netflixext.plugins.conda.conda import CondaException
 
 
 from pathlib import Path
@@ -562,11 +562,11 @@ def test_pylock_toml_to_resolved_env(deps, mocker):
         "osx-arm64",
     )
     mocker.patch(
-        "metaflow_extensions.nflx.plugins.conda.resolvers.pylock_toml_resolver.get_python_full_version_from_builder_envs",
+        "metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver.get_python_full_version_from_builder_envs",
         return_value="3.10.1",
     )
     mocker.patch(
-        "metaflow_extensions.nflx.plugins.conda.utils.arch_id",
+        "metaflow_extensions.netflixext.plugins.conda.utils.arch_id",
         return_value="osx-arm64",
     )
 
@@ -712,11 +712,11 @@ def test_pylock_toml_to_resolved_env(deps, mocker):
         "osx-arm64",
     )
     mocker.patch(
-        "metaflow_extensions.nflx.plugins.conda.resolvers.pylock_toml_resolver.get_python_full_version_from_builder_envs",
+        "metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver.get_python_full_version_from_builder_envs",
         return_value="3.10.1",
     )
     mocker.patch(
-        "metaflow_extensions.nflx.plugins.conda.utils.arch_id",
+        "metaflow_extensions.netflixext.plugins.conda.utils.arch_id",
         return_value="osx-arm64",
     )
 
