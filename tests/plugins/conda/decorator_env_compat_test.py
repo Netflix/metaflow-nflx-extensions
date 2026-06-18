@@ -15,8 +15,10 @@ from metaflow.metaflow_environment import (
     InvalidEnvironmentException,
     MetaflowEnvironment,
 )
-from metaflow_extensions.nflx.plugins.conda.conda_environment import CondaEnvironment
-from metaflow_extensions.nflx.plugins.conda.conda_step_decorator import (
+from metaflow_extensions.netflixext.plugins.conda.conda_environment import (
+    CondaEnvironment,
+)
+from metaflow_extensions.netflixext.plugins.conda.conda_step_decorator import (
     PackageRequirementStepDecorator,
 )
 

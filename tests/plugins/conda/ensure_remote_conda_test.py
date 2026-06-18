@@ -1,9 +1,11 @@
+import os
 import unittest
 from unittest.mock import patch
 
 # Import metaflow first so its extension/plugin registration completes before we
 # import the nflx Conda submodule (otherwise plugin resolution can fail with a
 # circular-import-style "Cannot locate ... plugin" error).
+os.environ.setdefault("METAFLOW_DATASTORE_SYSROOT_LOCAL", ".metaflow")
 import metaflow  # noqa: F401
 
 
@@ -19,14 +21,15 @@ class TestEnsureRemoteConda(unittest.TestCase):
         def echo(*args, **kwargs):
             pass
 
-        from metaflow_extensions.nflx.plugins.conda.conda import Conda
+        from metaflow_extensions.netflixext.plugins.conda.conda import Conda
 
         return Conda(echo=echo, datastore_type="local", mode="remote")
 
     def test_empty_remote_installer_self_installs_micromamba(self):
         c = self._make_conda()
         with patch(
-            "metaflow_extensions.nflx.plugins.conda.conda.CONDA_REMOTE_INSTALLER", ""
+            "metaflow_extensions.netflixext.plugins.conda.conda.CONDA_REMOTE_INSTALLER",
+            "",
         ), patch.object(c, "_install_remote_conda") as m_install, patch.object(
             c, "_ensure_micromamba", return_value="/fake/bin/micromamba"
         ) as m_micro:
@@ -39,7 +42,7 @@ class TestEnsureRemoteConda(unittest.TestCase):
     def test_configured_remote_installer_uses_datastore_path(self):
         c = self._make_conda()
         with patch(
-            "metaflow_extensions.nflx.plugins.conda.conda.CONDA_REMOTE_INSTALLER",
+            "metaflow_extensions.netflixext.plugins.conda.conda.CONDA_REMOTE_INSTALLER",
             "conda-{arch}",
         ), patch.object(c, "_install_remote_conda") as m_install, patch.object(
             c, "_ensure_micromamba"

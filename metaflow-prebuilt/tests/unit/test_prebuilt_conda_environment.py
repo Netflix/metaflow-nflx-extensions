@@ -218,7 +218,7 @@ def test_gather_embedded_wheels_prefers_cached_wheel_over_local_sdist():
     )
 
     try:
-        from metaflow_extensions.nflx.plugins.conda.env_descr import (
+        from metaflow_extensions.netflixext.plugins.conda.env_descr import (
             PypiCachePackage,
             PypiPackageSpecification,
         )
