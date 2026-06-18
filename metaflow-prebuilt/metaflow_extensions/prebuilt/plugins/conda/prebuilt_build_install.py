@@ -22,13 +22,16 @@ deferred_builds.json schema (version "2"):
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
+import zipfile
 
-from typing import Optional
+from typing import List, Optional
 
 # This module runs ONLY inside the prebuilt Docker build container. The image
 # was given the resolved-env *manifest* but NOT the deploy machine's package
@@ -87,6 +90,86 @@ _SETUPTOOLS_CHECK = (
     "    sys.exit(3)\n"
     "sys.exit(0 if major < 82 else 4)\n"
 )
+
+
+def _parse_build_system_requires(text: str) -> List[str]:
+    """Return ``[build-system].requires`` from pyproject.toml text.
+
+    Uses tomllib (py3.11+) or tomli when importable; falls back to a tolerant
+    regex for the (well-specified) ``requires = [...]`` array under
+    ``[build-system]`` so this works even on an env python without a TOML lib.
+    """
+    data = None
+    for mod in ("tomllib", "tomli"):
+        try:
+            data = __import__(mod).loads(text)
+            break
+        except Exception:
+            data = None
+    if isinstance(data, dict):
+        bs = data.get("build-system") or {}
+        reqs = bs.get("requires")
+        return [str(x) for x in reqs] if isinstance(reqs, list) else []
+    # Fallback: pull the requires array out of the [build-system] table textually.
+    m = re.search(r"^\[build-system\]\s*(.*?)(?=^\[|\Z)", text, re.S | re.M)
+    if not m:
+        return []
+    rm = re.search(r"requires\s*=\s*\[(.*?)\]", m.group(1), re.S)
+    if not rm:
+        return []
+    return [g.group(1) for g in re.finditer(r"""["']([^"']+)["']""", rm.group(1))]
+
+
+def _build_requires_from_sdist(source: str) -> List[str]:
+    """Best-effort ``[build-system].requires`` for a deferred sdist.
+
+    Pass B builds with ``--no-build-isolation``, so the PEP 517 build backend and
+    any extra build requirements (Cython, setuptools_scm, hatchling, pybind11, ...)
+    must already be importable — build isolation would normally install them. We
+    read them from the sdist's pyproject.toml and stage them into the build
+    overlay alongside setuptools<82 + wheel.
+
+    Returns requirement strings EXCLUDING setuptools/wheel/pip (handled by the
+    overlay / env). Returns ``[]`` for a URL/non-archive source, a missing or
+    unreadable pyproject, or no declared requires — the build then proceeds as
+    before (best-effort; a legacy setup.py-only sdist needs nothing beyond the
+    setuptools<82 + wheel overlay).
+    """
+    if not source or not os.path.isfile(source):
+        return []  # URL source — can't introspect without downloading.
+    text = None
+    try:
+        if source.endswith((".tar.gz", ".tgz", ".tar.bz2", ".tar")):
+            with tarfile.open(source) as tf:
+                members = [
+                    m
+                    for m in tf.getmembers()
+                    if m.name.count("/") == 1 and m.name.endswith("/pyproject.toml")
+                ]
+                if members:
+                    fh = tf.extractfile(members[0])
+                    text = fh.read().decode("utf-8", "replace") if fh else None
+        elif source.endswith(".zip"):
+            with zipfile.ZipFile(source) as zf:
+                names = [
+                    n
+                    for n in zf.namelist()
+                    if n.count("/") == 1 and n.endswith("/pyproject.toml")
+                ]
+                if names:
+                    text = zf.read(names[0]).decode("utf-8", "replace")
+    except Exception:
+        return []
+    if not text:
+        return []
+    out = []
+    for req in _parse_build_system_requires(text):
+        base = re.split(r"[<>=!~ \[;]", req.strip(), 1)[0].strip().lower()
+        base = base.replace("_", "-")
+        if base in ("setuptools", "wheel", "pip"):
+            continue  # handled by the setuptools<82 + wheel overlay / the env
+        out.append(req.strip())
+    return out
 
 
 def _echo(*args, **kwargs):
@@ -203,96 +286,101 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
     if not deferred_sdists:
         return  # Wheels-only or empty; Pass B is a no-op.
 
-    # Pre-check: Pass B builds with --no-build-isolation, so the build backend is
-    # the env's OWN setuptools/wheel. setuptools>=82 dropped pkg_resources, which
-    # legacy setup.py files import (the deploy-side builder constrains <82 for the
-    # same reason). If the env's setuptools is missing or >=82, stage a transient
-    # setuptools<82 + wheel into a temp dir and put it FIRST on the build
-    # subprocess' PYTHONPATH (a build overlay) — we never install into the env, so
-    # the shipped image stays byte-identical to the resolved conda manifest (no
-    # pip-over-conda mutation, nothing to restore). The overlay is removed after
-    # the builds. build_overlay stays None when the env already satisfies <82.
-    build_overlay = None  # type: Optional[str]
-    _echo(" (Pass B pre-check: setuptools<82 + wheel) ...", timestamp=False, nl=False)
-    check_result = subprocess.run(
-        [python_bin, "-c", _SETUPTOOLS_CHECK],
-        capture_output=True,
-        text=True,
+    # Pass B builds with --no-build-isolation, so the build backend AND any
+    # [build-system].requires must already be importable (build isolation would
+    # normally provide them). We stage them into a transient "build overlay" dir
+    # placed FIRST on the build subprocess' PYTHONPATH — never installed into the
+    # env, so the shipped image stays byte-identical to the resolved conda manifest
+    # (no pip-over-conda mutation, nothing to restore). The overlay is removed
+    # after the builds. Two sources feed it:
+    #   (a) setuptools<82 + wheel, when the env's setuptools is missing or >=82
+    #       (>=82 dropped pkg_resources, which legacy setup.py files import; the
+    #       deploy-side builder constrains <82 for the same reason); and
+    #   (b) each sdist's own [build-system].requires (Cython, setuptools_scm,
+    #       hatchling, pybind11, ...) read from its pyproject.toml below.
+    # build_env is the subprocess env; <env>/bin goes first on PATH so the build
+    # finds the conda env's own tools (compilers, cmake/ninja, console scripts).
+    build_env = dict(os.environ)
+    build_env["PATH"] = (
+        os.path.dirname(python_bin) + os.pathsep + build_env.get("PATH", "")
     )
-    if check_result.returncode != 0:
-        build_overlay = tempfile.mkdtemp(prefix="mf_passb_setuptools_")
-        _echo(
-            " (staging setuptools<82 + wheel build overlay) ...",
-            timestamp=False,
-            nl=False,
-        )
+    overlay_state = {"dir": None}  # lazily created on first need
+
+    def _ensure_overlay():
+        if overlay_state["dir"] is None:
+            overlay_state["dir"] = tempfile.mkdtemp(prefix="mf_passb_overlay_")
+            build_env["PYTHONPATH"] = (
+                overlay_state["dir"] + os.pathsep + build_env.get("PYTHONPATH", "")
+            )
+        return overlay_state["dir"]
+
+    def _overlay_install(pkgs, what):
+        if not pkgs:
+            return
+        overlay = _ensure_overlay()
+        _echo(" (staging %s) ..." % what, timestamp=False, nl=False)
         if os.path.isfile(uv_bin):
-            overlay_args = [
+            args = [
                 uv_bin,
                 "pip",
                 "install",
                 "--python",
                 python_bin,
                 "--target",
-                build_overlay,
+                overlay,
                 "--no-cache",
                 "--no-config",
-                "setuptools<82",
-                "wheel",
-            ]
+            ] + list(pkgs)
         else:
-            overlay_args = [
+            args = [
                 python_bin,
                 "-m",
                 "pip",
                 "install",
                 "--target",
-                build_overlay,
+                overlay,
                 "--no-cache-dir",
                 "--no-input",
                 "--disable-pip-version-check",
-                "setuptools<82",
-                "wheel",
-            ]
-        overlay_result = subprocess.run(overlay_args, capture_output=True, text=True)
-        if overlay_result.returncode != 0:
-            shutil.rmtree(build_overlay, ignore_errors=True)
+            ] + list(pkgs)
+        r = subprocess.run(args, capture_output=True, text=True)
+        if r.returncode != 0:
+            shutil.rmtree(overlay, ignore_errors=True)
             raise CondaException(
-                "Pass B pre-check: could not stage the setuptools<82 + wheel build "
-                "overlay in %s.\nstderr: %s" % (build_overlay, overlay_result.stderr)
+                "Pass B: could not stage %s into the build overlay.\nstderr: %s"
+                % (what, r.stderr)
             )
 
-    # Map filename -> the local artifact Pass A's lazy_fetch already downloaded
-    # and hash-verified, so Pass B installs the verified bits instead of
-    # re-downloading the raw URL (which lacks creds/hash and may have changed).
-    local_by_filename = {}
-    for p in resolved_env.packages:
-        if getattr(p, "TYPE", None) != "pypi":
-            continue
-        lf = p.local_file(p.url_format)
-        if lf and os.path.isfile(lf):
-            local_by_filename[p.filename] = lf
-
-    # Pass B builds invoke the conda env's own tools (compilers, cmake/ninja,
-    # console scripts) that Pass A installed; put <env>/bin first on PATH so the
-    # build subprocess finds them rather than the Docker build image's PATH.
-    build_env = dict(os.environ)
-    build_env["PATH"] = (
-        os.path.dirname(python_bin) + os.pathsep + build_env.get("PATH", "")
-    )
-    if build_overlay:
-        # Build subprocesses import the transient setuptools<82 + wheel from the
-        # overlay first, without it ever being installed into the env.
-        build_env["PYTHONPATH"] = (
-            build_overlay + os.pathsep + build_env.get("PYTHONPATH", "")
-        )
-
-    _echo(
-        " (Pass B: %d deferred sdist(s)) ..." % len(deferred_sdists),
-        timestamp=False,
-        nl=False,
-    )
+    # Everything that can CREATE the overlay runs inside try/finally so the
+    # transient overlay is always removed — even if the pre-check staging, build-
+    # requires staging, or a build raises before the loop.
     try:
+        # (a) setuptools<82 + wheel, only when the env doesn't already satisfy it.
+        _echo(
+            " (Pass B pre-check: setuptools<82 + wheel) ...", timestamp=False, nl=False
+        )
+        check_result = subprocess.run(
+            [python_bin, "-c", _SETUPTOOLS_CHECK], capture_output=True, text=True
+        )
+        if check_result.returncode != 0:
+            _overlay_install(["setuptools<82", "wheel"], "setuptools<82 + wheel")
+
+        # Map filename -> the local artifact Pass A's lazy_fetch already downloaded
+        # and hash-verified, so Pass B installs the verified bits instead of
+        # re-downloading the raw URL (which lacks creds/hash and may have changed).
+        local_by_filename = {}
+        for p in resolved_env.packages:
+            if getattr(p, "TYPE", None) != "pypi":
+                continue
+            lf = p.local_file(p.url_format)
+            if lf and os.path.isfile(lf):
+                local_by_filename[p.filename] = lf
+
+        _echo(
+            " (Pass B: %d deferred sdist(s)) ..." % len(deferred_sdists),
+            timestamp=False,
+            nl=False,
+        )
         for sdist in deferred_sdists:
             name = sdist.get("name", "<unknown>")
             version = sdist.get("version", "")
@@ -305,6 +393,24 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
                     "Deferred sdist %r has neither a fetched local file nor a "
                     "'url' in %s. Re-deploy to regenerate."
                     % (name, _DEFERRED_BUILDS_PATH)
+                )
+            # (b) Stage this sdist's own [build-system].requires (Cython,
+            # setuptools_scm, ...) so --no-build-isolation can import them. We
+            # stage them ALONGSIDE the controlled setuptools<82 + wheel (rather
+            # than honoring a declared setuptools/wheel pin, which _build_requires_
+            # from_sdist filtered out): the <82 cap is the deliberate pkg_resources
+            # policy and the latest <82 setuptools / latest wheel satisfy any
+            # reasonable lower-bound pin, while guaranteeing the build uses a
+            # known-good backend regardless of the env's own setuptools version.
+            # NOTE: the overlay is shared across all deferred sdists — fine in
+            # practice (build deps rarely conflict) and consistent with the
+            # --no-build-isolation design (which deliberately shares the env's
+            # runtime deps); it is not per-sdist build isolation.
+            build_reqs = _build_requires_from_sdist(source)
+            if build_reqs:
+                _overlay_install(
+                    ["setuptools<82", "wheel"] + build_reqs,
+                    "build requires for %s (%s)" % (name, ", ".join(build_reqs)),
                 )
             _echo(" (building %s==%s) ..." % (name, version), timestamp=False, nl=False)
             if os.path.isfile(uv_bin):
@@ -348,8 +454,8 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
             _echo(" done.", timestamp=False)
     finally:
         # The build overlay is transient build-time tooling; never ship it.
-        if build_overlay:
-            shutil.rmtree(build_overlay, ignore_errors=True)
+        if overlay_state["dir"]:
+            shutil.rmtree(overlay_state["dir"], ignore_errors=True)
 
 
 def install_env(req_id: str, full_id: str) -> str:

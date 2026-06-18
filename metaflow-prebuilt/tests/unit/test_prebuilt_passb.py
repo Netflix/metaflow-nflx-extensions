@@ -11,6 +11,7 @@ exercise Pass B + the overlay is a controlled unit test like this one.
 """
 
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -199,3 +200,95 @@ def test_pass_b_noop_when_no_deferred_sdists(tmp_path, monkeypatch):
     pbi._run_deferred_sdist_builds(
         str(tmp_path / "nonexistent_env"), types.SimpleNamespace(packages=[])
     )
+
+
+def _make_manual_sdist(tmp_path, name, version, build_requires, setup_imports):
+    """Build an sdist tarball BY HAND (no host build backend runs), so its
+    setup.py — which imports a build-only dep — is executed only by Pass B in the
+    container, not when creating the fixture. pyproject declares the build deps."""
+    import io
+    import tarfile as _tar
+
+    root = "%s-%s" % (name, version)
+    reqs = ", ".join('"%s"' % r for r in list(build_requires) + ["setuptools", "wheel"])
+    imports = "".join("import %s  # noqa: F401\n" % m for m in setup_imports)
+    files = {
+        root + "/" + name + ".py": "__version__ = %r\n" % version,
+        root
+        + "/pyproject.toml": (
+            "[build-system]\nrequires = [%s]\n"
+            'build-backend = "setuptools.build_meta"\n' % reqs
+        ),
+        root
+        + "/setup.py": (
+            imports
+            + "from setuptools import setup\n"
+            + "setup(name=%r, version=%r, py_modules=[%r])\n" % (name, version, name)
+        ),
+        root
+        + "/PKG-INFO": "Metadata-Version: 2.1\nName: %s\nVersion: %s\n"
+        % (name, version),
+    }
+    out = tmp_path / ("dist_" + name)
+    out.mkdir()
+    tarball = out / (root + ".tar.gz")
+    with _tar.open(str(tarball), "w:gz") as tf:
+        for path, content in files.items():
+            b = content.encode()
+            ti = _tar.TarInfo(path)
+            ti.size = len(b)
+            tf.addfile(ti, io.BytesIO(b))
+    return tarball
+
+
+def test_build_requires_extracted_from_sdist(tmp_path):
+    """Helper unit: [build-system].requires is read from the sdist, with
+    setuptools/wheel/pip filtered out (handled by the overlay/env)."""
+    sdist = _make_manual_sdist(
+        tmp_path,
+        "pkgx",
+        "1.0",
+        build_requires=["Cython>=3", "setuptools_scm"],
+        setup_imports=[],
+    )
+    reqs = pbi._build_requires_from_sdist(str(sdist))
+    assert any(r.startswith("Cython") for r in reqs)
+    assert any(r.startswith("setuptools_scm") for r in reqs)
+    assert not any(
+        re.split(r"[<>=!~ \[;]", r, 1)[0].strip().lower()
+        in ("setuptools", "wheel", "pip")
+        for r in reqs
+    )
+
+
+def test_pass_b_stages_pyproject_build_requires(tmp_path, monkeypatch):
+    """End-to-end Pass B: an sdist whose setup.py imports a build-only dep
+    (`tomli`, declared in [build-system].requires) builds because Pass B stages
+    that dep into the overlay. Without the fix the build fails (dep not importable
+    under --no-build-isolation)."""
+    py = _make_venv(tmp_path / "env", "setuptools<82", "wheel")
+    # The build dep must NOT already be importable in the env, else the test is moot.
+    chk = subprocess.run([py, "-c", "import tomli"], capture_output=True, text=True)
+    if chk.returncode == 0:
+        pytest.skip("env already has the build dep; can't prove the overlay path")
+
+    sdist = _make_manual_sdist(
+        tmp_path,
+        "mfpassbbuildreq",
+        "0.0.1",
+        build_requires=["tomli"],
+        setup_imports=["tomli"],
+    )
+    _defer_one(monkeypatch, "mfpassbbuildreq", "0.0.1", sdist)
+
+    pbi._run_deferred_sdist_builds(
+        str(tmp_path / "env"), types.SimpleNamespace(packages=[])
+    )
+
+    r = subprocess.run(
+        [py, "-c", "import mfpassbbuildreq; print(mfpassbbuildreq.__version__)"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    assert "0.0.1" in r.stdout

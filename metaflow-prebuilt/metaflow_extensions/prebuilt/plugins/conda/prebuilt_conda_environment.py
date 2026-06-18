@@ -58,9 +58,17 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Schema version prefix on the image tag. Bump when the Dockerfile shape,
-# bootstrap activation contract, or env_path layout changes in a way that
-# makes pre-existing images at the same env-id incompatible.
-PREBUILT_IMAGE_SCHEMA_VERSION = "v28"
+# bootstrap activation contract, env_path layout, or tag scheme changes in a way
+# that makes pre-existing images at the same env-id incompatible.
+# v29: the registry tag now carries a base-image/arch variant suffix (image
+#      identity), so images that share an env but differ by base/arch no longer
+#      collide on one tag.
+PREBUILT_IMAGE_SCHEMA_VERSION = "v29"
+
+# Docker tag components allow [A-Za-z0-9_.-]; everything else is replaced.
+_TAG_SAFE_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
+)
 
 # Where micromamba creates the env inside the build container AND where the
 # runtime container finds it. Same path on both sides so conda binary
@@ -107,23 +115,64 @@ def _named_state_key(name: str) -> str:
     return "name:%s" % name
 
 
-def _image_cache_key(env_id: EnvID) -> str:
-    # TODO(image-identity): keys only on req_id/full_id, so steps that share deps
-    # but need different images collide on one cached image / registry tag:
-    #   - CPU vs GPU base (@resources gpu) — a CPU-first flow could run a GPU
-    #     step on a CPU base; and
-    #   - a different target arch (env_id.arch is dropped here).
-    # In a single deploy all remote steps are normally one arch + base, so these
-    # are latent edge cases. A proper fix threads the base-image/arch dimension
-    # into this key, the registry image tag, and bootstrap_commands (an image-tag
-    # schema bump) — best done as its own change. Pre-existing (inline has it too).
+def _env_cache_key(env_id: EnvID) -> str:
+    """Identity of the baked CONDA ENV — keys ``_prebuilt_env_paths`` and the
+    runtime bootstrap lookup. Base-image independent ON PURPOSE: the conda env is
+    byte-identical whether it sits on a CPU or GPU base, and ``env_path`` is the
+    same, so bootstrap (which cannot know the base image at runtime) resolves it
+    without that dimension. Image identity (which DOES depend on the base) is a
+    separate key — see ``_image_dedup_key`` / ``_image_variant``."""
     return "%s_%s" % (env_id.req_id, env_id.full_id)
+
+
+# Back-compat alias: callers that meant the env-identity key.
+_image_cache_key = _env_cache_key
+
+
+def _image_variant(base_image: str, arch: str) -> str:
+    """Discriminator for images that share an env (same req_id/full_id) but are
+    built on a DIFFERENT base image (CPU vs GPU) or for a DIFFERENT target arch.
+
+    Folded into BOTH the in-process image-dedup key and the registry tag so such
+    images never collide on one tag — without it, a CPU-first flow could run a
+    GPU step on the CPU base, and a GPU build would overwrite the CPU image at
+    the same registry tag. ``env_id.arch`` is included because the env cache key
+    drops it."""
+    import hashlib  # noqa: PLC0415
+
+    safe_arch = "".join(c if c in _TAG_SAFE_CHARS else "_" for c in (arch or "noarch"))
+    digest = hashlib.sha256(
+        ("%s\x00%s" % (base_image or "", arch or "")).encode("utf-8")
+    ).hexdigest()[:8]
+    return "%s-%s" % (safe_arch, digest)
+
+
+def _image_dedup_key(env_cache_key: str, variant: str) -> str:
+    """Identity of the IMAGE — keys ``_prebuilt_images`` so two steps that share
+    an env but need different bases/arches build (and tag) distinct images."""
+    return "%s@%s" % (env_cache_key, variant)
+
+
+def _tag_with_variant(tag: str, variant: str) -> str:
+    """Append the base/arch variant to a registry tag so distinct-base images get
+    distinct tags (the variant lands in the tag's version component after ':')."""
+    return "%s-%s" % (tag, variant)
 
 
 def _base_image_for_step(gpu: bool) -> str:
     if gpu:
         return os.environ.get("METAFLOW_PREBUILT_GPU_BASE_IMAGE", "")
     return os.environ.get("METAFLOW_PREBUILT_BASE_IMAGE", "")
+
+
+def _step_wants_gpu(step: Any) -> bool:
+    """True if any decorator on the step requests a GPU (``@resources(gpu=1)`` or
+    ``@titus(gpu=1)``) — selects the GPU base image."""
+    return any(
+        deco.attributes.get("gpu") not in (None, 0, "0")
+        for deco in step.decorators
+        if hasattr(deco, "attributes") and "gpu" in (deco.attributes or {})
+    )
 
 
 class PrebuiltCondaEnvironment(CondaEnvironment):
@@ -290,10 +339,10 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                 # fetch_at_exec named env — resolve alias to a concrete env_id.
                 # Apply @{VAR} substitution first (as standard conda does) so a
                 # name like 'env-@{NAME}' resolves the concrete 'env-prod' alias.
-                # TODO(image-identity): env_id_from_alias resolves for the local
-                # arch; for a cross-arch deploy (deploy arch != remote step arch)
-                # it can pick the wrong concrete EnvID. Part of the image-identity
-                # follow-up noted on _image_cache_key.
+                # NOTE: env_id_from_alias resolves for the deploy-local arch; a
+                # cross-arch deploy (deploy arch != remote step arch) could pick
+                # the wrong concrete EnvID — a separate netflixext-side limitation
+                # (arch-aware alias resolution), independent of the image variant.
                 named_alias = self.sub_envvars_in_envname(env_id)
                 resolved_id = cast(Conda, self.conda).env_id_from_alias(named_alias)
                 if resolved_id is None:
@@ -302,21 +351,42 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                         "resolve to any cached environment." % (named_alias, step.name)
                     )
                 env_id = resolved_id
-                key = _named_state_key(named_alias)
+                env_key = _named_state_key(named_alias)
                 is_named = True
             elif EnvID is None or (EnvID is not None and isinstance(env_id, EnvID)):
                 # Regular hash-based env_id (duck-typed in OSS mode).
-                key = _image_cache_key(env_id)
+                env_key = _env_cache_key(env_id)
                 is_named = False
                 named_alias = None
             else:
                 continue
 
-            if key in self.__class__._prebuilt_images:
-                pull_tag = self.__class__._prebuilt_images[key]
+            # Image identity = env identity + base-image/arch variant, so two steps
+            # that share an env but need a different base (CPU vs GPU) or arch build
+            # and TAG distinct images. env_path stays keyed by env_key (the conda
+            # env is byte-identical across bases; bootstrap resolves it without the
+            # base dimension, which it cannot know at runtime).
+            gpu = _step_wants_gpu(step)
+            base_image = _base_image_for_step(gpu)
+            if not base_image:
+                raise MetaflowException(
+                    "No base image configured. Set METAFLOW_PREBUILT_GPU_BASE_IMAGE "
+                    "(for GPU steps) or METAFLOW_PREBUILT_BASE_IMAGE."
+                )
+            variant = _image_variant(base_image, getattr(env_id, "arch", ""))
+            image_key = _image_dedup_key(env_key, variant)
+
+            if image_key in self.__class__._prebuilt_images:
+                pull_tag = self.__class__._prebuilt_images[image_key]
             else:
                 result = self._get_or_build_image(
-                    env_id, step, echo, registry, named_alias=named_alias
+                    env_id,
+                    step,
+                    echo,
+                    registry,
+                    base_image=base_image,
+                    variant=variant,
+                    named_alias=named_alias,
                 )
                 if result is None:
                     raise MetaflowException(
@@ -325,10 +395,10 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                         "standard conda." % step.name
                     )
                 pull_tag, env_path = result
-                self.__class__._prebuilt_images[key] = pull_tag
-                self.__class__._prebuilt_env_paths[key] = env_path
+                self.__class__._prebuilt_images[image_key] = pull_tag
+                self.__class__._prebuilt_env_paths[env_key] = env_path
 
-            pull_tag = self.__class__._prebuilt_images[key]
+            pull_tag = self.__class__._prebuilt_images[image_key]
             pull_config = registry.pull_config(pull_tag)
 
             found_remote_deco = False
@@ -358,21 +428,29 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         step: Any,
         echo: Callable[..., None],
         registry: ImageRegistry,
+        base_image: str,
+        variant: str,
         named_alias: Optional[str] = None,
     ) -> Optional[Tuple[str, str]]:
         """Build the prebuilt image and return ``(pull_tag, env_path)`` or
-        ``None`` on failure."""
+        ``None`` on failure. ``base_image`` and ``variant`` are resolved by the
+        caller (``_build_prebuilt_images``); the variant is appended to the
+        registry tags so distinct-base images get distinct tags."""
         if named_alias is not None:
-            push_tag = registry.push_tag_for_named(named_alias)
-            pull_tag = registry.pull_tag_for_named(named_alias)
+            push_tag = _tag_with_variant(
+                registry.push_tag_for_named(named_alias), variant
+            )
+            pull_tag = _tag_with_variant(
+                registry.pull_tag_for_named(named_alias), variant
+            )
             echo(
                 "    Building prebuilt image for @named_env=%r "
                 "(resolved to %s/%s) ..."
                 % (named_alias, env_id.req_id[:8], env_id.full_id[:8])
             )
         else:
-            push_tag = registry.push_tag(env_id)
-            pull_tag = registry.pull_tag(env_id)
+            push_tag = _tag_with_variant(registry.push_tag(env_id), variant)
+            pull_tag = _tag_with_variant(registry.pull_tag(env_id), variant)
             echo(
                 "    Building prebuilt image for %s/%s ..."
                 % (env_id.req_id[:8], env_id.full_id[:8])
@@ -382,18 +460,6 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         if resolved_env is None:
             echo("    WARNING: Could not find resolved environment for %s" % (env_id,))
             return None
-
-        gpu = any(
-            deco.attributes.get("gpu") not in (None, 0, "0")
-            for deco in step.decorators
-            if hasattr(deco, "attributes") and "gpu" in (deco.attributes or {})
-        )
-        base_image = _base_image_for_step(gpu)
-        if not base_image:
-            raise MetaflowException(
-                "No base image configured. Set METAFLOW_PREBUILT_GPU_BASE_IMAGE "
-                "(for GPU steps) or METAFLOW_PREBUILT_BASE_IMAGE."
-            )
 
         env_type = resolved_env.env_type
         env_path = (
@@ -499,9 +565,14 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         else:
             return super().bootstrap_commands(step_name, datastore_type)
 
-        if key not in self.__class__._prebuilt_images:
+        # Validate against _prebuilt_env_paths (keyed by the base-independent env
+        # key), NOT _prebuilt_images (now keyed by env+base/arch variant, which
+        # bootstrap cannot reconstruct at runtime — it doesn't know the base image).
+        # The baked conda env (and thus env_path) is identical across bases, so the
+        # env key is all bootstrap needs.
+        if key not in self.__class__._prebuilt_env_paths:
             raise MetaflowException(
-                "Prebuilt image not registered for step %r %s. "
+                "Prebuilt env not registered for step %r %s. "
                 "--environment=prebuilt does not fall back to standard conda."
                 % (step_name, key_descr)
             )
