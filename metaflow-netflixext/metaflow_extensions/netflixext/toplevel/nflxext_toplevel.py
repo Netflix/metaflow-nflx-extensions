@@ -1,5 +1,11 @@
 from ..nflx_compat import install as _install_nflx_compat
 
+# Installs the nflx→netflixext backward-compat import shim.
+# Limitation: the shim is only active after this toplevel module loads as part
+# of Metaflow's extension bootstrap.  Code that imports metaflow_extensions.nflx.*
+# before `import metaflow` (e.g. standalone scripts, remote bootstrap steps that
+# run before metaflow initializes) will not be redirected and must use the
+# netflixext.* path directly.
 _install_nflx_compat()
 
 try:

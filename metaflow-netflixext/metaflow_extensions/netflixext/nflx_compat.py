@@ -18,6 +18,7 @@ import importlib
 import importlib.machinery
 import importlib.util
 import sys
+import threading
 
 _NFLX_PREFIX = "metaflow_extensions.nflx."
 _NETFLIXEXT_PREFIX = "metaflow_extensions.netflixext."
@@ -32,30 +33,34 @@ class _NflxCompatLoader:
 
     def exec_module(self, module):
         real = importlib.import_module(self._real_name)
-        module.__dict__.update(real.__dict__)
-        if hasattr(real, "__path__"):
-            module.__path__ = real.__path__
+        # Replace the placeholder with the real module so that identity is
+        # preserved: sys.modules[alias] is sys.modules[real].  CPython re-reads
+        # sys.modules[spec.name] after exec_module returns, so this is the
+        # standard pattern used by six.moves and pkg_resources.
+        sys.modules[module.__name__] = real
 
 
 class _NflxCompatFinder:
     def __init__(self):
-        self._checking = False
+        self._local = threading.local()
 
     def find_spec(self, fullname, path, target=None):
-        if self._checking or not fullname.startswith(_NFLX_PREFIX):
+        if getattr(self._local, "checking", False) or not fullname.startswith(
+            _NFLX_PREFIX
+        ):
             return None
 
         # Check if the nflx module exists on disk via other finders.
         # Only redirect when the nflx path would genuinely fail — this
         # avoids hijacking intermediate packages (like nflx.plugins) that
         # nflx-metaflow legitimately owns.
-        self._checking = True
+        self._local.checking = True
         try:
             nflx_spec = importlib.util.find_spec(fullname)
         except (ValueError, ModuleNotFoundError):
             nflx_spec = None
         finally:
-            self._checking = False
+            self._local.checking = False
 
         if nflx_spec is not None:
             return None
