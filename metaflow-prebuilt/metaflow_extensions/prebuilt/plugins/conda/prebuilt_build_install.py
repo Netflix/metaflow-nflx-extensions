@@ -308,7 +308,9 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
     build_env["PATH"] = (
         os.path.dirname(python_bin) + os.pathsep + build_env.get("PATH", "")
     )
-    overlay_state = {"dir": None}  # lazily created on first need
+    # dir: overlay path (lazily created); staged: base-name -> the spec last staged,
+    # used to warn when a build dep is re-staged at a different version (below).
+    overlay_state = {"dir": None, "staged": {}}
 
     def _ensure_overlay():
         if overlay_state["dir"] is None:
@@ -321,6 +323,23 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
     def _overlay_install(pkgs, what):
         if not pkgs:
             return
+        # The overlay is SHARED across an image's deferred sdists. If two sdists
+        # declare the same build dep at different versions, the last writer wins —
+        # an earlier sdist may have built against the now-replaced version. We can't
+        # isolate per-sdist (that fights --no-build-isolation), but we surface it
+        # with a warning instead of a silent miscompilation.
+        staged = overlay_state["staged"]
+        for pkg in pkgs:
+            base = re.split(r"[<>=!~ \[;]", pkg.strip(), 1)[0].strip().lower()
+            prev = staged.get(base)
+            if prev is not None and prev != pkg.strip():
+                _echo(
+                    " WARNING: Pass B build dep %r re-staged as %r in the shared "
+                    "overlay (was %r); an earlier sdist may have built against the "
+                    "previous version." % (base, pkg.strip(), prev),
+                    timestamp=False,
+                )
+            staged[base] = pkg.strip()
         overlay = _ensure_overlay()
         _echo(" (staging %s) ..." % what, timestamp=False, nl=False)
         if os.path.isfile(uv_bin):
@@ -349,6 +368,8 @@ def _run_deferred_sdist_builds(env_dir, resolved_env):  # type: ignore[no-untype
             ] + list(pkgs)
         r = subprocess.run(args, capture_output=True, text=True)
         if r.returncode != 0:
+            # Remove the partial overlay now; the outer finally also rmtrees it
+            # (ignore_errors=True), so this double-remove is intentional and safe.
             shutil.rmtree(overlay, ignore_errors=True)
             raise CondaException(
                 "Pass B: could not stage %s into the build overlay.\nstderr: %s"

@@ -50,6 +50,7 @@ setup(
     package_data={
         "metaflow_extensions.netflixext.plugins.conda.resources": ["*.png", "*.svg"]
     },
+    # Mirrors the internal minimum (support for <3.10 was dropped internally).
     python_requires=">=3.10",
     install_requires=["metaflow>=2.16.0"],
     extras_require={

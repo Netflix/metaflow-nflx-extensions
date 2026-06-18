@@ -504,6 +504,11 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         # that wheel below, so they must NOT be deferred (the container would
         # otherwise rebuild from source, and only_binary=True would drop the
         # source archive in Pass A). Non-web and conda packages are excluded here.
+        # "url" is the GUARANTEED build source — the is_downloadable_url() filter
+        # below ensures it is a real, fetchable URL. "filename" is only a best-effort
+        # hint: Pass B prefers the hash-verified local artifact matched by filename
+        # and falls back to "url" when there's no match (so a None/empty filename is
+        # harmless). Pass B raises only if BOTH are unusable.
         deferred_sdists: List[Any] = [
             {
                 "name": p.package_name,
@@ -720,6 +725,9 @@ def _gather_embedded_wheels(
                     wheel_fname = wheel_basename[: -len(cache_whl.format)]
                     fetch_spec = PypiPackageSpecification(
                         wheel_fname,
+                        # p.url is the SOURCE url and is only a placeholder: with
+                        # is_real_url=False + add_cached_version(".whl") below,
+                        # lazy_fetch reads the cached wheel and never fetches p.url.
                         p.url,
                         is_real_url=False,  # built wheel: cache-only, never web
                         url_format=".whl",
