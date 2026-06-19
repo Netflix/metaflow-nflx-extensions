@@ -1978,26 +1978,50 @@ class Conda(object):
                         if err:
                             raise err
         else:
-            self._bins = {
-                self._conda_executable_type: which(self._conda_executable_type),
-                "conda-lock": which("conda-lock"),
-                # We can install micromamba in $HOME/.local/bin so we look there too
-                "micromamba": which(
-                    "micromamba",
-                    path=":".join(
-                        [
-                            os.environ.get("PATH", ""),
-                            "%s/.local/bin" % os.environ.get("HOME", ""),
-                        ]
-                    ),
+            # Check whether _install_remote_conda() already placed a micromamba binary
+            # in a well-known location (../conda_env/ or ./conda_env/).  This happens
+            # when Runner is invoked inside a step that bootstrapped remotely — the
+            # binary is on disk but not on PATH, so which() won't find it.
+            _parent = os.path.dirname(os.getcwd())
+            _remote_bin = next(
+                (
+                    p
+                    for p in [
+                        os.path.join(_parent, "conda_env", "micromamba"),
+                        os.path.join(os.getcwd(), "conda_env", "micromamba"),
+                    ]
+                    if os.path.isfile(p) and os.access(p, os.X_OK)
                 ),
-                "cph": which("cph"),
-                "pip": which("pip"),
-            }
-            self._bins["conda"] = self._bins[self._conda_executable_type]
-            err = self._validate_conda_installation()
-            if err:
-                raise err
+                None,
+            )
+            if _remote_bin is not None:
+                self._conda_executable_type = "micromamba"
+                self.is_non_conda_exec = True
+                self._bins = {
+                    "conda": _remote_bin,
+                    "micromamba": _remote_bin,
+                }
+            else:
+                self._bins = {
+                    self._conda_executable_type: which(self._conda_executable_type),
+                    "conda-lock": which("conda-lock"),
+                    # We can install micromamba in $HOME/.local/bin so we look there too
+                    "micromamba": which(
+                        "micromamba",
+                        path=":".join(
+                            [
+                                os.environ.get("PATH", ""),
+                                "%s/.local/bin" % os.environ.get("HOME", ""),
+                            ]
+                        ),
+                    ),
+                    "cph": which("cph"),
+                    "pip": which("pip"),
+                }
+                self._bins["conda"] = self._bins[self._conda_executable_type]
+                err = self._validate_conda_installation()
+                if err:
+                    raise err
 
     def _ensure_micromamba(self) -> str:
         args = [
