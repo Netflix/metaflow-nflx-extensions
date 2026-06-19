@@ -66,7 +66,17 @@ def build_pypi_packages(
     architecture: str,
     supported_tags: List[Tag],
     pypi_sources: List[str],
+    defer_keys: Optional[Set[str]] = None,
 ) -> Tuple[List[PackageSpecification], Optional[List[ResolvedEnvironment]]]:
+    # defer_keys: keys in to_build_pkg_info whose wheel COMPILE is deferred to a
+    # downstream builder (e.g. the prebuilt image build container). We still
+    # probe the cache for them below -- so an already-built wheel is reused
+    # (attached as a cached version, later embedded) instead of needlessly
+    # rebuilt -- but we skip the expensive local build for any that have no
+    # cached wheel; those keep their sdist spec for the downstream builder.
+    # Default (None): nothing is deferred and behavior is unchanged.
+    defer_keys = defer_keys or set()
+
     # We check in the cache -- we don't actually have the filename or
     # hash so we check things starting with the partial URL.
     # The URL in cache will be:
@@ -159,11 +169,17 @@ def build_pypi_packages(
             PypiCachePackage(os.path.join(cache_path, cache_filename_with_ext)),
         )
 
-    # Determine what we need to build -- all non wheels
+    # Determine what we need to build -- all non wheels, minus any whose build
+    # is deferred to a downstream builder. A deferred key that the cache probe
+    # above resolved to a wheel already has ".whl" in have_formats (so it is
+    # excluded here regardless); a deferred key WITHOUT a cached wheel is
+    # excluded by `defer_keys` and keeps its sdist spec in the returned list.
     # We try to build even across architecture but will check if we can use it across
     # architectures after (ie: if the package is noarch).
     keys_to_build = [
-        k for k, v in to_build_pkg_info.items() if ".whl" not in v.have_formats
+        k
+        for k, v in to_build_pkg_info.items()
+        if ".whl" not in v.have_formats and k not in defer_keys
     ]
 
     if not keys_to_build:

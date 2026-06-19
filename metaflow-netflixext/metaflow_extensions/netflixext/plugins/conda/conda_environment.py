@@ -96,12 +96,21 @@ class CondaEnvironment(MetaflowEnvironment):
                 if e.TYPE == DEFAULT_ENVIRONMENT
             ][0](self._flow)
 
+    def _make_envs_resolver(self) -> "EnvsResolver":
+        """Factory for the EnvsResolver used during init_environment.
+
+        Subclasses may override to construct a resolver with non-default
+        options (e.g. ``defer_pypi_sdist_build=True``) without duplicating
+        the full init_environment body.
+        """
+        return EnvsResolver(cast(Conda, self.conda))
+
     def init_environment(self, echo: Callable[..., None]):
         # Print a message for now
         echo("Bootstrapping Conda environment... (this could take a few minutes)")
 
         self.conda = cast(Conda, self.conda)
-        resolver = EnvsResolver(self.conda)
+        resolver = self._make_envs_resolver()
 
         for step in self._flow:
             # Figure out the environments that we need to resolve for all steps

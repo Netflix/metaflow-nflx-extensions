@@ -5,7 +5,7 @@ import shutil
 import tempfile
 
 from itertools import chain, product
-from typing import Dict, List, Optional, Tuple, cast
+from typing import Dict, List, Optional, Set, Tuple, cast
 
 from urllib.parse import unquote, urlparse
 
@@ -44,6 +44,13 @@ _FAKE_WHEEL = "_fake-1.0-py3-none-any.whl"
 class PipResolver(Resolver):
     TYPES = ["pip"]
     REQUIRES_BUILDER_ENV = True
+
+    def __init__(self, conda):  # type: ignore[override]
+        super().__init__(conda)
+        # Set to True by EnvsResolver when the caller wants sdist *builds*
+        # deferred (e.g. a container image builder will compile them on the
+        # target arch). Defaults False -> zero impact on existing callers.
+        self.defer_pypi_sdist_build = False
 
     # @retry_exp_backoff(
     #    (CondaException, OSError),
@@ -209,6 +216,13 @@ class PipResolver(Resolver):
                     platforms.append(tag.platform)
                 implementations = [x.interpreter for x in supported_tags]
                 extra_args = [
+                    # NOTE: cross-arch resolution forces binary-only because
+                    # pip's --platform requires --only-binary=:all:, so a
+                    # *deferred* sdist-only dep still can't be resolved cross-arch
+                    # (e.g. macOS/arm64 -> linux-64). Same-arch deferral (the
+                    # common workbench->Titus linux-64 path) is unaffected.
+                    # Cross-arch sdist deferral would need arch-independent sdist
+                    # metadata extraction — tracked as a follow-up.
                     "--only-binary=:all:",
                     # Seems to overly constrain stuff
                     # *(
@@ -548,6 +562,15 @@ class PipResolver(Resolver):
                             parse_result.url,
                             is_real_url=is_real_url,
                             url_format=parse_result.url_format,
+                            # Carry the resolved archive hash (as the wheel branch
+                            # below does) so a deferred sdist contributes its
+                            # sha256 to the env full_id and the build container can
+                            # verify the bytes it builds.
+                            hashes=(
+                                {parse_result.url_format: parse_result.hash}
+                                if parse_result.hash
+                                else None
+                            ),
                         )
                         to_build_pkg_info[cache_base_url] = PackageToBuild(
                             dl_info["url"],
@@ -576,6 +599,71 @@ class PipResolver(Resolver):
                                 ),
                             )
                         )
+            # Generic sdist-build deferral. When defer_pypi_sdist_build=True a
+            # downstream builder (e.g. the prebuilt image build container) will
+            # COMPILE these sdists itself, so we must not build them here. pip
+            # has already resolved the full dependency closure (transitive deps
+            # are separate resolved packages), so deferring only skips the wheel
+            # COMPILE -- the sdist spec stays in the manifest either way.
+            #
+            # We collect the deferred keys and hand them to build_pypi_packages
+            # via `defer_keys` so its cache probe STILL runs for them: an
+            # already-built wheel is reused (attached as a cached version, later
+            # embedded) instead of needlessly rebuilt, and only sdists with no
+            # cached wheel keep their source spec for the downstream builder.
+            # build_pypi_packages returns the spec for every entry, so we no
+            # longer append/remove them by hand here.
+            #
+            # Default (defer_pypi_sdist_build=False): defer_keys stays empty and
+            # behavior is byte-for-byte identical to before.
+            defer_keys = set()  # type: Set[str]
+            if self.defer_pypi_sdist_build and to_build_pkg_info:
+                for _k, _pkg in to_build_pkg_info.items():
+                    _spec = _pkg.spec
+                    if _spec is None:
+                        continue
+                    _spec = cast(PypiPackageSpecification, _spec)
+                    # Only defer real-URL sdists; local-file sdists have no
+                    # stable URL to fetch in the container, so leave them to
+                    # build_pypi_packages as before.
+                    if not _spec.is_downloadable_url():
+                        continue
+                    # Only defer sdists that carry a content hash. A deferred
+                    # sdist's source spec BECOMES the resolved-env identity (it is
+                    # no longer replaced by a locally built wheel), so without a
+                    # hash the env full_id would depend on `filename#None` and
+                    # different bytes served at the same URL could silently reuse
+                    # the same prebuilt image. Leave hashless sdists (e.g. a direct
+                    # archive URL with no #sha256) to build_pypi_packages, which
+                    # builds the wheel and derives a stable content-hash identity
+                    # (the pre-defer behavior). With a hash present the full_id is
+                    # content-pinned for that URL.
+                    if _spec.pkg_hash(_spec.url_format) is None:
+                        debug.conda_exec(
+                            "Not deferring hashless sdist %s==%s (%s); building it "
+                            "for a stable content-hash identity"
+                            % (_spec.package_name, _spec.package_version, _pkg.url)
+                        )
+                        continue
+                    defer_keys.add(_k)
+                    debug.conda_exec(
+                        "Deferring sdist build %s==%s (%s)"
+                        % (_spec.package_name, _spec.package_version, _pkg.url)
+                    )
+
+            # Without a caching datastore we cannot probe for a pre-built wheel,
+            # so fall back to the historical defer path: keep the sdist spec,
+            # drop it from to_build_pkg_info, build nothing. (In practice the
+            # prebuilt resolve always has a remote datastore, so this only
+            # guards the storage-less edge and keeps its behavior unchanged.)
+            if defer_keys and not self._conda.storage:
+                for _k in defer_keys:
+                    packages.append(
+                        cast(PypiPackageSpecification, to_build_pkg_info[_k].spec)
+                    )
+                    del to_build_pkg_info[_k]
+                defer_keys = set()
+
             if to_build_pkg_info:
                 if not self._conda.storage:
                     raise CondaException(
@@ -594,6 +682,7 @@ class PipResolver(Resolver):
                     architecture,
                     supported_tags,
                     sources.get("pypi", []),
+                    defer_keys=defer_keys,
                 )
 
                 packages.extend(built_pypi_packages)

@@ -446,6 +446,7 @@ class Conda(object):
         step_name: str,
         env: ResolvedEnvironment,
         do_symlink: bool = False,
+        only_binary: bool = False,
     ) -> str:
         """
         Creates a local instance of the resolved environment
@@ -472,7 +473,9 @@ class Conda(object):
             to_return = None
             s = time.time()
             with _system_monitor.measure("metaflow.conda.create_for_step"):
-                to_return = self.create_for_name(env_name, env, do_symlink)
+                to_return = self.create_for_name(
+                    env_name, env, do_symlink, only_binary=only_binary
+                )
 
             _system_logger.log_event(
                 level="info",
@@ -517,6 +520,7 @@ class Conda(object):
         env: ResolvedEnvironment,
         do_symlink: bool = False,
         quiet: bool = False,
+        only_binary: bool = False,
     ) -> str:
         """
         Creates a local instance of the resolved environment
@@ -558,7 +562,7 @@ class Conda(object):
                 if quiet:
                     techo = self.echo
                     self.echo = self._no_echo
-                env_path = self._create(env, name)
+                env_path = self._create(env, name, only_binary=only_binary)
                 if quiet:
                     self.echo = techo
 
@@ -1667,21 +1671,32 @@ class Conda(object):
                 os.makedirs(os.path.join(dest_dir, pkg_spec.TYPE), exist_ok=True)
             else:
                 dl_local_path = os.path.join(dest_dir, "%s{format}" % pkg_spec.filename)
-            # Check for local files first
-            if self._mode != "remote":
-                for f in pkg_spec.allowed_formats():
-                    local_path = pkg_spec.local_file(f)
-                    if local_path:
-                        src = ("local", local_path)
-                        if most_preferred_source is None:
-                            most_preferred_source = src
-                            most_preferred_format = f
-                        available_formats[f] = src
+            # Check for local files first. We honor an explicitly-set local file
+            # even in mode="remote": normal remote tasks have search_dirs=[] and
+            # set no local files (so this is a no-op there), but the prebuilt
+            # build container runs Conda(mode="remote") and registers embedded
+            # wheels (for non-web-downloadable git/local packages) as local files
+            # via add_local_file — that already-built wheel is the only source.
+            for f in pkg_spec.allowed_formats():
+                local_path = pkg_spec.local_file(f)
+                if local_path:
+                    src = ("local", local_path)
+                    if most_preferred_source is None:
+                        most_preferred_source = src
+                        most_preferred_format = f
+                    available_formats[f] = src
 
-            # Check for cache paths next
+            # Check for cache paths next.
+            # Storage guard: without a datastore (e.g. datastore_type=local in
+            # the prebuilt build container, where self._storage is None), the
+            # cache_downloads branch below is a no-op — but marking the source
+            # as "cache" would still win the most_preferred_source race, leaving
+            # the package neither cache-fetched nor web-fetched, so the install
+            # later errors out finding no local file. Only treat the cache as a
+            # preferred source when we actually have storage to fetch it from.
             for f in pkg_spec.allowed_formats():
                 cache_info = pkg_spec.cached_version(f)
-                if cache_info and cache_info.url:
+                if cache_info and cache_info.url and self._storage:
                     src = ("cache", dl_local_path.format(format=f))
                     if most_preferred_source is None:
                         most_preferred_source = src
@@ -2100,7 +2115,14 @@ class Conda(object):
             )
 
     def _ensure_remote_conda(self):
-        if CONDA_REMOTE_INSTALLER is not None:
+        # Truthy (not `is not None`): an EMPTY CONDA_REMOTE_INSTALLER means "no
+        # datastore installer configured" and must take the self-install path
+        # below, not _install_remote_conda (which requires a datastore _storage
+        # to fetch the installer). The prebuilt build container deliberately sets
+        # METAFLOW_CONDA_REMOTE_INSTALLER="" to disable the datastore installer
+        # and runs with _storage=None, so an `is not None` check would wrongly
+        # route it to _install_remote_conda and fail the image build.
+        if CONDA_REMOTE_INSTALLER:
             self._install_remote_conda()
         else:
             # If we don't have a REMOTE_INSTALLER, we check if we need to install one
@@ -2495,7 +2517,9 @@ class Conda(object):
 
         return self._cached_info
 
-    def _create(self, env: ResolvedEnvironment, env_name: str) -> str:
+    def _create(
+        self, env: ResolvedEnvironment, env_name: str, only_binary: bool = False
+    ) -> str:
         # We first check to see if the environment exists -- if it does, we skip it
         env_dir = os.path.join(self.root_env_dir, env_name)
 
@@ -2592,7 +2616,11 @@ class Conda(object):
                 if not found_local_dir:
                     for f in CONDA_FORMATS:
                         cache_info = p.cached_version(f)
-                        if cache_info:
+                        # Storage guard (see lazy_fetch_packages): with no
+                        # datastore (self._storage is None, e.g. the prebuilt
+                        # build container) fall through to the package's web URL
+                        # rather than a cache URL we cannot fetch / reconstruct.
+                        if cache_info and cache_info.url and self._storage:
                             debug.conda_exec(
                                 "For %s, using cached package from '%s'"
                                 % (p.filename, cache_info.url)
@@ -2685,6 +2713,14 @@ class Conda(object):
                     else "conda"
                 ),
             )
+
+        # Binary-only install (analogous to `uv/pip install --only-binary=:all:`):
+        # when only_binary=True, install only pre-built wheels and leave any
+        # sdists for a separate caller to build. Default only_binary=False
+        # leaves pypi_paths untouched, so the block below is byte-for-byte
+        # unchanged for every existing caller.
+        if only_binary and pypi_paths:
+            pypi_paths = [p for p in pypi_paths if p.rstrip("\n").endswith(".whl")]
 
         if pypi_paths:
             self.echo(" (pypi packages) ...", timestamp=False, nl=False)

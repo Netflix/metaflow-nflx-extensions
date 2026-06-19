@@ -69,3 +69,24 @@ def test_returns_false_when_docker_not_found():
     svc = BuildxBuildService()
     with patch("subprocess.run", side_effect=FileNotFoundError()):
         assert svc.build_and_push("FROM scratch", {}, "tag", {}, _echo) is False
+
+
+def test_build_and_push_adds_platform_when_set():
+    svc = BuildxBuildService()
+    with patch("subprocess.run", return_value=_ok()) as mock_run:
+        svc.build_and_push(
+            "FROM scratch", {}, "tag", {}, _echo, target_platform="linux/arm64"
+        )
+    cmd = mock_run.call_args.args[0]
+    assert "--platform" in cmd
+    assert "linux/arm64" in cmd
+    # --platform value immediately follows the flag
+    assert cmd[cmd.index("--platform") + 1] == "linux/arm64"
+
+
+def test_build_and_push_no_platform_by_default():
+    svc = BuildxBuildService()
+    with patch("subprocess.run", return_value=_ok()) as mock_run:
+        svc.build_and_push("FROM scratch", {}, "tag", {}, _echo)
+    cmd = mock_run.call_args.args[0]
+    assert "--platform" not in cmd

@@ -107,8 +107,11 @@ from metaflow_extensions.prebuilt.plugins.conda.build_service import DockerBuild
 
 class MyBuildService(DockerBuildService):
     def build_and_push(self, dockerfile, context_files, image_tag,
-                       push_credentials, echo) -> bool:
-        # build and push; return True on success, False on failure
+                       push_credentials, echo, target_platform=None) -> bool:
+        # build and push; return True on success, False on failure.
+        # target_platform (e.g. "linux/amd64") is the resolved step's arch for
+        # cross-arch builds; None => builder default. Local builders should honor
+        # it; remote builders with a fixed build arch may ignore it.
         ...
 ```
 

@@ -63,7 +63,12 @@ class PackageRequirementStepDecorator(StepDecorator):
         flow_datastore: FlowDataStore,
         logger: Callable[..., None],
     ):
-        if environment.TYPE != "conda":
+        # Accept any conda-BASED environment (isinstance, not TYPE == "conda"):
+        # subclasses such as PrebuiltCondaEnvironment (--environment=prebuilt) are
+        # conda environments that add image baking and must be usable with the
+        # @conda/@pypi step decorators. A strict `TYPE != "conda"` check wrongly
+        # rejects them. Non-conda environments (e.g. nflx) still fail correctly.
+        if not isinstance(environment, CondaEnvironment):
             raise InvalidEnvironmentException(
                 "The *@%s* decorator requires " "--environment=conda" % self.name
             )
@@ -416,7 +421,9 @@ class PylockTomlInternalDecorator(StepRequirementMixin, StepDecorator):
         flow_datastore: FlowDataStore,
         logger: Callable[..., None],
     ):
-        if environment.TYPE != "conda":
+        # Accept conda-based environments incl. subclasses (e.g. prebuilt); see
+        # the matching widening in CondaRequirementStepDecorator.step_init.
+        if not isinstance(environment, CondaEnvironment):
             raise InvalidEnvironmentException(
                 "Decorators specifying flow or step dependency environments require --environment=conda",
             )

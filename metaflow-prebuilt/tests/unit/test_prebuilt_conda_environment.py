@@ -11,6 +11,10 @@ from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment impor
     PrebuiltCondaEnvironment,
     _image_cache_key,
     _named_state_key,
+    _env_cache_key,
+    _image_variant,
+    _image_dedup_key,
+    _tag_with_variant,
 )
 
 
@@ -99,11 +103,12 @@ class TestStateFilePersistLoad:
 
 class TestBuildInstallModule:
     def test_default_build_install_module(self):
-        # The package couples to the Netflix conda stack, which ships the real
-        # prebuilt_build_install implementation.
+        # This package ships the real prebuilt_build_install (it imports Conda
+        # from metaflow-netflixext at runtime), so the container runs it from
+        # the prebuilt namespace.
         assert (
             PrebuiltCondaEnvironment._BUILD_INSTALL_MODULE
-            == "metaflow_extensions.nflx.plugins.conda"
+            == "metaflow_extensions.prebuilt.plugins.conda"
         )
 
     def test_subclass_can_override_build_install_module(self):
@@ -116,7 +121,7 @@ class TestBuildInstallModule:
         # Base class is unchanged
         assert (
             PrebuiltCondaEnvironment._BUILD_INSTALL_MODULE
-            == "metaflow_extensions.nflx.plugins.conda"
+            == "metaflow_extensions.prebuilt.plugins.conda"
         )
 
 
@@ -199,3 +204,168 @@ class TestBootstrapCommands:
         activate_cmd = next(c for c in cmds if "prebuilt_runtime_activate" in c)
         assert "metaflow_extensions.prebuilt" in activate_cmd
         assert "metaflow_extensions.nflx" not in activate_cmd
+
+
+def test_gather_embedded_wheels_prefers_cached_wheel_over_local_sdist():
+    """Codex r13 regression: a source-format package that carries a competing
+    local sdist AND has a cached built wheel must embed the WHEEL — not be
+    defeated by lazy_fetch preferring the local source archive (it only
+    materializes a package's single most-preferred source, and a local file
+    outranks a cached version). _gather must fetch a wheel-only spec, not the
+    package itself."""
+    from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment import (
+        _gather_embedded_wheels,
+    )
+
+    try:
+        from metaflow_extensions.netflixext.plugins.conda.env_descr import (
+            PypiCachePackage,
+            PypiPackageSpecification,
+        )
+    except ImportError:
+        pytest.skip("requires metaflow-netflixext")
+
+    src_url = "https://pypi.example/foo-1.0.tar.gz"
+    whl_hash = "0" * 64
+    # Cache URL layout: .../<filename.whl>/<hash>/<filename.whl>
+    cache_url = (
+        "pypi/example/foo-1.0-py3-none-any.whl/%s/foo-1.0-py3-none-any.whl" % whl_hash
+    )
+
+    with tempfile.TemporaryDirectory() as d:
+        cand = PypiPackageSpecification("foo-1.0", src_url, url_format=".tar.gz")
+        # The competing local source archive that would wrongly win the race.
+        sdist_path = os.path.join(d, "foo-1.0.tar.gz")
+        with open(sdist_path, "wb") as f:
+            f.write(b"sdist-bytes")
+        cand.add_local_file(".tar.gz", sdist_path)
+        # A built wheel for it lives in the conda cache.
+        cand.add_cached_version(".whl", PypiCachePackage(cache_url))
+
+        captured = {}
+
+        def fake_lazy_fetch(pkgs, auth, dest, **kwargs):
+            spec = list(pkgs)[0]
+            captured["spec"] = spec
+            # Faithfully reproduce lazy_fetch: it materializes only the single
+            # most-preferred source, and a LOCAL file outranks a cached version.
+            # So if a local source archive is already present, the cached wheel
+            # is NOT fetched (this is exactly the bug). Fetching the package
+            # itself (old behavior) thus leaves no .whl; fetching a wheel-only
+            # spec (the fix) materializes it.
+            if any(spec.local_file(f) for f in spec.allowed_formats()):
+                return
+            if spec.cached_version(".whl") is not None:
+                os.makedirs(os.path.join(dest, "pypi"), exist_ok=True)
+                whl_path = os.path.join(dest, "pypi", "foo-1.0-py3-none-any.whl")
+                with open(whl_path, "wb") as f:
+                    f.write(b"wheel-bytes")
+                spec.add_local_file(".whl", whl_path, pkg_hash=whl_hash)
+
+        conda = MagicMock()
+        conda.lazy_fetch_packages.side_effect = fake_lazy_fetch
+        resolved_env = MagicMock()
+        resolved_env.packages = [cand]
+
+        records, files = _gather_embedded_wheels(
+            conda, resolved_env, lambda *a, **k: None
+        )
+
+    # It embedded the WHEEL (not the sdist) ...
+    assert len(records) == 1
+    assert records[0]["wheel_file"] == "foo-1.0-py3-none-any.whl"
+    assert records[0]["url_format"] == ".whl"
+    assert any(k.endswith("foo-1.0-py3-none-any.whl") for k in files)
+    assert list(files.values()) == [b"wheel-bytes"]
+    # ... by fetching a wheel-only spec, NOT the source candidate carrying the
+    # local sdist (which is what previously defeated this).
+    assert captured["spec"] is not cand
+    assert captured["spec"].url_format == ".whl"
+    assert captured["spec"].local_file(".tar.gz") is None
+
+
+class TestImageIdentity:
+    """Regression for the image-identity fix: two steps that share an env
+    (same req_id/full_id) but differ by base image (CPU vs GPU) or arch must
+    build and TAG distinct images, while the runtime env lookup stays
+    base-independent so bootstrap (which can't know the base) still resolves it."""
+
+    def test_variant_differs_by_base_image(self):
+        arch = "linux-64"
+        cpu = _image_variant("registry.example/big_data:stable", arch)
+        gpu = _image_variant("registry.example/big_data_gpu:stable", arch)
+        assert cpu != gpu
+
+    def test_variant_differs_by_arch(self):
+        base = "registry.example/big_data:stable"
+        assert _image_variant(base, "linux-64") != _image_variant(base, "linux-aarch64")
+
+    def test_variant_is_stable(self):
+        assert _image_variant("b:1", "linux-64") == _image_variant("b:1", "linux-64")
+
+    def test_dedup_key_separates_cpu_and_gpu_for_same_env(self):
+        env_id = _make_env_id()
+        env_key = _env_cache_key(env_id)
+        arch = getattr(env_id, "arch", "linux-64")
+        cpu = _image_dedup_key(env_key, _image_variant("cpu_base", arch))
+        gpu = _image_dedup_key(env_key, _image_variant("gpu_base", arch))
+        # The bug: keying on env alone collided (one image for both). Now distinct.
+        assert cpu != gpu
+        # ...but both still carry the shared env identity.
+        assert env_key in cpu and env_key in gpu
+
+    def test_tag_carries_variant_and_distinguishes_base(self):
+        base_tag = "metaflow/prebuilt:v29-abc_def"
+        cpu = _tag_with_variant(base_tag, _image_variant("cpu_base", "linux-64"))
+        gpu = _tag_with_variant(base_tag, _image_variant("gpu_base", "linux-64"))
+        assert cpu != gpu  # distinct tags -> GPU build can't overwrite the CPU image
+        assert cpu.startswith(base_tag + "-")
+        appended = cpu[len(base_tag) + 1 :]
+        assert appended and all(c.isalnum() or c in "_.-" for c in appended)
+
+    def test_env_cache_key_is_base_independent(self):
+        env_id = _make_env_id()
+        assert _env_cache_key(env_id) == "%s_%s" % (env_id.req_id, env_id.full_id)
+
+    def test_bootstrap_resolves_env_when_images_keyed_by_variant(
+        self, tmp_path, monkeypatch
+    ):
+        # Mirror the real build: _prebuilt_images keyed by env+variant (image
+        # identity), _prebuilt_env_paths keyed by env (env identity). Bootstrap
+        # cannot know the variant at runtime, so it must resolve via the env key.
+        # Under the OLD code (validating _prebuilt_images by the env key) this
+        # raised; it must now succeed.
+        env_id = _make_env_id()
+        env_key = _env_cache_key(env_id)
+        image_key = _image_dedup_key(
+            env_key, _image_variant("gpu_base", getattr(env_id, "arch", "linux-64"))
+        )
+        env_path = "/opt/metaflow/conda-root/envs/metaflow_abc_def"
+        monkeypatch.setenv("METAFLOW_TEMPDIR", str(tmp_path))
+        PrebuiltCondaEnvironment._prebuilt_images = {image_key: "tag-gpu-variant"}
+        PrebuiltCondaEnvironment._prebuilt_env_paths = {env_key: env_path}
+        PrebuiltCondaEnvironment._persist_prebuilt_state()
+        PrebuiltCondaEnvironment._prebuilt_images = {}
+        PrebuiltCondaEnvironment._prebuilt_env_paths = {}
+
+        env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
+        env._flow = MagicMock()
+        env.conda = MagicMock()
+        env.get_env_id_noconda = MagicMock(return_value=env_id)
+
+        cmds = env.bootstrap_commands("start", "local")
+        assert any("prebuilt_runtime_activate" in c for c in cmds)
+        assert any(env_path in c for c in cmds)
+
+
+def test_docker_platform_for_arch():
+    from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment import (
+        _docker_platform_for_arch,
+    )
+
+    assert _docker_platform_for_arch("linux-64") == "linux/amd64"
+    assert _docker_platform_for_arch("linux-aarch64") == "linux/arm64"
+    # non-linux / unknown / empty -> None (builder default, no --platform forced)
+    assert _docker_platform_for_arch("osx-arm64") is None
+    assert _docker_platform_for_arch("") is None
+    assert _docker_platform_for_arch(None) is None
