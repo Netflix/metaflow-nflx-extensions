@@ -40,7 +40,7 @@ setup(
     # code has no 3.10-only construct — _parse_build_system_requires uses a
     # tomllib/tomli/regex fallback chain that works on any version.
     python_requires=">=3.10",
-    install_requires=["metaflow>=2.16.0", "metaflow-netflixext>=1.3.13"],
+    install_requires=["metaflow>=2.16.0", "metaflow-netflixext>=1.3.14"],
     extras_require={
         "ecr": ["boto3"],
         "codebuild": ["boto3"],
