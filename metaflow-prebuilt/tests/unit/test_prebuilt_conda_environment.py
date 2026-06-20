@@ -3,15 +3,18 @@
 import json
 import os
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from metaflow_extensions.prebuilt.plugins.conda import prebuilt_conda_environment
 from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment import (
     PrebuiltCondaEnvironment,
     _image_cache_key,
     _named_state_key,
     _env_cache_key,
+    _step_state_key,
     _image_variant,
     _image_dedup_key,
     _tag_with_variant,
@@ -204,6 +207,109 @@ class TestBootstrapCommands:
         activate_cmd = next(c for c in cmds if "prebuilt_runtime_activate" in c)
         assert "metaflow_extensions.prebuilt" in activate_cmd
         assert "metaflow_extensions.nflx" not in activate_cmd
+
+    def test_bootstrap_commands_resolves_named_alias_string(
+        self, tmp_path, monkeypatch
+    ):
+        alias = "mlp/metaflow/npow/prebuilt_allcases:v1"
+        env_path = "/opt/metaflow/conda-root/envs/named_mlp_alias__1234"
+
+        monkeypatch.setenv("METAFLOW_TEMPDIR", str(tmp_path))
+        PrebuiltCondaEnvironment._prebuilt_env_paths = {
+            _named_state_key(alias): env_path
+        }
+        PrebuiltCondaEnvironment._persist_prebuilt_state()
+        PrebuiltCondaEnvironment._prebuilt_images = {}
+        PrebuiltCondaEnvironment._prebuilt_env_paths = {}
+
+        env = self._make_env()
+        env.get_env_id_noconda = MagicMock(return_value=alias)
+        env.sub_envvars_in_envname = MagicMock(return_value=alias)
+
+        cmds = env.bootstrap_commands("named_dynamic", "local")
+
+        activate_cmd = next(c for c in cmds if "prebuilt_runtime_activate" in c)
+        assert env_path in activate_cmd
+
+    def test_bootstrap_commands_prefers_step_path_for_dynamic_named_env(
+        self, tmp_path, monkeypatch
+    ):
+        """fetch_at_exec named envs may look like EnvIDs at runtime.
+
+        When a static and dynamic @named_env share the same alias, their concrete
+        EnvID is the same but their baked env paths differ. The step-scoped entry
+        preserves the dynamic alias path even if get_env_id_noconda returns the
+        resolved EnvID.
+        """
+        env_id = _make_env_id()
+        env_key = _env_cache_key(env_id)
+        step_key = _step_state_key("named_dynamic")
+        static_path = "/opt/metaflow/conda-root/envs/metaflow_abc_def"
+        dynamic_path = "/opt/metaflow/conda-root/envs/named_mlp_alias__1234"
+
+        monkeypatch.setenv("METAFLOW_TEMPDIR", str(tmp_path))
+        PrebuiltCondaEnvironment._prebuilt_env_paths = {
+            env_key: static_path,
+            step_key: dynamic_path,
+        }
+        PrebuiltCondaEnvironment._persist_prebuilt_state()
+        PrebuiltCondaEnvironment._prebuilt_images = {}
+        PrebuiltCondaEnvironment._prebuilt_env_paths = {}
+
+        env = self._make_env()
+        env.get_env_id_noconda = MagicMock(return_value=env_id)
+
+        cmds = env.bootstrap_commands("named_dynamic", "local")
+
+        activate_cmd = next(c for c in cmds if "prebuilt_runtime_activate" in c)
+        assert dynamic_path in activate_cmd
+        assert static_path not in activate_cmd
+
+    def test_build_prebuilt_images_registers_step_path_for_dynamic_named_env(
+        self, tmp_path, monkeypatch
+    ):
+        alias = "mlp/metaflow/npow/prebuilt_allcases:v1"
+        env_id = _make_env_id()
+        env_path = "/opt/metaflow/conda-root/envs/named_mlp_alias__1234"
+        remote_deco = SimpleNamespace(name="titus", attributes={"image": "base"})
+        step = SimpleNamespace(name="named_dynamic", decorators=[remote_deco])
+
+        monkeypatch.setenv("METAFLOW_TEMPDIR", str(tmp_path))
+        monkeypatch.setenv("METAFLOW_PREBUILT_BASE_IMAGE", "cpu-base")
+        monkeypatch.setattr(
+            prebuilt_conda_environment, "CONDA_REMOTE_COMMANDS", {"titus"}
+        )
+
+        registry = MagicMock()
+        registry.pull_config.return_value = {}
+        env = self._make_env()
+        env._flow = [step]
+        env.get_env_id = MagicMock(return_value=alias)
+        env.sub_envvars_in_envname = MagicMock(return_value=alias)
+        env.conda.env_id_from_alias.return_value = env_id
+
+        with patch.object(
+            prebuilt_conda_environment.ImageRegistry,
+            "from_config",
+            return_value=registry,
+        ), patch.object(
+            PrebuiltCondaEnvironment,
+            "_get_or_build_image",
+            return_value=("pull-tag", env_path),
+        ):
+            env._build_prebuilt_images(lambda *args, **kwargs: None)
+
+        assert (
+            PrebuiltCondaEnvironment._prebuilt_env_paths[_named_state_key(alias)]
+            == env_path
+        )
+        assert (
+            PrebuiltCondaEnvironment._prebuilt_env_paths[
+                _step_state_key("named_dynamic")
+            ]
+            == env_path
+        )
+        assert remote_deco.attributes["image"] == "pull-tag"
 
 
 def test_gather_embedded_wheels_prefers_cached_wheel_over_local_sdist():
