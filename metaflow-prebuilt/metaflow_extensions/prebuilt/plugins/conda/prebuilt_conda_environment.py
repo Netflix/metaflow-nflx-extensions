@@ -115,6 +115,10 @@ def _named_state_key(name: str) -> str:
     return "name:%s" % name
 
 
+def _step_state_key(step_name: str) -> str:
+    return "step:%s" % step_name
+
+
 def _env_cache_key(env_id: EnvID) -> str:
     """Identity of the baked CONDA ENV — keys ``_prebuilt_env_paths`` and the
     runtime bootstrap lookup. Base-image independent ON PURPOSE: the conda env is
@@ -392,6 +396,11 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                 )
             variant = _image_variant(base_image, getattr(env_id, "arch", ""))
             image_key = _image_dedup_key(env_key, variant)
+            env_path = (
+                _env_path_for_named(named_alias)
+                if is_named and named_alias is not None
+                else _env_path_for(env_id)
+            )
 
             if image_key in self.__class__._prebuilt_images:
                 pull_tag = self.__class__._prebuilt_images[image_key]
@@ -413,7 +422,9 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                     )
                 pull_tag, env_path = result
                 self.__class__._prebuilt_images[image_key] = pull_tag
-                self.__class__._prebuilt_env_paths[env_key] = env_path
+
+            self.__class__._prebuilt_env_paths[env_key] = env_path
+            self.__class__._prebuilt_env_paths[_step_state_key(step.name)] = env_path
 
             pull_tag = self.__class__._prebuilt_images[image_key]
             pull_config = registry.pull_config(pull_tag)
@@ -592,23 +603,29 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         else:
             return super().bootstrap_commands(step_name, datastore_type)
 
-        # Validate against _prebuilt_env_paths (keyed by the base-independent env
-        # key), NOT _prebuilt_images (now keyed by env+base/arch variant, which
-        # bootstrap cannot reconstruct at runtime — it doesn't know the base image).
-        # The baked conda env (and thus env_path) is identical across bases, so the
-        # env key is all bootstrap needs.
-        if key not in self.__class__._prebuilt_env_paths:
+        # Validate against _prebuilt_env_paths, NOT _prebuilt_images (now keyed by
+        # env+base/arch variant, which bootstrap cannot reconstruct at runtime).
+        # Prefer the step-scoped path because fetch_at_exec named envs can resolve
+        # to the same EnvID as a static named env while needing a different baked
+        # path in the image.
+        lookup_key = _step_state_key(step_name)
+        lookup_descr = "step=%r" % step_name
+        if lookup_key not in self.__class__._prebuilt_env_paths:
+            lookup_key = key
+            lookup_descr = key_descr
+
+        if lookup_key not in self.__class__._prebuilt_env_paths:
             raise MetaflowException(
                 "Prebuilt env not registered for step %r %s. "
                 "--environment=prebuilt does not fall back to standard conda."
                 % (step_name, key_descr)
             )
 
-        env_path = self.__class__._prebuilt_env_paths.get(key)
+        env_path = self.__class__._prebuilt_env_paths.get(lookup_key)
         if not env_path:
             raise MetaflowException(
                 "Prebuilt image registered for step %r %s but env_path missing."
-                % (step_name, key_descr)
+                % (step_name, lookup_descr)
             )
 
         return [
