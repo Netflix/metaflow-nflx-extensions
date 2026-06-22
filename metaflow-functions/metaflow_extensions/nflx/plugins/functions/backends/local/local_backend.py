@@ -90,29 +90,38 @@ class LocalBackend(AbstractBackend):
         from metaflow_extensions.nflx.plugins.functions.components.runtime import (
             load_component_classes,
             start_components,
-            stop_components,
             before_call_components,
             after_call_components,
         )
 
-        component_classes = load_component_classes(
-            [
-                f"{c.__module__}.{c.__qualname__}"
-                for c in getattr(func_instance, "_runtime_components", [])
-            ]
-        )
-        component_instances = start_components(component_classes)
+        if not hasattr(func_instance, "_component_instances"):
+            component_classes = load_component_classes(
+                [
+                    f"{c.__module__}.{c.__qualname__}"
+                    for c in getattr(func_instance, "_runtime_components", [])
+                ]
+            )
+            func_instance._component_instances = start_components(component_classes)
+
         try:
-            before_call_components(component_instances)
+            before_call_components(func_instance._component_instances)
             result = func_instance.execute(data, parameters, **kwargs)
-            after_call_components(component_instances)
+            after_call_components(func_instance._component_instances)
             return result
         except Exception as e:
             raise MetaflowFunctionUserException(
                 f"Exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
             )
-        finally:
-            stop_components(component_instances)
+
+    @classmethod
+    def close(cls, func_instance, clean_dir: bool = True, **kwargs):
+        instances = getattr(func_instance, "_component_instances", None)
+        if instances:
+            from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+                stop_components,
+            )
+            stop_components(instances)
+            func_instance._component_instances = []
 
     @classmethod
     def apply_binary(cls, func_instance, data: bytes, **kwargs) -> bytes:

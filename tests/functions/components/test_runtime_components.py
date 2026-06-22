@@ -210,7 +210,7 @@ class _MockFunction:
 
 
 def test_local_backend_fires_lifecycle():
-    """LocalBackend.apply() fires the full component lifecycle around execute()."""
+    """start fires once on first apply(); stop fires on close(); before/after wrap each call."""
     from metaflow import FunctionParameters
     from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
         LocalBackend,
@@ -220,19 +220,38 @@ def test_local_backend_fires_lifecycle():
     RecordingComponent._log_path = log
     try:
         func = _MockFunction([RecordingComponent])
+
         result = LocalBackend.apply(func, "hello", params=FunctionParameters())
-
         assert result == "echo:hello"
+        assert _read_events(log) == ["start", "before_call", "after_call"]
 
-        events = _read_events(log)
-        assert events == ["start", "before_call", "after_call", "stop"]
+        # second call: start must NOT fire again
+        LocalBackend.apply(func, "world", params=FunctionParameters())
+        assert _read_events(log) == [
+            "start",
+            "before_call",
+            "after_call",
+            "before_call",
+            "after_call",
+        ]
+
+        # stop fires only on close
+        LocalBackend.close(func)
+        assert _read_events(log) == [
+            "start",
+            "before_call",
+            "after_call",
+            "before_call",
+            "after_call",
+            "stop",
+        ]
     finally:
         RecordingComponent._log_path = ""
         os.unlink(log)
 
 
-def test_local_backend_stop_runs_on_exception():
-    """stop() is called even when execute() raises."""
+def test_local_backend_stop_not_called_on_exception():
+    """stop() is NOT called when execute() raises — consistent with memory/ray backends."""
     from metaflow import FunctionParameters
     from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
         LocalBackend,
@@ -254,9 +273,12 @@ def test_local_backend_stop_runs_on_exception():
             LocalBackend.apply(func, "x", params=FunctionParameters())
 
         events = _read_events(log)
-        # start must have fired, stop must have fired despite the error
         assert "start" in events
-        assert "stop" in events
+        assert "stop" not in events
+
+        # stop fires when explicitly closed
+        LocalBackend.close(func)
+        assert "stop" in _read_events(log)
     finally:
         RecordingComponent._log_path = ""
         os.unlink(log)
