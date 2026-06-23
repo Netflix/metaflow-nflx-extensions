@@ -17,6 +17,7 @@ from ..utils import (
     parse_explicit_path_pypi,
     parse_explicit_url_pypi_no_hash,
     pypi_tags_from_arch,
+    strip_url_credentials,
 )
 
 from metaflow._vendor.packaging.tags import (
@@ -28,17 +29,42 @@ from ..utils import CondaException
 
 from . import Resolver
 from typing import Callable, Dict, Iterable, List, Any, Optional, Tuple
+import hashlib
 import os
 import itertools
 import tempfile
 from itertools import chain
 from urllib.parse import quote as _url_quote
+from urllib.request import urlopen
 
 # Placeholder wheel name used for build entries before the real wheel is known.
 # The `py3-none-any` tags are harmless here: fake specs live only in `to_build`
 # and never pass through `get_best_compatible_packages` (which uses tag-matching).
 # After building, `build_pypi_packages` replaces this with the real wheel filename.
 _FAKE_WHEEL = "_fake-1.0-py3-none-any.whl"
+_HASH_READ_CHUNK_SIZE = 1024 * 1024
+
+
+def _compute_remote_url_sha256(url: str) -> str:
+    safe_url = strip_url_credentials(url)
+    debug.conda_exec("Computing sha256 for hashless pylock wheel %s" % safe_url)
+    digest = hashlib.sha256()
+    try:
+        response = urlopen(url)
+        try:
+            while True:
+                chunk = response.read(_HASH_READ_CHUNK_SIZE)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        finally:
+            response.close()
+    except Exception as e:
+        raise CondaException(
+            "Wheel entry is missing hashes and sha256 could not be computed "
+            "from %s: %s" % (safe_url, e)
+        ) from e
+    return digest.hexdigest()
 
 
 class PylockTomlResolver(Resolver):
@@ -549,13 +575,10 @@ class PylockTomlResolver(Resolver):
                         "Wheel entry is missing a url. "
                         + f"Please escalate this to the Metaflow team. wheel={wheel}"
                     )
-                if not file_hashes:
-                    raise CondaException(
-                        "We encountered a wheel package that's missing an url or a hash. "
-                        + f"Please escalate this to the Metaflow team. wheel={wheel}"
-                    )
-
                 parse_result = parse_explicit_url_pypi_no_hash(url)
+                if not file_hashes:
+                    file_hashes = {"sha256": _compute_remote_url_sha256(url)}
+
                 package = PypiPackageSpecification(
                     filename=parse_result.filename,
                     url=url,

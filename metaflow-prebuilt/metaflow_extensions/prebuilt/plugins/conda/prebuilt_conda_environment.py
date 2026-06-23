@@ -1,4 +1,5 @@
 import atexit
+from contextlib import contextmanager
 import fcntl
 import json
 import logging
@@ -117,6 +118,20 @@ def _named_state_key(name: str) -> str:
 
 def _step_state_key(step_name: str) -> str:
     return "step:%s" % step_name
+
+
+@contextmanager
+def _without_inherited_pythonpath():
+    sentinel = object()
+    original = os.environ.get("PYTHONPATH", sentinel)
+    os.environ.pop("PYTHONPATH", None)
+    try:
+        yield
+    finally:
+        if original is sentinel:
+            os.environ.pop("PYTHONPATH", None)
+        else:
+            os.environ["PYTHONPATH"] = cast(str, original)
 
 
 def _env_cache_key(env_id: EnvID) -> str:
@@ -334,8 +349,9 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             return
         PrebuiltCondaEnvironment._init_in_progress = True
         try:
-            super().init_environment(echo)
-            self._build_prebuilt_images(echo)
+            with _without_inherited_pythonpath():
+                super().init_environment(echo)
+                self._build_prebuilt_images(echo)
         finally:
             PrebuiltCondaEnvironment._init_in_progress = False
 

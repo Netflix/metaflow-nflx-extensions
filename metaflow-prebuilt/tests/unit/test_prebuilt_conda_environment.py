@@ -26,11 +26,13 @@ def reset_class_state():
     """Reset class-level state between tests."""
     PrebuiltCondaEnvironment._prebuilt_images = {}
     PrebuiltCondaEnvironment._prebuilt_env_paths = {}
+    PrebuiltCondaEnvironment._init_in_progress = False
     if PrebuiltCondaEnvironment._STATE_FILE_ENV_VAR in os.environ:
         del os.environ[PrebuiltCondaEnvironment._STATE_FILE_ENV_VAR]
     yield
     PrebuiltCondaEnvironment._prebuilt_images = {}
     PrebuiltCondaEnvironment._prebuilt_env_paths = {}
+    PrebuiltCondaEnvironment._init_in_progress = False
     if PrebuiltCondaEnvironment._STATE_FILE_ENV_VAR in os.environ:
         del os.environ[PrebuiltCondaEnvironment._STATE_FILE_ENV_VAR]
 
@@ -126,6 +128,37 @@ class TestBuildInstallModule:
             PrebuiltCondaEnvironment._BUILD_INSTALL_MODULE
             == "metaflow_extensions.prebuilt.plugins.conda"
         )
+
+
+class TestInitEnvironment:
+    def test_init_environment_clears_pythonpath_during_resolution_and_restores(
+        self, monkeypatch
+    ):
+        env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
+        seen_pythonpath = []
+
+        def fake_base_init_environment(_self, _echo):
+            seen_pythonpath.append(("base", os.environ.get("PYTHONPATH")))
+
+        def fake_build_prebuilt_images(_self, _echo):
+            seen_pythonpath.append(("build", os.environ.get("PYTHONPATH")))
+
+        monkeypatch.setenv("PYTHONPATH", "/bazel/runfiles:/tmp/host-stdlib")
+
+        with patch.object(
+            PrebuiltCondaEnvironment.__bases__[0],
+            "init_environment",
+            new=fake_base_init_environment,
+        ), patch.object(
+            PrebuiltCondaEnvironment,
+            "_build_prebuilt_images",
+            new=fake_build_prebuilt_images,
+        ):
+            env.init_environment(lambda *args, **kwargs: None)
+
+        assert seen_pythonpath == [("base", None), ("build", None)]
+        assert os.environ["PYTHONPATH"] == "/bazel/runfiles:/tmp/host-stdlib"
+        assert PrebuiltCondaEnvironment._init_in_progress is False
 
 
 class TestBootstrapCommands:
