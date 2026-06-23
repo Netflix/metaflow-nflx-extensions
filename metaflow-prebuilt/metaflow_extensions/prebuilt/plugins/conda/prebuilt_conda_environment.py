@@ -455,7 +455,15 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                     "No base image configured. Set METAFLOW_PREBUILT_GPU_BASE_IMAGE "
                     "(for GPU steps) or METAFLOW_PREBUILT_BASE_IMAGE."
                 )
-            variant = _image_variant(base_image, getattr(env_id, "arch", ""))
+            arch = getattr(env_id, "arch", "")
+            base_identity = registry.base_image_identity(base_image, arch)
+            if base_identity != base_image:
+                echo(
+                    "    Base image resolved for prebuilt tag: %s -> %s"
+                    % (base_image, base_identity)
+                )
+            build_base_image = base_identity or base_image
+            variant = _image_variant(build_base_image, arch)
             image_key = _image_dedup_key(env_key, variant)
             env_path = (
                 _env_path_for_named(named_alias)
@@ -471,7 +479,7 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                     step,
                     echo,
                     registry,
-                    base_image=base_image,
+                    base_image=build_base_image,
                     variant=variant,
                     named_alias=named_alias,
                 )
@@ -556,6 +564,14 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             if named_alias is not None
             else _env_path_for(env_id)
         )
+
+        # Regular env-id tags are immutable: if a previous deploy already pushed
+        # this exact env/base/arch image, reuse it instead of rebuilding and
+        # repushing the large conda layer. Named env tags remain mutable and must
+        # rebuild so a new deploy can intentionally move the alias.
+        if named_alias is None and registry.image_exists(push_tag):
+            echo("    Reusing existing prebuilt image: %s" % push_tag)
+            return pull_tag, env_path
 
         try:
             code_package_blob = _build_metaflow_code_package(self, echo)

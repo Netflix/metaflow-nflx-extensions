@@ -38,6 +38,24 @@ class ImageRegistry(ABC):
         """Tag baked into the remote runner spec. Defaults to ``image_tag()``."""
         return self.image_tag(env_id)
 
+    def base_image_identity(self, base_image: str, arch: str) -> str:
+        """Return the base image identity to fold into the prebuilt tag.
+
+        Registries can override this to resolve mutable base tags to a digest,
+        e.g. ``image:stable@sha256:...``. The default uses the configured string,
+        preserving existing behavior for registries without a resolver.
+        """
+        return base_image
+
+    def image_exists(self, push_tag: str) -> bool:
+        """Return whether an immutable push-side image tag already exists.
+
+        Registries can override this to avoid rebuilding hash-addressed images
+        on repeated deploys. The default is conservative: build services are
+        still invoked unless a registry can prove the tag is present.
+        """
+        return False
+
     def image_tag_for_named(self, name: str) -> str:
         """Full mutable tag for a ``@named_env(fetch_at_exec=True)`` env.
 

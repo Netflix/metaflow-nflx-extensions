@@ -361,6 +361,7 @@ class TestBootstrapCommands:
 
         registry = MagicMock()
         registry.pull_config.return_value = {}
+        registry.base_image_identity.side_effect = lambda base, _arch: base
         env = self._make_env()
         env._flow = [step]
         env.get_env_id = MagicMock(return_value=alias)
@@ -389,6 +390,49 @@ class TestBootstrapCommands:
             == env_path
         )
         assert remote_deco.attributes["image"] == "pull-tag"
+
+
+def test_get_or_build_image_reuses_existing_immutable_tag(monkeypatch):
+    env_id = _make_env_id()
+    env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
+    env.conda = MagicMock()
+    env.conda.environment.return_value = SimpleNamespace(env_type="conda")
+
+    registry = MagicMock()
+    registry.push_tag.return_value = "registry.example/prebuilt:v29-abc_def"
+    registry.pull_tag.return_value = "prebuilt:v29-abc_def"
+    registry.image_exists.return_value = True
+
+    monkeypatch.setattr(
+        prebuilt_conda_environment,
+        "_build_metaflow_code_package",
+        MagicMock(side_effect=AssertionError("should not package code")),
+    )
+    build_service = MagicMock()
+    monkeypatch.setattr(
+        prebuilt_conda_environment.DockerBuildService,
+        "from_config",
+        MagicMock(return_value=build_service),
+    )
+
+    result = env._get_or_build_image(
+        env_id,
+        SimpleNamespace(name="start"),
+        lambda *args, **kwargs: None,
+        registry,
+        base_image="cpu-base",
+        variant="linux-64-1234",
+    )
+
+    assert result == (
+        "prebuilt:v29-abc_def-linux-64-1234",
+        "/opt/metaflow/conda-root/envs/metaflow_%s_%s"
+        % (env_id.req_id, env_id.full_id),
+    )
+    registry.image_exists.assert_called_once_with(
+        "registry.example/prebuilt:v29-abc_def-linux-64-1234"
+    )
+    build_service.build_and_push.assert_not_called()
 
 
 def test_gather_embedded_wheels_prefers_cached_wheel_over_local_sdist():
