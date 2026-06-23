@@ -134,6 +134,51 @@ def _without_inherited_pythonpath():
             os.environ["PYTHONPATH"] = cast(str, original)
 
 
+@contextmanager
+def _isolate_prebuilt_binary_pythonpath():
+    """Hide host PYTHONPATH only from conda/uv binary calls.
+
+    Bazel launchers expose runfiles through PYTHONPATH. Letting that leak into a
+    conda-managed Python subprocess can mix stdlib/extension modules from two
+    Python installs, but clearing it globally also breaks Metaflow helper
+    subprocesses that need Bazel runfiles. Keep the mutation scoped to the
+    binary call helpers used by Netflixext conda resolution.
+    """
+
+    patched: List[Tuple[Any, str, Any]] = []
+
+    def patch_attr(obj: Any, attr: str, replacement: Any) -> None:
+        patched.append((obj, attr, getattr(obj, attr)))
+        setattr(obj, attr, replacement)
+
+    def isolated(fn: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            with _without_inherited_pythonpath():
+                return fn(*args, **kwargs)
+
+        return wrapped
+
+    try:
+        from metaflow_extensions.netflixext.plugins.conda import (  # noqa: PLC0415
+            conda_flow_mutator,
+            utils as conda_utils,
+        )
+
+        patch_attr(conda_utils, "call_binary", isolated(conda_utils.call_binary))
+        patch_attr(
+            conda_flow_mutator,
+            "call_binary",
+            isolated(conda_flow_mutator.call_binary),
+        )
+        if Conda is not None:
+            patch_attr(Conda, "call_binary", isolated(Conda.call_binary))
+            patch_attr(Conda, "call_conda", isolated(Conda.call_conda))
+        yield
+    finally:
+        for obj, attr, original in reversed(patched):
+            setattr(obj, attr, original)
+
+
 def _env_cache_key(env_id: EnvID) -> str:
     """Identity of the baked CONDA ENV — keys ``_prebuilt_env_paths`` and the
     runtime bootstrap lookup. Base-image independent ON PURPOSE: the conda env is
@@ -349,7 +394,7 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             return
         PrebuiltCondaEnvironment._init_in_progress = True
         try:
-            with _without_inherited_pythonpath():
+            with _isolate_prebuilt_binary_pythonpath():
                 super().init_environment(echo)
                 self._build_prebuilt_images(echo)
         finally:

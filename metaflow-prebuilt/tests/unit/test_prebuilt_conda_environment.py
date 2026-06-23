@@ -131,19 +131,58 @@ class TestBuildInstallModule:
 
 
 class TestInitEnvironment:
-    def test_init_environment_clears_pythonpath_during_resolution_and_restores(
+    def test_init_environment_preserves_pythonpath_but_isolates_binary_calls(
         self, monkeypatch
     ):
+        from metaflow_extensions.netflixext.plugins.conda import (
+            conda_flow_mutator,
+            utils as conda_utils,
+        )
+
         env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
         seen_pythonpath = []
 
+        class FakeConda:
+            def call_binary(self, *args, **kwargs):
+                seen_pythonpath.append(
+                    ("conda.call_binary", os.environ.get("PYTHONPATH"))
+                )
+                return b""
+
+            def call_conda(self, *args, **kwargs):
+                seen_pythonpath.append(
+                    ("conda.call_conda", os.environ.get("PYTHONPATH"))
+                )
+                return b""
+
+        fake_conda = FakeConda()
+
+        def fake_utils_call_binary(*args, **kwargs):
+            seen_pythonpath.append(("utils.call_binary", os.environ.get("PYTHONPATH")))
+            return b""
+
+        def fake_flow_mutator_call_binary(*args, **kwargs):
+            seen_pythonpath.append(
+                ("flow_mutator.call_binary", os.environ.get("PYTHONPATH"))
+            )
+            return b""
+
         def fake_base_init_environment(_self, _echo):
             seen_pythonpath.append(("base", os.environ.get("PYTHONPATH")))
+            conda_utils.call_binary([], "uv")
+            conda_flow_mutator.call_binary([], "uv")
+            fake_conda.call_binary([], binary="pip")
+            fake_conda.call_conda([], binary="mamba")
 
         def fake_build_prebuilt_images(_self, _echo):
             seen_pythonpath.append(("build", os.environ.get("PYTHONPATH")))
 
         monkeypatch.setenv("PYTHONPATH", "/bazel/runfiles:/tmp/host-stdlib")
+        monkeypatch.setattr(conda_utils, "call_binary", fake_utils_call_binary)
+        monkeypatch.setattr(
+            conda_flow_mutator, "call_binary", fake_flow_mutator_call_binary
+        )
+        monkeypatch.setattr(prebuilt_conda_environment, "Conda", FakeConda)
 
         with patch.object(
             PrebuiltCondaEnvironment.__bases__[0],
@@ -156,7 +195,14 @@ class TestInitEnvironment:
         ):
             env.init_environment(lambda *args, **kwargs: None)
 
-        assert seen_pythonpath == [("base", None), ("build", None)]
+        assert seen_pythonpath == [
+            ("base", "/bazel/runfiles:/tmp/host-stdlib"),
+            ("utils.call_binary", None),
+            ("flow_mutator.call_binary", None),
+            ("conda.call_binary", None),
+            ("conda.call_conda", None),
+            ("build", "/bazel/runfiles:/tmp/host-stdlib"),
+        ]
         assert os.environ["PYTHONPATH"] == "/bazel/runfiles:/tmp/host-stdlib"
         assert PrebuiltCondaEnvironment._init_in_progress is False
 
