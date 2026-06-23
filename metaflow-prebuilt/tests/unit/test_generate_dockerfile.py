@@ -49,6 +49,11 @@ def test_generate_dockerfile_regular_has_required_instructions():
     assert "ENV CONDA_ENVS_DIRS=%s" % PREBUILT_ENVS_DIR in dockerfile
     assert "COPY job.tar" in dockerfile
     assert "prebuilt_build_install" in dockerfile
+    assert (
+        "RUN rm -rf %s/pkgs %s/conda-bld /root/.cache/pip"
+        % (PREBUILT_MAMBA_ROOT_PREFIX, PREBUILT_MAMBA_ROOT_PREFIX)
+        in dockerfile
+    )
     assert env_id.req_id in dockerfile
     assert env_id.full_id in dockerfile
     assert ".metaflowenv" in dockerfile

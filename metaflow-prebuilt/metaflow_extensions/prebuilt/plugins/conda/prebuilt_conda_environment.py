@@ -61,10 +61,13 @@ logger = logging.getLogger(__name__)
 # Schema version prefix on the image tag. Bump when the Dockerfile shape,
 # bootstrap activation contract, env_path layout, or tag scheme changes in a way
 # that makes pre-existing images at the same env-id incompatible.
+# v30: the generated Dockerfile removes Conda package caches after installing
+#      the runtime env, so exported prebuilt images do not carry build-only
+#      package archives/extracts.
 # v29: the registry tag now carries a base-image/arch variant suffix (image
 #      identity), so images that share an env but differ by base/arch no longer
 #      collide on one tag.
-PREBUILT_IMAGE_SCHEMA_VERSION = "v29"
+PREBUILT_IMAGE_SCHEMA_VERSION = "v30"
 
 # Docker tag components allow [A-Za-z0-9_.-]; everything else is replaced.
 _TAG_SAFE_CHARS = set(
@@ -941,6 +944,10 @@ def _generate_dockerfile(
     lines.append(
         "RUN python -m %s.prebuilt_build_install %s %s"
         % (build_install_module, env_id.req_id, env_id.full_id)
+    )
+    lines.append(
+        "RUN rm -rf %s/pkgs %s/conda-bld /root/.cache/pip"
+        % (PREBUILT_MAMBA_ROOT_PREFIX, PREBUILT_MAMBA_ROOT_PREFIX)
     )
 
     if named_alias is not None:
