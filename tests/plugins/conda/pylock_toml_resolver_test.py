@@ -477,7 +477,7 @@ def test_hashless_wheel_computes_sha256(mocker):
         packages_dict["demo"][0].pkg_hash("sha256")
         == hashlib.sha256(wheel_bytes).hexdigest()
     )
-    mock_urlopen.assert_called_once_with(url)
+    mock_urlopen.assert_called_once_with(url, timeout=60)
 
 
 @pytest.fixture
