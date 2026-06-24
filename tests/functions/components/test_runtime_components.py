@@ -1,12 +1,13 @@
 """
 Tests for the runtime components system.
 
-Covers three layers:
+Covers:
   1. Lifecycle mechanics — start/stop/before_call/after_call fire in the right order
-  2. No-op routing — ClassName(...) is silent when no component is loaded
-  3. Local backend integration — lifecycle fires end-to-end through LocalBackend.apply()
-  4. Memory backend serialisation — component class names round-trip through
-     connection_params and CLI args without spawning a subprocess
+  2. active_instance — set on start, cleared on stop
+  3. Serialisation — serialize_components / load_component_instances round-trip
+  4. Local backend integration — lifecycle fires end-to-end through LocalBackend.apply()
+  5. Memory backend serialisation — component specs round-trip through connection_params
+     and CLI args without spawning a subprocess
 
 The test component (RecordingComponent) writes one line per lifecycle event to a
 temporary file so tests that run in a subprocess (e.g. memory backend) can verify
@@ -25,7 +26,8 @@ from metaflow_extensions.nflx.plugins.functions.components.abstract_component im
     ComponentMeta,
 )
 from metaflow_extensions.nflx.plugins.functions.components.runtime import (
-    load_component_classes,
+    serialize_components,
+    load_component_instances,
     start_components,
     stop_components,
     before_call_components,
@@ -110,14 +112,14 @@ def test_component_lifecycle_order():
 
 
 def test_component_start_activates_class():
-    """After start_components the class-level _active_instance is set."""
+    """After start_components the class-level active_instance is set."""
     log = _tmp_log()
     RecordingComponent._log_path = log
     try:
         instances = start_components([RecordingComponent])
-        assert RecordingComponent._active_instance is instances[0]
+        assert RecordingComponent.active_instance is instances[0]
         stop_components(instances)
-        assert RecordingComponent._active_instance is None
+        assert RecordingComponent.active_instance is None
     finally:
         RecordingComponent._log_path = ""
         os.unlink(log)
@@ -131,66 +133,77 @@ def test_stop_clears_instance_even_on_error():
         def stop(self, *args, **kwargs): raise RuntimeError("boom")
         def before_call(self, *args, **kwargs): pass
         def after_call(self, *args, **kwargs): pass
-        def __call__(self, *args, **kwargs): pass
 
     instances = start_components([BrokenStop])
-    assert BrokenStop._active_instance is not None
+    assert BrokenStop.active_instance is not None
 
     with pytest.raises(RuntimeError, match="boom"):
         stop_components(instances)
 
-    # _active_instance must be cleared regardless
-    assert BrokenStop._active_instance is None
+    # active_instance must be cleared regardless
+    assert BrokenStop.active_instance is None
 
 
 # ---------------------------------------------------------------------------
-# 2. No-op / routing tests
+# 2. active_instance / serialisation
 # ---------------------------------------------------------------------------
 
-def test_noop_when_not_loaded():
-    """Calling RecordingComponent(...) returns None when no instance is active."""
-    assert RecordingComponent._active_instance is None
-    result = RecordingComponent("hello")
-    assert result is None
+def test_active_instance_none_before_start():
+    """active_instance is None before start_components is called."""
+    assert RecordingComponent.active_instance is None
 
 
-def test_routes_to_instance_when_active():
-    """Calling RecordingComponent(...) invokes __call__ on the active instance."""
-    log = _tmp_log()
-    RecordingComponent._log_path = log
-    try:
-        instances = start_components([RecordingComponent])
-        RecordingComponent("ping")
-        stop_components(instances)
-
-        events = _read_events(log)
-        assert "call:ping" in events
-    finally:
-        RecordingComponent._log_path = ""
-        os.unlink(log)
-
-
-# ---------------------------------------------------------------------------
-# 3. load_component_classes round-trip
-# ---------------------------------------------------------------------------
-
-def test_load_component_classes_roundtrip():
-    """Fully-qualified class name serialises and deserialises back to the same class."""
+def test_serialize_class():
+    """serialize_components produces a plain 'module.ClassName' string for a class."""
+    specs = serialize_components([RecordingComponent])
+    assert len(specs) == 1
     fqn = f"{RecordingComponent.__module__}.{RecordingComponent.__qualname__}"
-    loaded = load_component_classes([fqn])
-    assert len(loaded) == 1
-    assert loaded[0] is RecordingComponent
+    assert specs[0] == fqn
 
 
-def test_load_component_classes_unknown_raises():
-    """load_component_classes raises MetaflowFunctionException for an unknown class."""
+def test_serialize_instance_with_kwargs():
+    """serialize_components embeds init kwargs as JSON for an instance."""
+    import json
+
+    class KwargsComponent(AbstractRuntimeComponent):
+        def start(self, *args, **kwargs): pass
+        def stop(self, *args, **kwargs): pass
+        def before_call(self, *args, **kwargs): pass
+        def after_call(self, *args, **kwargs): pass
+
+    inst = KwargsComponent(stream="my_stream", version=3)
+    specs = serialize_components([inst])
+    assert len(specs) == 1
+    class_part, kwargs_part = specs[0].split(":", 1)
+    assert class_part.endswith("KwargsComponent")
+    assert json.loads(kwargs_part) == {"stream": "my_stream", "version": 3}
+
+
+def test_load_component_instances_roundtrip():
+    """Fully-qualified class name deserialises to an instance of that class."""
+    fqn = f"{RecordingComponent.__module__}.{RecordingComponent.__qualname__}"
+    instances = load_component_instances([fqn])
+    assert len(instances) == 1
+    assert isinstance(instances[0], RecordingComponent)
+
+
+def test_load_component_instances_with_kwargs():
+    """'ClassName:json' deserialises to an instance constructed with those kwargs."""
+    import json
+    fqn = f"{RecordingComponent.__module__}.{RecordingComponent.__qualname__}"
+    spec = f"{fqn}:{json.dumps({'key': 'val'})}"
+    instances = load_component_instances([spec])
+    assert isinstance(instances[0], RecordingComponent)
+    assert instances[0]._init_kwargs == {"key": "val"}
+
+
+def test_load_component_instances_unknown_raises():
+    """load_component_instances raises MetaflowFunctionException for an unknown class."""
     from metaflow_extensions.nflx.plugins.functions.exceptions import (
         MetaflowFunctionException,
     )
-
-    # load_type_from_string propagates the ImportError as MetaflowFunctionException
     with pytest.raises(MetaflowFunctionException):
-        load_component_classes(["does.not.Exist"])
+        load_component_instances(["does.not.Exist"])
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +314,7 @@ def test_local_backend_no_components():
 # ---------------------------------------------------------------------------
 
 def test_memory_backend_connection_params_includes_component_names():
-    """generate_connection_params stores serialised class names."""
+    """generate_connection_params stores serialised component specs."""
     from metaflow_extensions.nflx.plugins.functions.backends.memory.memory_backend import (
         MemoryBackend,
     )

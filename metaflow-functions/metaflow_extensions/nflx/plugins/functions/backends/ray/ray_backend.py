@@ -241,11 +241,13 @@ class RayBackend(AbstractBackend):
         # Ray will use all available resources by default
         FunctionActor = ray.remote(runtime_env=runtime_env)(FunctionActorClass)
 
-        # Serialize runtime component class names for the actor subprocess
-        component_class_names = [
-            f"{c.__module__}.{c.__qualname__}"
-            for c in getattr(func_instance, "_runtime_components", [])
-        ]
+        # Serialize runtime component specs for the actor subprocess
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            serialize_components,
+        )
+        component_class_names = serialize_components(
+            getattr(func_instance, "_runtime_components", [])
+        )
 
         # Instantiate actor with function reference and component class names
         cls._actor_pool[uuid] = FunctionActor.remote(
@@ -428,12 +430,13 @@ class FunctionActorClass:
 
         # Load and start runtime components inside the actor process
         from metaflow_extensions.nflx.plugins.functions.components.runtime import (
-            load_component_classes,
+            load_component_instances,
             start_components,
         )
 
-        component_classes = load_component_classes(component_class_names)
-        self._component_instances = start_components(component_classes)
+        self._component_instances = start_components(
+            load_component_instances(component_class_names)
+        )
 
     def shutdown(self):
         """Stop runtime components. Called before the actor is killed."""

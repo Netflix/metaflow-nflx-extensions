@@ -590,7 +590,7 @@ class MemoryBackend(AbstractBackend):
             function_from_json,
         )
         from metaflow_extensions.nflx.plugins.functions.components.runtime import (
-            load_component_classes,
+            load_component_instances,
             start_components,
             stop_components,
         )
@@ -648,8 +648,9 @@ class MemoryBackend(AbstractBackend):
 
         debug.functions_exec("Runtime IO buffers ready")
 
-        component_classes = load_component_classes(component_class_names)
-        component_instances = start_components(component_classes)
+        component_instances = start_components(
+            load_component_instances(component_class_names)
+        )
         try:
             cls._runtime_with_buffers(
                 inp, out, sem, func_instance, prefetch_artifacts, component_instances

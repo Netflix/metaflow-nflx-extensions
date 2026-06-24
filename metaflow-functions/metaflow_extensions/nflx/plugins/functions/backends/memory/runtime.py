@@ -155,14 +155,15 @@ class FunctionRuntime:
             # First check if function has prefetch_artifacts flag set
             # (e.g., from start_runtime=True)
             prefetch_artifacts = getattr(function, "_prefetch_artifacts", False)
-            runtime_component_classes = getattr(function, "_runtime_components", [])
-            runtime_component_names = [
-                f"{c.__module__}.{c.__qualname__}"
-                for c in runtime_component_classes
-            ]
+            from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+                serialize_components,
+            )
+            runtime_component_specs = serialize_components(
+                getattr(function, "_runtime_components", [])
+            )
             self.connection_params = MemoryBackend.generate_connection_params(
                 self.uuid,
-                runtime_components=runtime_component_names,
+                runtime_components=runtime_component_specs,
                 prefetch_artifacts=prefetch_artifacts,
                 process=process,
             )

@@ -4,39 +4,26 @@ from typing import Any, Optional
 
 class ComponentMeta(ABCMeta):
     """
-    Metaclass that makes calling the class route to the active runtime instance.
+    Metaclass for runtime components.
 
-    When the runtime activates a component it sets `_active_instance` on the
-    class.  After that, ``MyComponent(...)`` routes to the instance's
-    ``__call__`` rather than constructing a new object.  If no instance is
-    active the call is a silent no-op.
-
-    The runtime creates instances via ``ComponentMeta.create_instance(cls)``
-    which bypasses the routing and performs normal object construction.
+    Manages the `active_instance` class attribute that the runtime sets after
+    `start()` and clears after `stop()`.  Subclasses use it to implement their
+    own no-op-when-inactive interaction patterns (e.g. a `log()` classmethod).
     """
-
-    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
-        inst = cls.__dict__.get("_active_instance")
-        if inst is not None:
-            return inst.__call__(*args, **kwargs)
-        # No-op when component is not loaded by the runtime.
-
-    @staticmethod
-    def create_instance(cls: "AbstractRuntimeComponent") -> "AbstractRuntimeComponent":
-        """Create a fresh instance without triggering the user-call routing."""
-        instance = cls.__new__(cls)
-        instance.__init__()
-        return instance
 
 
 class AbstractRuntimeComponent(metaclass=ComponentMeta):
     """
     Base class for runtime components.
 
-    Runtime components plug into the function execution lifecycle.  They are
-    passed by class to ``function_from_json`` via ``runtime_components=[...]``
-    and are instantiated inside the subprocess (or the calling process for the
-    local backend).
+    Runtime components plug into the function execution lifecycle.  Pass class
+    instances to ``function_from_json`` via ``runtime_components=[...]``::
+
+        logger = Logger(stream_name="my_stream", app_name="my_app")
+        func = function_from_json(ref, runtime_components=[logger])
+
+    Constructor keyword arguments are stored in ``_init_kwargs`` so instances
+    can be reconstructed across subprocess boundaries.
 
     Lifecycle (all hooks accept ``*args, **kwargs`` for forward-compatibility):
 
@@ -44,41 +31,24 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
     * ``stop``        — called once when the runtime shuts down
     * ``before_call`` — called before each function invocation
     * ``after_call``  — called after each successful function invocation
-    * ``__call__``    — user-facing entry point; user code calls the *class*
-                        directly: ``MyComponent("msg")``
 
-    The class itself is the user-facing API.  ``MyComponent(...)`` routes to
-    the active instance's ``__call__`` if the component was loaded, or does
-    nothing if it was not.  This means user code never has to guard with
-    ``if component_is_loaded``.
+    Subclasses define their own user-facing interaction pattern.  A common
+    pattern is a classmethod that routes through ``active_instance``::
 
-    Example
-    -------
-    ::
-
-        class LoggingComponent(AbstractRuntimeComponent):
-            def start(self, *args, **kwargs):
-                self._log = []
-
-            def stop(self, *args, **kwargs):
-                flush(self._log)
-
-            def before_call(self, *args, **kwargs):
-                self._log.append({"event": "before_call"})
-
-            def after_call(self, *args, **kwargs):
-                self._log.append({"event": "after_call"})
-
-            def __call__(self, message, **kwargs):
-                self._log.append({"event": "user", "message": message})
-
-        # In user function code (no-op if LoggingComponent not loaded):
-        LoggingComponent("processing batch", n=len(data))
+        class Logger(AbstractRuntimeComponent):
+            @classmethod
+            def log(cls, payload: dict) -> None:
+                inst = cls.active_instance
+                if inst is not None:
+                    inst._entries.update(payload)
     """
 
     # Set by the runtime after start(); cleared after stop().
     # Declared here so subclasses inherit it as a distinct per-class slot.
-    _active_instance: Optional["AbstractRuntimeComponent"] = None
+    active_instance: Optional["AbstractRuntimeComponent"] = None
+
+    def __init__(self, **kwargs: Any) -> None:
+        self._init_kwargs = kwargs
 
     @abstractmethod
     def start(self, *args: Any, **kwargs: Any) -> None:
@@ -95,7 +65,3 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
     @abstractmethod
     def after_call(self, *args: Any, **kwargs: Any) -> None:
         """Called after each function invocation."""
-
-    @abstractmethod
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """User-facing entry point.  Called via ``MyComponent(...)`` in user code."""

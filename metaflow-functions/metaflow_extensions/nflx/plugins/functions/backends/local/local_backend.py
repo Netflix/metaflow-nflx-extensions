@@ -88,20 +88,15 @@ class LocalBackend(AbstractBackend):
             parameters = create_function_parameters(func_instance.spec)
 
         from metaflow_extensions.nflx.plugins.functions.components.runtime import (
-            load_component_classes,
             start_components,
             before_call_components,
             after_call_components,
         )
 
         if not hasattr(func_instance, "_component_instances"):
-            component_classes = load_component_classes(
-                [
-                    f"{c.__module__}.{c.__qualname__}"
-                    for c in getattr(func_instance, "_runtime_components", [])
-                ]
+            func_instance._component_instances = start_components(
+                getattr(func_instance, "_runtime_components", [])
             )
-            func_instance._component_instances = start_components(component_classes)
 
         try:
             before_call_components(func_instance._component_instances)
