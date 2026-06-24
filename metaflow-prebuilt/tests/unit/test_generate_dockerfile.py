@@ -6,6 +6,9 @@ import pytest
 
 import json
 
+from metaflow_extensions.prebuilt.plugins.conda.build_service import (
+    DockerfileBuildOptions,
+)
 from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment import (
     _generate_dockerfile,
     PREBUILT_BUILD_LOCAL_ROOT,
@@ -98,6 +101,44 @@ def test_generate_dockerfile_deferred_handoff_and_wheels():
     # Hand-off COPY (always) + the embedded-wheels dir COPY (only when wheels).
     assert "COPY %s" % _DEFERRED_BUILDS_CONTEXT_NAME in dockerfile
     assert dockerfile.count("COPY ") >= 3  # code tarball + hand-off + wheels dir
+
+
+def test_generate_dockerfile_can_mount_deferred_inputs_with_buildkit():
+    env_id = _make_env_id()
+    resolved_env = _make_resolved_env()
+    wheels = [
+        {
+            "name": "mypkg",
+            "filename": "mypkg-1.0.tar.gz",
+            "wheel_file": "mypkg-1.0-py3-none-any.whl",
+        }
+    ]
+
+    dockerfile, context_files = _generate_dockerfile(
+        "ubuntu:22.04",
+        _env_path_for(env_id),
+        env_id,
+        "conda",
+        resolved_env,
+        embedded_wheels=wheels,
+        dockerfile_build_options=DockerfileBuildOptions(
+            buildkit_deferred_input_mounts=True
+        ),
+    )
+
+    assert _DEFERRED_BUILDS_CONTEXT_NAME in context_files
+    assert "COPY %s" % _DEFERRED_BUILDS_CONTEXT_NAME not in dockerfile
+    assert "COPY deferred_wheels" not in dockerfile
+    assert (
+        "RUN rm -f /app/deferred_builds.json && rm -rf /app/deferred_wheels"
+        in dockerfile
+    )
+    assert (
+        "RUN --mount=type=bind,source=deferred_builds.json,target=/app/deferred_builds.json,readonly "
+        "--mount=type=bind,source=deferred_wheels,target=/app/deferred_wheels,readonly "
+        "python -m metaflow_extensions.prebuilt.plugins.conda.prebuilt_build_install"
+        in dockerfile
+    )
 
 
 def test_generate_dockerfile_named_alias_adds_symlink():
