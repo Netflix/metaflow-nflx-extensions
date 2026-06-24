@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 from metaflow.exception import MetaflowException
 from metaflow.flowspec import FlowSpec
 
-from .build_service import DockerBuildService
+from .build_service import DockerBuildService, DockerfileBuildOptions
 from .image_registry import ImageRegistry
 
 try:
@@ -625,6 +625,10 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             echo("    ERROR: failed to gather embedded wheels: %s" % e)
             return None
 
+        build_svc = DockerBuildService.from_config()
+        build_options = build_svc.dockerfile_build_options()
+        if not isinstance(build_options, DockerfileBuildOptions):
+            build_options = DockerfileBuildOptions()
         dockerfile, context_files = _generate_dockerfile(
             base_image,
             env_path,
@@ -635,11 +639,11 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             build_install_module=type(self)._BUILD_INSTALL_MODULE,
             deferred_sdists=deferred_sdists,
             embedded_wheels=embedded_wheels,
+            dockerfile_build_options=build_options,
         )
         context_files.update(embedded_wheel_files)
         context_files[_CODE_PACKAGE_TARBALL_NAME] = code_package_blob
 
-        build_svc = DockerBuildService.from_config()
         success = build_svc.build_and_push(
             dockerfile,
             context_files,
@@ -887,6 +891,7 @@ def _generate_dockerfile(
     build_install_module: str = "metaflow_extensions.prebuilt.plugins.conda",
     deferred_sdists: Optional[List[Any]] = None,
     embedded_wheels: Optional[List[Dict[str, Any]]] = None,
+    dockerfile_build_options: Optional[DockerfileBuildOptions] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     marker_json = json.dumps([env_id.req_id, env_id.full_id, env_id.arch])
     context_files: Dict[str, Any] = {}
@@ -930,21 +935,46 @@ def _generate_dockerfile(
         "RUN mkdir -p %s" % PREBUILT_ENVS_DIR,
     ]
 
-    # COPY the current deferred-builds hand-off (ALWAYS — this overwrites any
-    # stale hand-off inherited from the base image) and any embedded wheels,
-    # before the build-install step that consumes them.
-    lines.append(
-        "COPY %s %s" % (_DEFERRED_BUILDS_CONTEXT_NAME, _DEFERRED_BUILDS_CONTAINER_PATH)
+    options = dockerfile_build_options or DockerfileBuildOptions()
+    build_install_command = "python -m %s.prebuilt_build_install %s %s" % (
+        build_install_module,
+        env_id.req_id,
+        env_id.full_id,
     )
-    if wheels:
+
+    if options.buildkit_deferred_input_mounts:
+        # Keep the final image clean of any stale hand-off inherited from the
+        # base image. The current hand-off and wheels are mounted only for the
+        # install RUN step below, so build-only inputs never become pushed image
+        # layers.
+        lines.append(
+            "RUN rm -f %s && rm -rf %s"
+            % (_DEFERRED_BUILDS_CONTAINER_PATH, _DEFERRED_WHEELS_CONTAINER_DIR)
+        )
+        mounts = [
+            "--mount=type=bind,source=%s,target=%s,readonly"
+            % (_DEFERRED_BUILDS_CONTEXT_NAME, _DEFERRED_BUILDS_CONTAINER_PATH)
+        ]
+        if wheels:
+            mounts.append(
+                "--mount=type=bind,source=%s,target=%s,readonly"
+                % (_DEFERRED_WHEELS_CONTEXT_DIR, _DEFERRED_WHEELS_CONTAINER_DIR)
+            )
+        lines.append("RUN %s %s" % (" ".join(mounts), build_install_command))
+    else:
+        # COPY the current deferred-builds hand-off (ALWAYS - this overwrites
+        # any stale hand-off inherited from the base image) and any embedded
+        # wheels, before the build-install step that consumes them.
         lines.append(
             "COPY %s %s"
-            % (_DEFERRED_WHEELS_CONTEXT_DIR, _DEFERRED_WHEELS_CONTAINER_DIR)
+            % (_DEFERRED_BUILDS_CONTEXT_NAME, _DEFERRED_BUILDS_CONTAINER_PATH)
         )
-    lines.append(
-        "RUN python -m %s.prebuilt_build_install %s %s"
-        % (build_install_module, env_id.req_id, env_id.full_id)
-    )
+        if wheels:
+            lines.append(
+                "COPY %s %s"
+                % (_DEFERRED_WHEELS_CONTEXT_DIR, _DEFERRED_WHEELS_CONTAINER_DIR)
+            )
+        lines.append("RUN %s" % build_install_command)
     lines.append(
         "RUN rm -rf %s/pkgs %s/conda-bld /root/.cache/pip"
         % (PREBUILT_MAMBA_ROOT_PREFIX, PREBUILT_MAMBA_ROOT_PREFIX)

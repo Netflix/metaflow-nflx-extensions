@@ -1,6 +1,7 @@
 import importlib.metadata
 import os
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,6 +25,19 @@ def _resolve_entry_point(group: str, name: str) -> Any:
             "METAFLOW_PREBUILT_BUILD_SERVICE." % (name, group, sorted(mapping))
         )
     return mapping[name].load()
+
+
+@dataclass(frozen=True)
+class DockerfileBuildOptions:
+    """Build-backend capabilities that influence Dockerfile generation.
+
+    The default Dockerfile stays maximally portable: files needed during the
+    install step are copied into the image before ``RUN`` consumes them. Builders
+    that use BuildKit can ask the generator to bind-mount those files instead,
+    avoiding build-only artifacts becoming pushed image layers.
+    """
+
+    buildkit_deferred_input_mounts: bool = False
 
 
 class DockerBuildService(ABC):
@@ -72,6 +86,15 @@ class DockerBuildService(ABC):
             call ``echo()`` with a diagnostic. MAY raise on programmer errors.
         """
         ...
+
+    def dockerfile_build_options(self) -> DockerfileBuildOptions:
+        """Return Dockerfile-generation options for this build backend.
+
+        Existing third-party build services do not need to implement this; the
+        default keeps Dockerfile output unchanged and portable.
+        """
+
+        return DockerfileBuildOptions()
 
     @classmethod
     def from_config(cls) -> "DockerBuildService":
