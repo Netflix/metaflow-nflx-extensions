@@ -1,4 +1,5 @@
 from io import BytesIO
+import hashlib
 import itertools
 
 import metaflow
@@ -296,10 +297,11 @@ test_case_params = [
                 wheels = [ { url = "https://pypi.netflix.net/packages/18653672681/charset_normalizer-3.4.2-cp310-cp310-macosx_10_9_universal2.whl", upload-time = 2025-05-02T08:31:46Z, size = 201818 }, ]
             """,
             "supported_tags": [("cp310", "cp310", "macosx_10_9_universal2")],
-            "expected": {},
+            "expected": {
+                "charset-normalizer": "charset_normalizer-3.4.2-cp310-cp310-macosx_10_9_universal2",
+            },
             "check_subset": True,
             "id": "no_hash_in_wheel",
-            "expected_conda_exception": "We encountered a wheel package that's missing an url or a hash.",
         }
     ),
 ]
@@ -310,7 +312,11 @@ test_case_params = [
     test_case_params,
     ids=[tuple["id"] for tuple in test_case_params],
 )
-def test_package_matching(case):
+def test_package_matching(case, mocker):
+    mocker.patch(
+        "metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver._compute_remote_url_sha256",
+        return_value="f" * 64,
+    )
     expected_exception_msg = case.get("expected_conda_exception", None)
     if expected_exception_msg:
         with pytest.raises(CondaException, match=expected_exception_msg):
@@ -443,6 +449,35 @@ def parse_toml_str(toml_str: str) -> Dict[str, List[PypiPackageSpecification]]:
     package_obj = tomli.loads(toml_str)
     d, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(package_obj)
     return d
+
+
+def test_hashless_wheel_computes_sha256(mocker):
+    url = "https://user:token@example.com/packages/demo-1.0-py3-none-any.whl"
+    wheel_bytes = b"fake wheel bytes"
+    mock_urlopen = mocker.patch(
+        "metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver.urlopen",
+        return_value=BytesIO(wheel_bytes),
+    )
+    package_obj = tomli.loads(
+        """
+        lock-version = "1.0"
+        created-by = "uv"
+        requires-python = ">=3.10"
+
+        [[packages]]
+        name = "demo"
+        version = "1.0"
+        wheels = [{ url = "https://user:token@example.com/packages/demo-1.0-py3-none-any.whl" }]
+        """
+    )
+
+    packages_dict, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(package_obj)
+
+    assert (
+        packages_dict["demo"][0].pkg_hash("sha256")
+        == hashlib.sha256(wheel_bytes).hexdigest()
+    )
+    mock_urlopen.assert_called_once_with(url, timeout=60)
 
 
 @pytest.fixture

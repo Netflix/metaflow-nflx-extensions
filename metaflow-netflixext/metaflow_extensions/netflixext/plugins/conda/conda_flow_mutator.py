@@ -1,11 +1,15 @@
 from itertools import islice
+import hashlib
 import os
+import re
 import tempfile
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from metaflow import FlowMutator
+from metaflow._vendor.packaging.requirements import InvalidRequirement, Requirement
+from metaflow._vendor.packaging.utils import canonicalize_name
 
 from .conda_common_decorator import StepRequirementMixin
 from .conda_flow_decorator import PackageRequirementFlowDecorator
@@ -16,7 +20,6 @@ from .utils import (
     compute_file_hash,
     CondaException,
 )
-
 
 if TYPE_CHECKING:
     import metaflow
@@ -387,6 +390,8 @@ class ResolvedReqFlowDecorator(ResolvedEnvironmentBaseFlowMutator):
         "requirements.txt",
         "requirements.in",
     ]
+    _BAZEL_PIP_REPO_RE = re.compile(r"rules_python\+\+pip\+[^/ ]+")
+    _DIST_INFO_METADATA_RE = re.compile(r"/site-packages/[^/ ]+\.dist-info/METADATA$")
 
     def init(self, *args, **kwargs):
         super().init(*args, **kwargs)
@@ -438,15 +443,26 @@ class ResolvedReqFlowDecorator(ResolvedEnvironmentBaseFlowMutator):
                 + "uv.lock and pyproject.toml to use uv.lock."
             )
 
+        selected_package_names = None
+        if ResolvedReqFlowDecorator._should_use_bazel_subset():
+            import inspect
+
+            selected_package_names = (
+                ResolvedReqFlowDecorator._bazel_runfiles_package_names(
+                    inspect.getfile(mutable_flow._flow_cls)
+                )
+            )
+
         # Step 3: call uv to translate requirements.txt to pylock.toml
-        temp_toml_file_path, user_deps, user_srcs = (
-            ResolvedReqFlowDecorator._handle_req_txt_scenario(resolved_req, req_in)
+        temp_toml_file_path, user_deps, user_srcs, req_txt_content_hash = (
+            ResolvedReqFlowDecorator._handle_req_txt_scenario(
+                resolved_req,
+                req_in,
+                selected_package_names=selected_package_names,
+            )
         )
 
-        # Step 4: hash requirements.txt for cache invalidation (analogous to uv_lock_content_hash)
-        req_txt_content_hash = compute_file_hash(resolved_req)
-
-        # Step 5: add pylock_toml_internal decorator to each step
+        # Step 4: add pylock_toml_internal decorator to each step
         for step_name, step in mutable_flow.steps:
             ResolvedEnvironmentBaseFlowMutator._mutate_step(
                 step_name,
@@ -492,13 +508,125 @@ class ResolvedReqFlowDecorator(ResolvedEnvironmentBaseFlowMutator):
         return result["packages"], result.get("extra_indices", [])
 
     @staticmethod
-    def _handle_req_txt_scenario(
-        requirements_txt_path: str, requirements_in_path: str
-    ) -> Tuple[str, Dict[str, str], List[str]]:
-        # 1. Parse requirements.in for user_deps
-        user_deps, user_sources = ResolvedReqFlowDecorator._parse_requirements_in(
+    def _should_use_bazel_subset() -> bool:
+        return os.environ.get(
+            "METAFLOW_CONDA_RESOLVED_REQ_BAZEL_SUBSET", "1"
+        ).lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+
+    @staticmethod
+    def _content_hash(content: str) -> str:
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _strip_requirement_comment(line: str) -> str:
+        comment_idx = line.find("#")
+        if comment_idx >= 0:
+            before = line[:comment_idx]
+            if not before or before[-1] in (" ", "\t"):
+                return before.strip()
+        return line.strip()
+
+    @staticmethod
+    def _requirement_line_name(line: str) -> Optional[str]:
+        stripped = ResolvedReqFlowDecorator._strip_requirement_comment(line)
+        if not stripped or stripped.startswith("-"):
+            return None
+        try:
+            return canonicalize_name(Requirement(stripped).name)
+        except InvalidRequirement:
+            return None
+
+    @staticmethod
+    def _filter_requirements_txt(
+        requirements_txt_path: str, selected_package_names: Set[str]
+    ) -> Tuple[str, Set[str]]:
+        selected = {canonicalize_name(name) for name in selected_package_names}
+        kept_names: Set[str] = set()
+        output_lines: List[str] = []
+
+        with open(requirements_txt_path, "r", encoding="utf-8") as fd:
+            for raw_line in fd.read().splitlines():
+                stripped = raw_line.strip()
+                req_name = ResolvedReqFlowDecorator._requirement_line_name(raw_line)
+                if req_name is None:
+                    # Preserve index/find-links/options and header comments.
+                    if (
+                        not stripped
+                        or stripped.startswith("#")
+                        or stripped.startswith("-")
+                    ):
+                        output_lines.append(raw_line)
+                    continue
+                if req_name in selected:
+                    output_lines.append(raw_line)
+                    kept_names.add(req_name)
+
+        if not kept_names:
+            raise CondaException(
+                "Bazel runfiles package filtering found no packages from %s. "
+                "Set METAFLOW_CONDA_RESOLVED_REQ_BAZEL_SUBSET=0 to use the full "
+                "requirements.txt file." % requirements_txt_path
+            )
+
+        return "\n".join(output_lines) + "\n", kept_names
+
+    @staticmethod
+    def _parse_user_deps_for_filtered_lock(
+        filtered_requirements_content: str, requirements_in_path: str
+    ) -> Tuple[Dict[str, str], List[str]]:
+        result = req_parser(filtered_requirements_content)
+        user_deps = result["packages"]
+        user_sources = result.get("extra_indices", [])
+
+        original_user_deps, _ = ResolvedReqFlowDecorator._parse_requirements_in(
             requirements_in_path
         )
+        if "python" in original_user_deps:
+            user_deps["python"] = original_user_deps["python"]
+        return user_deps, user_sources
+
+    @staticmethod
+    def _handle_req_txt_scenario(
+        requirements_txt_path: str,
+        requirements_in_path: str,
+        selected_package_names: Optional[Set[str]] = None,
+    ) -> Tuple[str, Dict[str, str], List[str], str]:
+        requirements_for_compile = requirements_txt_path
+        needs_cleanup = False
+
+        if selected_package_names:
+            filtered_content, _ = ResolvedReqFlowDecorator._filter_requirements_txt(
+                requirements_txt_path, selected_package_names
+            )
+            user_deps, user_sources = (
+                ResolvedReqFlowDecorator._parse_user_deps_for_filtered_lock(
+                    filtered_content, requirements_in_path
+                )
+            )
+            temp_requirements = tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                suffix="-requirements.txt",
+                delete=False,
+            )
+            with temp_requirements:
+                temp_requirements.write(filtered_content)
+            requirements_for_compile = temp_requirements.name
+            needs_cleanup = True
+            req_txt_content_hash = ResolvedReqFlowDecorator._content_hash(
+                filtered_content
+            )
+        else:
+            # 1. Parse requirements.in for user_deps
+            user_deps, user_sources = ResolvedReqFlowDecorator._parse_requirements_in(
+                requirements_in_path
+            )
+            req_txt_content_hash = compute_file_hash(requirements_txt_path)
 
         # 2. Use uv pip compile on requirements.in to generate resolved output
         #    This is similar to how uv.lock scenario works - we compile/export from source
@@ -519,23 +647,163 @@ class ResolvedReqFlowDecorator(ResolvedEnvironmentBaseFlowMutator):
         # * In an ideal case, we should have a more complete support for pylock.toml format.
         #   But right now we are only supporting a subset of this standard, which causes our
         #   pylock.toml parser not able to read pylock.toml from pip lock.
-        call_binary(
-            [
-                "pip",
-                "compile",
-                requirements_txt_path,
-                "--index-strategy",
-                # With the default "first-index" strategy, uv stops at the first index
-                # that has *any* version of a package, ignoring better matches on later
-                # indices. "unsafe-best-match" checks all indices and picks the best
-                # version across all of them — required when a private index provides
-                # a newer or custom build of a package that also exists on PyPI.
-                "unsafe-best-match",
-                "--output-file",
-                temp_path,
-            ],
-            "uv",
-            cwd=cwd,
-        )
+        try:
+            call_binary(
+                [
+                    "pip",
+                    "compile",
+                    requirements_for_compile,
+                    "--index-strategy",
+                    # With the default "first-index" strategy, uv stops at the first index
+                    # that has *any* version of a package, ignoring better matches on later
+                    # indices. "unsafe-best-match" checks all indices and picks the best
+                    # version across all of them — required when a private index provides
+                    # a newer or custom build of a package that also exists on PyPI.
+                    "unsafe-best-match",
+                    "--output-file",
+                    temp_path,
+                ],
+                "uv",
+                cwd=cwd,
+            )
+        finally:
+            if needs_cleanup:
+                try:
+                    os.unlink(requirements_for_compile)
+                except OSError:
+                    pass
 
-        return temp_path, user_deps, user_sources
+        return temp_path, user_deps, user_sources, req_txt_content_hash
+
+    @staticmethod
+    def _runfiles_roots_for_flow_file(flow_file: str) -> List[Path]:
+        roots: List[Path] = []
+        for parent in Path(flow_file).parents:
+            if parent.name.endswith(".runfiles"):
+                roots.append(parent)
+
+        runfiles_dir = os.environ.get("RUNFILES_DIR")
+        if runfiles_dir:
+            roots.append(Path(runfiles_dir))
+
+        seen: Set[str] = set()
+        unique_roots: List[Path] = []
+        for root in roots:
+            root_str = str(root)
+            if root_str not in seen:
+                seen.add(root_str)
+                unique_roots.append(root)
+        return unique_roots
+
+    @staticmethod
+    def _runfiles_manifest_candidates(flow_file: str) -> List[Path]:
+        candidates: List[Path] = []
+
+        manifest = os.environ.get("RUNFILES_MANIFEST_FILE")
+        if manifest:
+            candidates.append(Path(manifest))
+
+        for root in ResolvedReqFlowDecorator._runfiles_roots_for_flow_file(flow_file):
+            root_str = str(root)
+            if root_str.endswith(".runfiles"):
+                candidates.append(
+                    Path(root_str[: -len(".runfiles")] + ".runfiles_manifest")
+                )
+                candidates.append(Path(root_str + "_manifest"))
+
+        seen: Set[str] = set()
+        unique_candidates: List[Path] = []
+        for candidate in candidates:
+            candidate_str = str(candidate)
+            if candidate_str not in seen:
+                seen.add(candidate_str)
+                unique_candidates.append(candidate)
+        return unique_candidates
+
+    @staticmethod
+    def _read_package_name_from_metadata(metadata_path: str) -> Optional[str]:
+        try:
+            with open(metadata_path, "r", encoding="utf-8", errors="replace") as fd:
+                for line in fd:
+                    if line.startswith("Name:"):
+                        return canonicalize_name(line.split(":", 1)[1].strip())
+        except OSError:
+            return None
+        return None
+
+    @staticmethod
+    def _package_name_from_dist_info_path(path: str) -> Optional[str]:
+        metadata_path = Path(path)
+        dist_info = metadata_path.parent.name
+        if not dist_info.endswith(".dist-info"):
+            return None
+        dist_stem = dist_info[: -len(".dist-info")]
+        match = re.match(r"(.+)-[0-9][^-]*$", dist_stem)
+        if not match:
+            return None
+        return canonicalize_name(match.group(1))
+
+    @staticmethod
+    def _package_names_from_runfiles_manifest(manifest_path: str) -> Set[str]:
+        names: Set[str] = set()
+        with open(manifest_path, "r", encoding="utf-8", errors="replace") as fd:
+            for line in fd:
+                parts = line.rstrip("\n").split(" ", 1)
+                if len(parts) != 2:
+                    continue
+                logical_path, real_path = parts
+                if ResolvedReqFlowDecorator._BAZEL_PIP_REPO_RE.search(
+                    logical_path
+                ) and ResolvedReqFlowDecorator._DIST_INFO_METADATA_RE.search(
+                    logical_path
+                ):
+                    name = ResolvedReqFlowDecorator._read_package_name_from_metadata(
+                        real_path
+                    )
+                    if not name:
+                        name = (
+                            ResolvedReqFlowDecorator._package_name_from_dist_info_path(
+                                logical_path
+                            )
+                        )
+                    if name:
+                        names.add(name)
+        return names
+
+    @staticmethod
+    def _package_names_from_runfiles_dir(runfiles_root: str) -> Set[str]:
+        names: Set[str] = set()
+        root = Path(runfiles_root)
+        for metadata_path in root.glob(
+            "rules_python++pip+*/site-packages/*.dist-info/METADATA"
+        ):
+            name = ResolvedReqFlowDecorator._read_package_name_from_metadata(
+                str(metadata_path)
+            )
+            if name:
+                names.add(name)
+        return names
+
+    @staticmethod
+    def _bazel_runfiles_package_names(flow_file: str) -> Optional[Set[str]]:
+        for manifest_path in ResolvedReqFlowDecorator._runfiles_manifest_candidates(
+            flow_file
+        ):
+            if manifest_path.is_file():
+                names = ResolvedReqFlowDecorator._package_names_from_runfiles_manifest(
+                    str(manifest_path)
+                )
+                if names:
+                    return names
+
+        for runfiles_root in ResolvedReqFlowDecorator._runfiles_roots_for_flow_file(
+            flow_file
+        ):
+            if runfiles_root.is_dir():
+                names = ResolvedReqFlowDecorator._package_names_from_runfiles_dir(
+                    str(runfiles_root)
+                )
+                if names:
+                    return names
+
+        return None

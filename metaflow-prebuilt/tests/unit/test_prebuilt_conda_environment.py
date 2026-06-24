@@ -26,11 +26,13 @@ def reset_class_state():
     """Reset class-level state between tests."""
     PrebuiltCondaEnvironment._prebuilt_images = {}
     PrebuiltCondaEnvironment._prebuilt_env_paths = {}
+    PrebuiltCondaEnvironment._init_in_progress = False
     if PrebuiltCondaEnvironment._STATE_FILE_ENV_VAR in os.environ:
         del os.environ[PrebuiltCondaEnvironment._STATE_FILE_ENV_VAR]
     yield
     PrebuiltCondaEnvironment._prebuilt_images = {}
     PrebuiltCondaEnvironment._prebuilt_env_paths = {}
+    PrebuiltCondaEnvironment._init_in_progress = False
     if PrebuiltCondaEnvironment._STATE_FILE_ENV_VAR in os.environ:
         del os.environ[PrebuiltCondaEnvironment._STATE_FILE_ENV_VAR]
 
@@ -126,6 +128,83 @@ class TestBuildInstallModule:
             PrebuiltCondaEnvironment._BUILD_INSTALL_MODULE
             == "metaflow_extensions.prebuilt.plugins.conda"
         )
+
+
+class TestInitEnvironment:
+    def test_init_environment_preserves_pythonpath_but_isolates_binary_calls(
+        self, monkeypatch
+    ):
+        from metaflow_extensions.netflixext.plugins.conda import (
+            conda_flow_mutator,
+            utils as conda_utils,
+        )
+
+        env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
+        seen_pythonpath = []
+
+        class FakeConda:
+            def call_binary(self, *args, **kwargs):
+                seen_pythonpath.append(
+                    ("conda.call_binary", os.environ.get("PYTHONPATH"))
+                )
+                return b""
+
+            def call_conda(self, *args, **kwargs):
+                seen_pythonpath.append(
+                    ("conda.call_conda", os.environ.get("PYTHONPATH"))
+                )
+                return b""
+
+        fake_conda = FakeConda()
+
+        def fake_utils_call_binary(*args, **kwargs):
+            seen_pythonpath.append(("utils.call_binary", os.environ.get("PYTHONPATH")))
+            return b""
+
+        def fake_flow_mutator_call_binary(*args, **kwargs):
+            seen_pythonpath.append(
+                ("flow_mutator.call_binary", os.environ.get("PYTHONPATH"))
+            )
+            return b""
+
+        def fake_base_init_environment(_self, _echo):
+            seen_pythonpath.append(("base", os.environ.get("PYTHONPATH")))
+            conda_utils.call_binary([], "uv")
+            conda_flow_mutator.call_binary([], "uv")
+            fake_conda.call_binary([], binary="pip")
+            fake_conda.call_conda([], binary="mamba")
+
+        def fake_build_prebuilt_images(_self, _echo):
+            seen_pythonpath.append(("build", os.environ.get("PYTHONPATH")))
+
+        monkeypatch.setenv("PYTHONPATH", "/bazel/runfiles:/tmp/host-stdlib")
+        monkeypatch.setattr(conda_utils, "call_binary", fake_utils_call_binary)
+        monkeypatch.setattr(
+            conda_flow_mutator, "call_binary", fake_flow_mutator_call_binary
+        )
+        monkeypatch.setattr(prebuilt_conda_environment, "Conda", FakeConda)
+
+        with patch.object(
+            PrebuiltCondaEnvironment.__bases__[0],
+            "init_environment",
+            new=fake_base_init_environment,
+        ), patch.object(
+            PrebuiltCondaEnvironment,
+            "_build_prebuilt_images",
+            new=fake_build_prebuilt_images,
+        ):
+            env.init_environment(lambda *args, **kwargs: None)
+
+        assert seen_pythonpath == [
+            ("base", "/bazel/runfiles:/tmp/host-stdlib"),
+            ("utils.call_binary", None),
+            ("flow_mutator.call_binary", None),
+            ("conda.call_binary", None),
+            ("conda.call_conda", None),
+            ("build", "/bazel/runfiles:/tmp/host-stdlib"),
+        ]
+        assert os.environ["PYTHONPATH"] == "/bazel/runfiles:/tmp/host-stdlib"
+        assert PrebuiltCondaEnvironment._init_in_progress is False
 
 
 class TestBootstrapCommands:
@@ -282,6 +361,7 @@ class TestBootstrapCommands:
 
         registry = MagicMock()
         registry.pull_config.return_value = {}
+        registry.base_image_identity.side_effect = lambda base, _arch: base
         env = self._make_env()
         env._flow = [step]
         env.get_env_id = MagicMock(return_value=alias)
@@ -310,6 +390,49 @@ class TestBootstrapCommands:
             == env_path
         )
         assert remote_deco.attributes["image"] == "pull-tag"
+
+
+def test_get_or_build_image_reuses_existing_immutable_tag(monkeypatch):
+    env_id = _make_env_id()
+    env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
+    env.conda = MagicMock()
+    env.conda.environment.return_value = SimpleNamespace(env_type="conda")
+
+    registry = MagicMock()
+    registry.push_tag.return_value = "registry.example/prebuilt:v29-abc_def"
+    registry.pull_tag.return_value = "prebuilt:v29-abc_def"
+    registry.image_exists.return_value = True
+
+    monkeypatch.setattr(
+        prebuilt_conda_environment,
+        "_build_metaflow_code_package",
+        MagicMock(side_effect=AssertionError("should not package code")),
+    )
+    build_service = MagicMock()
+    monkeypatch.setattr(
+        prebuilt_conda_environment.DockerBuildService,
+        "from_config",
+        MagicMock(return_value=build_service),
+    )
+
+    result = env._get_or_build_image(
+        env_id,
+        SimpleNamespace(name="start"),
+        lambda *args, **kwargs: None,
+        registry,
+        base_image="cpu-base",
+        variant="linux-64-1234",
+    )
+
+    assert result == (
+        "prebuilt:v29-abc_def-linux-64-1234",
+        "/opt/metaflow/conda-root/envs/metaflow_%s_%s"
+        % (env_id.req_id, env_id.full_id),
+    )
+    registry.image_exists.assert_called_once_with(
+        "registry.example/prebuilt:v29-abc_def-linux-64-1234"
+    )
+    build_service.build_and_push.assert_not_called()
 
 
 def test_gather_embedded_wheels_prefers_cached_wheel_over_local_sdist():

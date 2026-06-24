@@ -1,4 +1,5 @@
 import atexit
+from contextlib import contextmanager
 import fcntl
 import json
 import logging
@@ -60,10 +61,13 @@ logger = logging.getLogger(__name__)
 # Schema version prefix on the image tag. Bump when the Dockerfile shape,
 # bootstrap activation contract, env_path layout, or tag scheme changes in a way
 # that makes pre-existing images at the same env-id incompatible.
+# v30: the generated Dockerfile removes Conda package caches after installing
+#      the runtime env, so exported prebuilt images do not carry build-only
+#      package archives/extracts.
 # v29: the registry tag now carries a base-image/arch variant suffix (image
 #      identity), so images that share an env but differ by base/arch no longer
 #      collide on one tag.
-PREBUILT_IMAGE_SCHEMA_VERSION = "v29"
+PREBUILT_IMAGE_SCHEMA_VERSION = "v30"
 
 # Docker tag components allow [A-Za-z0-9_.-]; everything else is replaced.
 _TAG_SAFE_CHARS = set(
@@ -117,6 +121,65 @@ def _named_state_key(name: str) -> str:
 
 def _step_state_key(step_name: str) -> str:
     return "step:%s" % step_name
+
+
+@contextmanager
+def _without_inherited_pythonpath():
+    sentinel = object()
+    original = os.environ.get("PYTHONPATH", sentinel)
+    os.environ.pop("PYTHONPATH", None)
+    try:
+        yield
+    finally:
+        if original is sentinel:
+            os.environ.pop("PYTHONPATH", None)
+        else:
+            os.environ["PYTHONPATH"] = cast(str, original)
+
+
+@contextmanager
+def _isolate_prebuilt_binary_pythonpath():
+    """Hide host PYTHONPATH only from conda/uv binary calls.
+
+    Bazel launchers expose runfiles through PYTHONPATH. Letting that leak into a
+    conda-managed Python subprocess can mix stdlib/extension modules from two
+    Python installs, but clearing it globally also breaks Metaflow helper
+    subprocesses that need Bazel runfiles. Keep the mutation scoped to the
+    binary call helpers used by Netflixext conda resolution.
+    """
+
+    patched: List[Tuple[Any, str, Any]] = []
+
+    def patch_attr(obj: Any, attr: str, replacement: Any) -> None:
+        patched.append((obj, attr, getattr(obj, attr)))
+        setattr(obj, attr, replacement)
+
+    def isolated(fn: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            with _without_inherited_pythonpath():
+                return fn(*args, **kwargs)
+
+        return wrapped
+
+    try:
+        from metaflow_extensions.netflixext.plugins.conda import (  # noqa: PLC0415
+            conda_flow_mutator,
+            utils as conda_utils,
+        )
+
+        patch_attr(conda_utils, "call_binary", isolated(conda_utils.call_binary))
+        patch_attr(
+            conda_flow_mutator,
+            "call_binary",
+            isolated(conda_flow_mutator.call_binary),
+        )
+        if Conda is not None:
+            patch_attr(Conda, "call_binary", isolated(Conda.call_binary))
+            patch_attr(Conda, "call_conda", isolated(Conda.call_conda))
+        yield
+    finally:
+        for obj, attr, original in reversed(patched):
+            setattr(obj, attr, original)
 
 
 def _env_cache_key(env_id: EnvID) -> str:
@@ -334,8 +397,9 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             return
         PrebuiltCondaEnvironment._init_in_progress = True
         try:
-            super().init_environment(echo)
-            self._build_prebuilt_images(echo)
+            with _isolate_prebuilt_binary_pythonpath():
+                super().init_environment(echo)
+                self._build_prebuilt_images(echo)
         finally:
             PrebuiltCondaEnvironment._init_in_progress = False
 
@@ -394,7 +458,15 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                     "No base image configured. Set METAFLOW_PREBUILT_GPU_BASE_IMAGE "
                     "(for GPU steps) or METAFLOW_PREBUILT_BASE_IMAGE."
                 )
-            variant = _image_variant(base_image, getattr(env_id, "arch", ""))
+            arch = getattr(env_id, "arch", "")
+            base_identity = registry.base_image_identity(base_image, arch)
+            if base_identity != base_image:
+                echo(
+                    "    Base image resolved for prebuilt tag: %s -> %s"
+                    % (base_image, base_identity)
+                )
+            build_base_image = base_identity or base_image
+            variant = _image_variant(build_base_image, arch)
             image_key = _image_dedup_key(env_key, variant)
             env_path = (
                 _env_path_for_named(named_alias)
@@ -410,7 +482,7 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                     step,
                     echo,
                     registry,
-                    base_image=base_image,
+                    base_image=build_base_image,
                     variant=variant,
                     named_alias=named_alias,
                 )
@@ -495,6 +567,14 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             if named_alias is not None
             else _env_path_for(env_id)
         )
+
+        # Regular env-id tags are immutable: if a previous deploy already pushed
+        # this exact env/base/arch image, reuse it instead of rebuilding and
+        # repushing the large conda layer. Named env tags remain mutable and must
+        # rebuild so a new deploy can intentionally move the alias.
+        if named_alias is None and registry.image_exists(push_tag):
+            echo("    Reusing existing prebuilt image: %s" % push_tag)
+            return pull_tag, env_path
 
         try:
             code_package_blob = _build_metaflow_code_package(self, echo)
@@ -864,6 +944,10 @@ def _generate_dockerfile(
     lines.append(
         "RUN python -m %s.prebuilt_build_install %s %s"
         % (build_install_module, env_id.req_id, env_id.full_id)
+    )
+    lines.append(
+        "RUN rm -rf %s/pkgs %s/conda-bld /root/.cache/pip"
+        % (PREBUILT_MAMBA_ROOT_PREFIX, PREBUILT_MAMBA_ROOT_PREFIX)
     )
 
     if named_alias is not None:
