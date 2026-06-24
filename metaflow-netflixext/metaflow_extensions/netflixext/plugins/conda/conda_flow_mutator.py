@@ -597,6 +597,7 @@ class ResolvedReqFlowDecorator(ResolvedEnvironmentBaseFlowMutator):
         selected_package_names: Optional[Set[str]] = None,
     ) -> Tuple[str, Dict[str, str], List[str], str]:
         requirements_for_compile = requirements_txt_path
+        needs_cleanup = False
 
         if selected_package_names:
             filtered_content, _ = ResolvedReqFlowDecorator._filter_requirements_txt(
@@ -616,6 +617,7 @@ class ResolvedReqFlowDecorator(ResolvedEnvironmentBaseFlowMutator):
             with temp_requirements:
                 temp_requirements.write(filtered_content)
             requirements_for_compile = temp_requirements.name
+            needs_cleanup = True
             req_txt_content_hash = ResolvedReqFlowDecorator._content_hash(
                 filtered_content
             )
@@ -645,24 +647,31 @@ class ResolvedReqFlowDecorator(ResolvedEnvironmentBaseFlowMutator):
         # * In an ideal case, we should have a more complete support for pylock.toml format.
         #   But right now we are only supporting a subset of this standard, which causes our
         #   pylock.toml parser not able to read pylock.toml from pip lock.
-        call_binary(
-            [
-                "pip",
-                "compile",
-                requirements_for_compile,
-                "--index-strategy",
-                # With the default "first-index" strategy, uv stops at the first index
-                # that has *any* version of a package, ignoring better matches on later
-                # indices. "unsafe-best-match" checks all indices and picks the best
-                # version across all of them — required when a private index provides
-                # a newer or custom build of a package that also exists on PyPI.
-                "unsafe-best-match",
-                "--output-file",
-                temp_path,
-            ],
-            "uv",
-            cwd=cwd,
-        )
+        try:
+            call_binary(
+                [
+                    "pip",
+                    "compile",
+                    requirements_for_compile,
+                    "--index-strategy",
+                    # With the default "first-index" strategy, uv stops at the first index
+                    # that has *any* version of a package, ignoring better matches on later
+                    # indices. "unsafe-best-match" checks all indices and picks the best
+                    # version across all of them — required when a private index provides
+                    # a newer or custom build of a package that also exists on PyPI.
+                    "unsafe-best-match",
+                    "--output-file",
+                    temp_path,
+                ],
+                "uv",
+                cwd=cwd,
+            )
+        finally:
+            if needs_cleanup:
+                try:
+                    os.unlink(requirements_for_compile)
+                except OSError:
+                    pass
 
         return temp_path, user_deps, user_sources, req_txt_content_hash
 

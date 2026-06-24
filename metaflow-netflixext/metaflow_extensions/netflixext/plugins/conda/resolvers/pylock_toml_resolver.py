@@ -50,7 +50,7 @@ def _compute_remote_url_sha256(url: str) -> str:
     debug.conda_exec("Computing sha256 for hashless pylock wheel %s" % safe_url)
     digest = hashlib.sha256()
     try:
-        response = urlopen(url)
+        response = urlopen(url, timeout=60)
         try:
             while True:
                 chunk = response.read(_HASH_READ_CHUNK_SIZE)
