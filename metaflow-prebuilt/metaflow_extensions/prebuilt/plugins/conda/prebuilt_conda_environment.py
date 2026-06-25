@@ -66,6 +66,9 @@ logger = logging.getLogger(__name__)
 # Schema version prefix on the image tag. Bump when the Dockerfile shape,
 # bootstrap activation contract, env_path layout, or tag scheme changes in a way
 # that makes pre-existing images at the same env-id incompatible.
+# v32: the generated Dockerfile bootstraps tiny build-time Python dependencies
+#      when the base image does not provide them, then removes that bootstrap
+#      target in the same RUN as env installation.
 # v31: the generated Dockerfile removes Conda package caches in the same RUN as
 #      env installation, so package archives/extracts never enter the committed
 #      install layer.
@@ -74,7 +77,7 @@ logger = logging.getLogger(__name__)
 # v29: the registry tag now carries a base-image/arch variant suffix (image
 #      identity), so images that share an env but differ by base/arch no longer
 #      collide on one tag.
-PREBUILT_IMAGE_SCHEMA_VERSION = "v31"
+PREBUILT_IMAGE_SCHEMA_VERSION = "v32"
 
 # Docker tag components allow [A-Za-z0-9_.-]; everything else is replaced.
 _TAG_SAFE_CHARS = set(
@@ -924,10 +927,20 @@ def _write_deterministic_gzip_tar(
     with gzip.GzipFile(fileobj=out, mode="wb", mtime=0) as gz:
         with tarfile.open(fileobj=gz, mode="w") as tar:
             for member, payload in members:
+                normalized = tarfile.TarInfo(member.name)
+                normalized.size = len(payload) if member.isfile() else 0
+                normalized.mode = member.mode
+                normalized.type = member.type
+                normalized.linkname = member.linkname
+                normalized.mtime = 0
+                normalized.uid = 0
+                normalized.gid = 0
+                normalized.uname = ""
+                normalized.gname = ""
                 if member.isfile():
-                    tar.addfile(member, io.BytesIO(payload))
+                    tar.addfile(normalized, io.BytesIO(payload))
                 else:
-                    tar.addfile(member)
+                    tar.addfile(normalized)
     return out.getvalue()
 
 
@@ -1154,6 +1167,18 @@ def _generate_dockerfile(
         env_id.req_id,
         env_id.full_id,
     )
+    bootstrap_command = (
+        "BOOTSTRAP=$(mktemp -d) && "
+        "(python -c 'import requests' >/dev/null 2>&1 || "
+        "(python -m pip --version >/dev/null 2>&1 || "
+        "python -m ensurepip --upgrade) && "
+        "python -m pip install --disable-pip-version-check --no-cache-dir "
+        "--index-url https://pypi.netflix.net/simple --target \"$BOOTSTRAP\" "
+        "requests) && "
+        "METAFLOW_PREBUILT_BUILD_CONTAINER=1 "
+        "PYTHONPATH=\"$BOOTSTRAP:$PYTHONPATH\" %s && "
+        "rm -rf \"$BOOTSTRAP\"" % build_install_command
+    )
     cleanup_command = "rm -rf %s/pkgs %s/conda-bld /root/.cache/pip" % (
         PREBUILT_MAMBA_ROOT_PREFIX,
         PREBUILT_MAMBA_ROOT_PREFIX,
@@ -1179,7 +1204,7 @@ def _generate_dockerfile(
             )
         lines.append(
             "RUN %s %s && %s"
-            % (" ".join(mounts), build_install_command, cleanup_command)
+            % (" ".join(mounts), bootstrap_command, cleanup_command)
         )
     else:
         # COPY the current deferred-builds hand-off (ALWAYS - this overwrites
@@ -1194,7 +1219,7 @@ def _generate_dockerfile(
                 "COPY %s %s"
                 % (_DEFERRED_WHEELS_CONTEXT_DIR, _DEFERRED_WHEELS_CONTAINER_DIR)
             )
-        lines.append("RUN %s && %s" % (build_install_command, cleanup_command))
+        lines.append("RUN %s && %s" % (bootstrap_command, cleanup_command))
     lines.extend(
         [
             "COPY %s /tmp/%s"

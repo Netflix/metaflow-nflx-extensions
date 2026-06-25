@@ -30,6 +30,7 @@ import tarfile
 import tempfile
 import time
 import zipfile
+import atexit
 
 from typing import List, Optional
 
@@ -47,14 +48,65 @@ from typing import List, Optional
 # ever set in the generated Dockerfile.
 os.environ.setdefault("METAFLOW_CONDA_IGNORE_CACHING_DATASTORES", '["local"]')
 
-from metaflow.cli import echo_always
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _install_minimal_metaflow_config() -> None:
+    """Keep build-time Metaflow imports from resolving unrelated plugins.
+
+    The base-image Python runs this installer before the target env exists. Some
+    base images intentionally do not include every transitive dependency needed
+    by all Netflix runtime plugins, so plugin resolution must be restricted to
+    the tiny set needed for Conda environment creation.
+    """
+
+    if not _truthy(os.environ.get("METAFLOW_PREBUILT_BUILD_CONTAINER", "0")):
+        return
+    if not _truthy(os.environ.get("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", "1")):
+        return
+
+    config_home = tempfile.mkdtemp(prefix="metaflow-prebuilt-config-")
+    atexit.register(lambda: shutil.rmtree(config_home, ignore_errors=True))
+    os.environ["METAFLOW_HOME"] = config_home
+
+    plugin_config = {
+        "METAFLOW_DEFAULT_EVENT_LOGGER": "nullSidecarLogger",
+        "METAFLOW_DEFAULT_MONITOR": "nullSidecarMonitor",
+        "METAFLOW_ENABLED_STEP_DECORATOR": [],
+        "METAFLOW_ENABLED_FLOW_DECORATOR": [],
+        "METAFLOW_ENABLED_ENVIRONMENT": ["nflx", "conda"],
+        "METAFLOW_ENABLED_METADATA_PROVIDER": [],
+        "METAFLOW_ENABLED_DATASTORE": ["local"],
+        "METAFLOW_ENABLED_DATACLIENT": [],
+        "METAFLOW_ENABLED_SECRETS_PROVIDER": [],
+        "METAFLOW_ENABLED_GCP_CLIENT_PROVIDER": [],
+        "METAFLOW_ENABLED_DEPLOYER_IMPL_PROVIDER": [],
+        "METAFLOW_ENABLED_AZURE_CLIENT_PROVIDER": [],
+        "METAFLOW_ENABLED_SIDECAR": [],
+        "METAFLOW_ENABLED_LOGGING_SIDECAR": ["nullSidecarLogger"],
+        "METAFLOW_ENABLED_MONITOR_SIDECAR": ["nullSidecarMonitor"],
+        "METAFLOW_ENABLED_AWS_CLIENT_PROVIDER": [],
+        "METAFLOW_ENABLED_CLI": [],
+        "METAFLOW_ENABLED_RUNNER_CLI": [],
+        "METAFLOW_ENABLED_TL_PLUGIN": [],
+    }
+    with open(os.path.join(config_home, "config.json"), "w", encoding="utf-8") as f:
+        json.dump(plugin_config, f)
+
+
+def echo_always(msg: str = "", nl: bool = True, err: bool = True, **_: object) -> None:
+    print(msg, end="\n" if nl else "", file=sys.stderr if err else sys.stdout)
+
+
+_install_minimal_metaflow_config()
 
 try:
+    from metaflow.metaflow_config import DATASTORE_LOCAL_DIR, CONDA_MAGIC_FILE_V2
+    from metaflow.packaging_sys import ContentType, MetaflowCodeContent
     from metaflow_extensions.netflixext.plugins.conda.conda import Conda
     from metaflow_extensions.netflixext.plugins.conda.env_descr import EnvID
-    from metaflow_extensions.netflixext.plugins.conda.remote_bootstrap import (
-        setup_conda_manifest,
-    )
     from metaflow_extensions.netflixext.plugins.conda.utils import (
         CondaException,
         arch_id,
@@ -90,6 +142,20 @@ _SETUPTOOLS_CHECK = (
     "    sys.exit(3)\n"
     "sys.exit(0 if major < 82 else 4)\n"
 )
+
+
+def setup_conda_manifest() -> None:
+    manifest_folder = os.path.join(os.getcwd(), DATASTORE_LOCAL_DIR)
+    os.makedirs(manifest_folder, exist_ok=True)
+    path_to_manifest = MetaflowCodeContent.get_filename(
+        CONDA_MAGIC_FILE_V2, ContentType.OTHER_CONTENT
+    )
+    if path_to_manifest is None:
+        raise RuntimeError(
+            "Cannot find the conda manifest file %s in the package"
+            % CONDA_MAGIC_FILE_V2
+        )
+    shutil.move(path_to_manifest, os.path.join(manifest_folder, CONDA_MAGIC_FILE_V2))
 
 
 def _parse_build_system_requires(text: str) -> List[str]:

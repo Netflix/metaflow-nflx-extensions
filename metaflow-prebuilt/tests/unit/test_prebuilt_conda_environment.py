@@ -509,7 +509,6 @@ def test_get_or_build_image_can_bypass_registry_cache(monkeypatch):
 
 
 def test_split_code_package_for_prebuilt_build_separates_runtime_code():
-    src = io.BytesIO()
     files = {
         ".mf_install": b"marker",
         ".mf_meta/condav2-1.cnd": b"manifest",
@@ -518,16 +517,24 @@ def test_split_code_package_for_prebuilt_build_separates_runtime_code():
         ".mf_code/user_module.py": b"user",
         "flow.py": b"flow",
     }
-    with tarfile.open(fileobj=src, mode="w:gz") as tar:
-        for name, payload in files.items():
-            info = tarfile.TarInfo(name)
-            info.size = len(payload)
-            info.mtime = 0
-            tar.addfile(info, io.BytesIO(payload))
 
-    support, runtime = _split_code_package_for_prebuilt_build(src.getvalue())
+    def _package_blob(metadata_offset=0):
+        src = io.BytesIO()
+        with tarfile.open(fileobj=src, mode="w:gz") as tar:
+            for name, payload in files.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(payload)
+                info.mtime = metadata_offset
+                info.uid = metadata_offset
+                info.gid = metadata_offset
+                info.uname = "user%d" % metadata_offset
+                info.gname = "group%d" % metadata_offset
+                tar.addfile(info, io.BytesIO(payload))
+        return src.getvalue()
+
+    support, runtime = _split_code_package_for_prebuilt_build(_package_blob())
     support_again, runtime_again = _split_code_package_for_prebuilt_build(
-        src.getvalue()
+        _package_blob(metadata_offset=123)
     )
 
     assert support == support_again
@@ -544,6 +551,29 @@ def test_split_code_package_for_prebuilt_build_separates_runtime_code():
         ".mf_meta/condav2-1.cnd",
     ]
     assert _names(runtime) == [".mf_code/user_module.py", "flow.py"]
+
+
+def test_split_code_package_for_prebuilt_build_preserves_file_modes():
+    files = {
+        ".mf_install": b"marker",
+        ".mf_meta/condav2-1.cnd": b"manifest",
+        ".mf_code/metaflow/__init__.py": b"",
+        ".mf_code/metaflow_extensions/prebuilt/__init__.py": b"",
+        "flow.py": b"flow",
+    }
+    src = io.BytesIO()
+    with tarfile.open(fileobj=src, mode="w:gz") as tar:
+        for name, payload in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            info.mtime = 0
+            if name == "flow.py":
+                info.mode = 0o755
+            tar.addfile(info, io.BytesIO(payload))
+
+    _, runtime = _split_code_package_for_prebuilt_build(src.getvalue())
+    with tarfile.open(fileobj=io.BytesIO(runtime), mode="r:gz") as tar:
+        assert tar.getmember("flow.py").mode == 0o755
 
 
 def test_build_prebuilt_images_skips_code_package_when_all_images_exist(
@@ -630,8 +660,8 @@ def test_build_prebuilt_images_includes_build_service_identity_in_tag(
 
     registry = MagicMock()
     registry.base_image_identity.side_effect = lambda base, _arch: base
-    registry.push_tag.return_value = "registry.example/prebuilt:v31-req1_full1"
-    registry.pull_tag.return_value = "prebuilt:v31-req1_full1"
+    registry.push_tag.return_value = "registry.example/prebuilt:v32-req1_full1"
+    registry.pull_tag.return_value = "prebuilt:v32-req1_full1"
     registry.image_exists.return_value = True
     registry.pull_config.return_value = {}
 

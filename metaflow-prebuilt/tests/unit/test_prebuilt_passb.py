@@ -12,6 +12,8 @@ exercise Pass B + the overlay is a controlled unit test like this one.
 
 import os
 import re
+import json
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -20,6 +22,24 @@ import types
 import pytest
 
 from metaflow_extensions.prebuilt.plugins.conda import prebuilt_build_install as pbi
+
+
+def test_minimal_metaflow_config_uses_core_null_sidecars(monkeypatch):
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_CONTAINER", "1")
+    monkeypatch.delenv("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", raising=False)
+
+    pbi._install_minimal_metaflow_config()
+    config_home = os.environ["METAFLOW_HOME"]
+    try:
+        with open(os.path.join(config_home, "config.json"), encoding="utf-8") as f:
+            config = json.load(f)
+    finally:
+        shutil.rmtree(config_home, ignore_errors=True)
+
+    assert config["METAFLOW_DEFAULT_EVENT_LOGGER"] == "nullSidecarLogger"
+    assert config["METAFLOW_DEFAULT_MONITOR"] == "nullSidecarMonitor"
+    assert config["METAFLOW_ENABLED_LOGGING_SIDECAR"] == ["nullSidecarLogger"]
+    assert config["METAFLOW_ENABLED_MONITOR_SIDECAR"] == ["nullSidecarMonitor"]
 
 
 # --------------------------------------------------------------------------
