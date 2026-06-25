@@ -22,7 +22,7 @@ from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment impor
     _tag_with_variant,
     _PREBUILT_REGISTRY_CACHE_ENV,
     _prebuilt_build_worker_count,
-    _split_code_package_for_prebuilt_build,
+    _build_install_support_package,
 )
 
 
@@ -510,7 +510,7 @@ def test_get_or_build_image_can_bypass_registry_cache(monkeypatch):
     build_service.build_and_push.assert_called_once()
 
 
-def test_split_code_package_for_prebuilt_build_separates_runtime_code():
+def test_build_install_support_package_extracts_stable_support_subset():
     files = {
         ".mf_install": b"marker",
         ".mf_meta/condav2-1.cnd": b"manifest",
@@ -534,13 +534,10 @@ def test_split_code_package_for_prebuilt_build_separates_runtime_code():
                 tar.addfile(info, io.BytesIO(payload))
         return src.getvalue()
 
-    support, runtime = _split_code_package_for_prebuilt_build(_package_blob())
-    support_again, runtime_again = _split_code_package_for_prebuilt_build(
-        _package_blob(metadata_offset=123)
-    )
+    support = _build_install_support_package(_package_blob())
+    support_again = _build_install_support_package(_package_blob(metadata_offset=123))
 
     assert support == support_again
-    assert runtime == runtime_again
 
     def _names(blob):
         with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
@@ -552,10 +549,9 @@ def test_split_code_package_for_prebuilt_build_separates_runtime_code():
         ".mf_install",
         ".mf_meta/condav2-1.cnd",
     ]
-    assert _names(runtime) == [".mf_code/user_module.py", "flow.py"]
 
 
-def test_split_code_package_for_prebuilt_build_preserves_file_modes():
+def test_get_or_build_image_keeps_runtime_code_package_unchanged(monkeypatch):
     files = {
         ".mf_install": b"marker",
         ".mf_meta/condav2-1.cnd": b"manifest",
@@ -563,18 +559,57 @@ def test_split_code_package_for_prebuilt_build_preserves_file_modes():
         ".mf_code/metaflow_extensions/prebuilt/__init__.py": b"",
         "flow.py": b"flow",
     }
+
     src = io.BytesIO()
     with tarfile.open(fileobj=src, mode="w:gz") as tar:
         for name, payload in files.items():
             info = tarfile.TarInfo(name)
             info.size = len(payload)
-            info.mtime = 0
             if name == "flow.py":
                 info.mode = 0o755
             tar.addfile(info, io.BytesIO(payload))
+    code_package_blob = src.getvalue()
 
-    _, runtime = _split_code_package_for_prebuilt_build(src.getvalue())
-    with tarfile.open(fileobj=io.BytesIO(runtime), mode="r:gz") as tar:
+    env_id = _make_env_id("req1", "full1")
+    env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
+    env._flow = [SimpleNamespace(name="start", decorators=[])]
+    env.conda = MagicMock()
+    env.conda.environment.return_value = SimpleNamespace(env_type="conda", packages=[])
+
+    captured = {}
+    build_service = MagicMock()
+    build_service.dockerfile_build_options.return_value = None
+
+    def capture_build(_dockerfile, context_files, *_args, **_kwargs):
+        captured.update(context_files)
+        return True
+
+    build_service.build_and_push.side_effect = capture_build
+    registry = MagicMock()
+    registry.push_credentials.return_value = {}
+    registry.push_tag.return_value = "registry.example/prebuilt:v32-req1_full1"
+    registry.pull_tag.return_value = "prebuilt:v32-req1_full1"
+    registry.image_exists.return_value = False
+
+    monkeypatch.setattr(
+        prebuilt_conda_environment.DockerBuildService,
+        "from_config",
+        MagicMock(return_value=build_service),
+    )
+
+    result = env._get_or_build_image(
+        env_id,
+        "start",
+        lambda *args, **kwargs: None,
+        registry,
+        base_image="cpu-base",
+        variant="linux-64-1234",
+        code_package_blob=code_package_blob,
+    )
+
+    assert result is not None
+    assert captured["job.tar"] == code_package_blob
+    with tarfile.open(fileobj=io.BytesIO(captured["job.tar"]), mode="r:gz") as tar:
         assert tar.getmember("flow.py").mode == 0o755
 
 

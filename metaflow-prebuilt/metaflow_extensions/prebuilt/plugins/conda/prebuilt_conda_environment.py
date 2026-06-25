@@ -807,11 +807,13 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             dockerfile_build_options=build_options,
         )
         context_files.update(embedded_wheel_files)
-        install_support_blob, runtime_code_blob = (
-            _split_code_package_for_prebuilt_build(code_package_blob)
+        context_files[_INSTALL_SUPPORT_TARBALL_NAME] = _build_install_support_package(
+            code_package_blob
         )
-        context_files[_INSTALL_SUPPORT_TARBALL_NAME] = install_support_blob
-        context_files[_CODE_PACKAGE_TARBALL_NAME] = runtime_code_blob
+        # Keep the runtime package byte-for-byte identical to MetaflowPackage
+        # output. The support tarball above is only an early, cache-friendly
+        # extract for the build-time installer.
+        context_files[_CODE_PACKAGE_TARBALL_NAME] = code_package_blob
 
         success = build_svc.build_and_push(
             dockerfile,
@@ -950,38 +952,33 @@ def _write_deterministic_gzip_tar(
     return out.getvalue()
 
 
-def _split_code_package_for_prebuilt_build(
+def _build_install_support_package(
     code_package_blob: bytes,
-) -> Tuple[bytes, bytes]:
-    """Split env-install support files from runtime user code.
+) -> bytes:
+    """Return the env-install support subset of a Metaflow code package.
 
     The build-time installer only needs packaged Metaflow/extension modules plus
     ``OTHER_CONTENT`` metadata. Extracting that stable subset before the env
     install lets Docker build backends reuse the expensive env layer when only
-    flow code changes. The runtime tarball is extracted after the env install,
-    preserving the final image's complete package tree.
+    flow code changes. The full original code package is still extracted after
+    the env install, preserving the final image's complete package tree exactly.
     """
     support_members: List[Tuple[tarfile.TarInfo, bytes]] = []
-    runtime_members: List[Tuple[tarfile.TarInfo, bytes]] = []
     with tarfile.open(fileobj=io.BytesIO(code_package_blob), mode="r:*") as src:
         for member in src.getmembers():
             if member.isdir():
                 continue
+            if not _is_install_support_member(member.name):
+                continue
             payload = src.extractfile(member).read() if member.isfile() else b""
-            if _is_install_support_member(member.name):
-                support_members.append((member, payload))
-            else:
-                runtime_members.append((member, payload))
+            support_members.append((member, payload))
 
     if not support_members:
         raise MetaflowException(
-            "Failed to split prebuilt code package: no install-support files found."
+            "Failed to build prebuilt install-support package: no support files found."
         )
 
-    return (
-        _write_deterministic_gzip_tar(support_members),
-        _write_deterministic_gzip_tar(runtime_members),
-    )
+    return _write_deterministic_gzip_tar(support_members)
 
 
 def _gather_embedded_wheels(
