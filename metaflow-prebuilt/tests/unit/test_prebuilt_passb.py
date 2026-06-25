@@ -87,6 +87,49 @@ def test_minimal_metaflow_config_derives_categories_from_metaflow_source(
     assert config["METAFLOW_ENABLED_NEW_PLUGIN_CATEGORY"] == []
 
 
+def test_install_minimal_metaflow_config_replaces_previous_home(monkeypatch):
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_CONTAINER", "1")
+    monkeypatch.delenv("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", raising=False)
+
+    pbi._install_minimal_metaflow_config()
+    first_home = os.environ["METAFLOW_HOME"]
+    assert os.path.isdir(first_home)
+    try:
+        pbi._install_minimal_metaflow_config()
+        second_home = os.environ["METAFLOW_HOME"]
+
+        assert second_home != first_home
+        assert not os.path.exists(first_home)
+        assert os.path.isdir(second_home)
+    finally:
+        pbi._cleanup_minimal_metaflow_config()
+
+
+def test_install_minimal_metaflow_config_does_not_publish_partial_home(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_CONTAINER", "1")
+    monkeypatch.delenv("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", raising=False)
+    monkeypatch.setenv("METAFLOW_HOME", "original-home")
+    config_home = tmp_path / "partial-config"
+
+    def fake_mkdtemp(prefix):
+        config_home.mkdir()
+        return str(config_home)
+
+    def fail_config():
+        raise RuntimeError("failed before config write")
+
+    monkeypatch.setattr(pbi.tempfile, "mkdtemp", fake_mkdtemp)
+    monkeypatch.setattr(pbi, "_minimal_metaflow_config", fail_config)
+
+    with pytest.raises(RuntimeError, match="failed before config write"):
+        pbi._install_minimal_metaflow_config()
+
+    assert os.environ["METAFLOW_HOME"] == "original-home"
+    assert not config_home.exists()
+
+
 def test_main_cleans_minimal_metaflow_config_before_fast_exit(monkeypatch, capsys):
     monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_CONTAINER", "1")
     monkeypatch.delenv("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", raising=False)

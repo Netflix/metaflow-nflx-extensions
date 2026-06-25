@@ -73,7 +73,7 @@ def _metaflow_plugin_categories() -> List[str]:
     This module writes ``METAFLOW_HOME/config.json`` before importing
     ``metaflow``. Importing ``metaflow.extension_support.plugins`` directly would
     execute Metaflow's package init too early, so read the installed source file
-    and parse the ``_plugin_categories`` literal instead.
+    and parse the source for the ``_plugin_categories`` dict keys instead.
     """
 
     spec = importlib.machinery.PathFinder.find_spec("metaflow", sys.path)
@@ -129,12 +129,12 @@ def _minimal_metaflow_config() -> dict:
 def _cleanup_minimal_metaflow_config() -> None:
     global _MINIMAL_CONFIG_HOME
     config_home = _MINIMAL_CONFIG_HOME
+    _MINIMAL_CONFIG_HOME = None
     if not config_home:
         return
-    shutil.rmtree(config_home, ignore_errors=True)
     if os.environ.get("METAFLOW_HOME") == config_home:
         os.environ.pop("METAFLOW_HOME", None)
-    _MINIMAL_CONFIG_HOME = None
+    shutil.rmtree(config_home, ignore_errors=True)
 
 
 def _install_minimal_metaflow_config() -> None:
@@ -154,15 +154,23 @@ def _install_minimal_metaflow_config() -> None:
     global _MINIMAL_CONFIG_HOME, _MINIMAL_CONFIG_CLEANUP_REGISTERED
     _cleanup_minimal_metaflow_config()
     config_home = tempfile.mkdtemp(prefix="metaflow-prebuilt-config-")
-    _MINIMAL_CONFIG_HOME = config_home
-    if not _MINIMAL_CONFIG_CLEANUP_REGISTERED:
-        atexit.register(_cleanup_minimal_metaflow_config)
-        _MINIMAL_CONFIG_CLEANUP_REGISTERED = True
-    os.environ["METAFLOW_HOME"] = config_home
+    try:
+        plugin_config = _minimal_metaflow_config()
+        with open(os.path.join(config_home, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(plugin_config, f)
 
-    plugin_config = _minimal_metaflow_config()
-    with open(os.path.join(config_home, "config.json"), "w", encoding="utf-8") as f:
-        json.dump(plugin_config, f)
+        # Publish METAFLOW_HOME only after config.json exists. Deploy-side
+        # parallelism runs separate Docker builds, so these process globals are
+        # not shared across step image builds.
+        _MINIMAL_CONFIG_HOME = config_home
+        if not _MINIMAL_CONFIG_CLEANUP_REGISTERED:
+            atexit.register(_cleanup_minimal_metaflow_config)
+            _MINIMAL_CONFIG_CLEANUP_REGISTERED = True
+        os.environ["METAFLOW_HOME"] = config_home
+        config_home = None
+    finally:
+        if config_home:
+            shutil.rmtree(config_home, ignore_errors=True)
 
 
 def echo_always(msg: str = "", nl: bool = True, err: bool = True, **_: object) -> None:
