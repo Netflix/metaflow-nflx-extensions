@@ -576,13 +576,7 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         for spec in step_specs:
             image_key = spec["image_key"]
             result = image_results[image_key]
-            # Should never be None here — failures raised above.
-            if result is None:
-                raise MetaflowException(
-                    "Prebuilt image build failed for step %r. "
-                    "--environment=prebuilt does not fall back to "
-                    "standard conda." % spec["step"].name
-                )
+            assert result is not None  # guaranteed: Phase 3 raised on all failures
             pull_tag, env_path = result
 
             self.__class__._prebuilt_images[image_key] = pull_tag
