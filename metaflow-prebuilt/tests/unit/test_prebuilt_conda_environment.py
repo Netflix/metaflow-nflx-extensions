@@ -376,6 +376,10 @@ class TestBootstrapCommands:
             PrebuiltCondaEnvironment,
             "_get_or_build_image",
             return_value=("pull-tag", env_path),
+        ), patch.object(
+            prebuilt_conda_environment,
+            "_build_metaflow_code_package",
+            return_value=b"fake-tarball",
         ):
             env._build_prebuilt_images(lambda *args, **kwargs: None)
 

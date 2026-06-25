@@ -543,9 +543,7 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         # step images build in parallel. The builds themselves run remotely via
         # `newt build-docker --remote`, so local resource pressure is minimal.
         max_workers = int(
-            os.environ.get(
-                "METAFLOW_PREBUILT_BUILD_WORKERS", str(len(unique_specs))
-            )
+            os.environ.get("METAFLOW_PREBUILT_BUILD_WORKERS", str(len(unique_specs)))
         )
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
@@ -589,9 +587,9 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
 
             self.__class__._prebuilt_images[image_key] = pull_tag
             self.__class__._prebuilt_env_paths[spec["env_key"]] = env_path
-            self.__class__._prebuilt_env_paths[
-                _step_state_key(spec["step"].name)
-            ] = env_path
+            self.__class__._prebuilt_env_paths[_step_state_key(spec["step"].name)] = (
+                env_path
+            )
 
             pull_config = registry.pull_config(pull_tag)
             found_remote_deco = False
