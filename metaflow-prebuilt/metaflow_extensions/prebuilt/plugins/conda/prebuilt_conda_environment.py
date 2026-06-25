@@ -701,12 +701,6 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                 % (env_id.req_id[:8], env_id.full_id[:8])
             )
 
-        resolved_env = cast(Conda, self.conda).environment(env_id)
-        if resolved_env is None:
-            echo("    WARNING: Could not find resolved environment for %s" % (env_id,))
-            return None
-
-        env_type = resolved_env.env_type
         env_path = (
             _env_path_for_named(named_alias)
             if named_alias is not None
@@ -730,6 +724,13 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                 "    Registry prebuilt image reuse disabled by %s; rebuilding: %s"
                 % (_PREBUILT_REGISTRY_CACHE_ENV, push_tag)
             )
+
+        resolved_env = cast(Conda, self.conda).environment(env_id)
+        if resolved_env is None:
+            echo("    WARNING: Could not find resolved environment for %s" % (env_id,))
+            return None
+
+        env_type = resolved_env.env_type
 
         if code_package_blob is None:
             try:

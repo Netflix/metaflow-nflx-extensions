@@ -457,6 +457,7 @@ def test_get_or_build_image_reuses_existing_immutable_tag(monkeypatch):
     registry.image_exists.assert_called_once_with(
         "registry.example/prebuilt:v29-abc_def-linux-64-1234"
     )
+    env.conda.environment.assert_not_called()
     build_service.build_and_push.assert_not_called()
 
 
