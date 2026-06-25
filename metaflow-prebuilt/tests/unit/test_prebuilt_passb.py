@@ -42,6 +42,51 @@ def test_minimal_metaflow_config_uses_core_null_sidecars(monkeypatch):
     assert config["METAFLOW_ENABLED_MONITOR_SIDECAR"] == ["nullSidecarMonitor"]
 
 
+def test_minimal_metaflow_config_derives_categories_from_metaflow_source(
+    tmp_path, monkeypatch
+):
+    plugins_dir = tmp_path / "metaflow" / "extension_support"
+    plugins_dir.mkdir(parents=True)
+    (tmp_path / "metaflow" / "__init__.py").write_text("")
+    (plugins_dir / "__init__.py").write_text("")
+    (plugins_dir / "plugins.py").write_text(
+        "_plugin_categories = {\n"
+        "    'step_decorator': None,\n"
+        "    'environment': None,\n"
+        "    'datastore': None,\n"
+        "    'logging_sidecar': None,\n"
+        "    'monitor_sidecar': None,\n"
+        "    'new_plugin_category': None,\n"
+        "}\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    config = pbi._minimal_metaflow_config()
+    enabled_categories = {
+        key.removeprefix("METAFLOW_ENABLED_")
+        for key in config
+        if key.startswith("METAFLOW_ENABLED_")
+    }
+
+    assert enabled_categories == {
+        "STEP_DECORATOR",
+        "ENVIRONMENT",
+        "DATASTORE",
+        "LOGGING_SIDECAR",
+        "MONITOR_SIDECAR",
+        "NEW_PLUGIN_CATEGORY",
+    }
+    assert set(pbi._MINIMAL_PLUGIN_ALLOWLIST).issubset(enabled_categories)
+    assert config["METAFLOW_DEFAULT_EVENT_LOGGER"] == "nullSidecarLogger"
+    assert config["METAFLOW_DEFAULT_MONITOR"] == "nullSidecarMonitor"
+    assert config["METAFLOW_ENABLED_ENVIRONMENT"] == ["nflx", "conda"]
+    assert config["METAFLOW_ENABLED_DATASTORE"] == ["local"]
+    assert config["METAFLOW_ENABLED_LOGGING_SIDECAR"] == ["nullSidecarLogger"]
+    assert config["METAFLOW_ENABLED_MONITOR_SIDECAR"] == ["nullSidecarMonitor"]
+    assert config["METAFLOW_ENABLED_STEP_DECORATOR"] == []
+    assert config["METAFLOW_ENABLED_NEW_PLUGIN_CATEGORY"] == []
+
+
 def test_main_cleans_minimal_metaflow_config_before_fast_exit(monkeypatch, capsys):
     monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_CONTAINER", "1")
     monkeypatch.delenv("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", raising=False)

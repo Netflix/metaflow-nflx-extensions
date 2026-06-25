@@ -31,6 +31,8 @@ import tempfile
 import time
 import zipfile
 import atexit
+import ast
+import importlib.machinery
 
 from typing import List, Optional
 
@@ -55,6 +57,73 @@ def _truthy(value: str) -> bool:
 
 _MINIMAL_CONFIG_HOME: Optional[str] = None
 _MINIMAL_CONFIG_CLEANUP_REGISTERED = False
+_MINIMAL_EVENT_LOGGER = "nullSidecarLogger"
+_MINIMAL_MONITOR = "nullSidecarMonitor"
+_MINIMAL_PLUGIN_ALLOWLIST = {
+    "ENVIRONMENT": ("nflx", "conda"),
+    "DATASTORE": ("local",),
+    "LOGGING_SIDECAR": (_MINIMAL_EVENT_LOGGER,),
+    "MONITOR_SIDECAR": (_MINIMAL_MONITOR,),
+}
+
+
+def _metaflow_plugin_categories() -> List[str]:
+    """Return Metaflow plugin categories without importing Metaflow.
+
+    This module writes ``METAFLOW_HOME/config.json`` before importing
+    ``metaflow``. Importing ``metaflow.extension_support.plugins`` directly would
+    execute Metaflow's package init too early, so read the installed source file
+    and parse the ``_plugin_categories`` literal instead.
+    """
+
+    spec = importlib.machinery.PathFinder.find_spec("metaflow", sys.path)
+    locations = list(spec.submodule_search_locations or []) if spec else []
+    if not locations:
+        raise RuntimeError("Cannot locate installed metaflow package")
+
+    plugins_path = os.path.join(locations[0], "extension_support", "plugins.py")
+    try:
+        with open(plugins_path, encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=plugins_path)
+    except OSError as e:
+        raise RuntimeError("Cannot read Metaflow plugin categories: %s" % e) from e
+
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "_plugin_categories"
+            for target in node.targets
+        ):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            break
+        categories: List[str] = []
+        for key in node.value.keys:
+            if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                raise RuntimeError(
+                    "Metaflow _plugin_categories contains a non-string key"
+                )
+            categories.append(key.value.upper())
+        return categories
+
+    raise RuntimeError("Cannot find Metaflow _plugin_categories")
+
+
+def _minimal_metaflow_config() -> dict:
+    categories = _metaflow_plugin_categories()
+    config = {
+        "METAFLOW_DEFAULT_EVENT_LOGGER": _MINIMAL_EVENT_LOGGER,
+        "METAFLOW_DEFAULT_MONITOR": _MINIMAL_MONITOR,
+    }
+    config.update(
+        {
+            "METAFLOW_ENABLED_%s"
+            % category: list(_MINIMAL_PLUGIN_ALLOWLIST.get(category, ()))
+            for category in categories
+        }
+    )
+    return config
 
 
 def _cleanup_minimal_metaflow_config() -> None:
@@ -91,27 +160,7 @@ def _install_minimal_metaflow_config() -> None:
         _MINIMAL_CONFIG_CLEANUP_REGISTERED = True
     os.environ["METAFLOW_HOME"] = config_home
 
-    plugin_config = {
-        "METAFLOW_DEFAULT_EVENT_LOGGER": "nullSidecarLogger",
-        "METAFLOW_DEFAULT_MONITOR": "nullSidecarMonitor",
-        "METAFLOW_ENABLED_STEP_DECORATOR": [],
-        "METAFLOW_ENABLED_FLOW_DECORATOR": [],
-        "METAFLOW_ENABLED_ENVIRONMENT": ["nflx", "conda"],
-        "METAFLOW_ENABLED_METADATA_PROVIDER": [],
-        "METAFLOW_ENABLED_DATASTORE": ["local"],
-        "METAFLOW_ENABLED_DATACLIENT": [],
-        "METAFLOW_ENABLED_SECRETS_PROVIDER": [],
-        "METAFLOW_ENABLED_GCP_CLIENT_PROVIDER": [],
-        "METAFLOW_ENABLED_DEPLOYER_IMPL_PROVIDER": [],
-        "METAFLOW_ENABLED_AZURE_CLIENT_PROVIDER": [],
-        "METAFLOW_ENABLED_SIDECAR": [],
-        "METAFLOW_ENABLED_LOGGING_SIDECAR": ["nullSidecarLogger"],
-        "METAFLOW_ENABLED_MONITOR_SIDECAR": ["nullSidecarMonitor"],
-        "METAFLOW_ENABLED_AWS_CLIENT_PROVIDER": [],
-        "METAFLOW_ENABLED_CLI": [],
-        "METAFLOW_ENABLED_RUNNER_CLI": [],
-        "METAFLOW_ENABLED_TL_PLUGIN": [],
-    }
+    plugin_config = _minimal_metaflow_config()
     with open(os.path.join(config_home, "config.json"), "w", encoding="utf-8") as f:
         json.dump(plugin_config, f)
 
