@@ -1173,11 +1173,11 @@ def _generate_dockerfile(
         "(python -m pip --version >/dev/null 2>&1 || "
         "python -m ensurepip --upgrade) && "
         "python -m pip install --disable-pip-version-check --no-cache-dir "
-        "--index-url https://pypi.netflix.net/simple --target \"$BOOTSTRAP\" "
+        '--index-url https://pypi.netflix.net/simple --target "$BOOTSTRAP" '
         "requests) && "
         "METAFLOW_PREBUILT_BUILD_CONTAINER=1 "
-        "PYTHONPATH=\"$BOOTSTRAP:$PYTHONPATH\" %s && "
-        "rm -rf \"$BOOTSTRAP\"" % build_install_command
+        'PYTHONPATH="$BOOTSTRAP:$PYTHONPATH" %s && '
+        'rm -rf "$BOOTSTRAP"' % build_install_command
     )
     cleanup_command = "rm -rf %s/pkgs %s/conda-bld /root/.cache/pip" % (
         PREBUILT_MAMBA_ROOT_PREFIX,
@@ -1203,8 +1203,7 @@ def _generate_dockerfile(
                 % (_DEFERRED_WHEELS_CONTEXT_DIR, _DEFERRED_WHEELS_CONTAINER_DIR)
             )
         lines.append(
-            "RUN %s %s && %s"
-            % (" ".join(mounts), bootstrap_command, cleanup_command)
+            "RUN %s %s && %s" % (" ".join(mounts), bootstrap_command, cleanup_command)
         )
     else:
         # COPY the current deferred-builds hand-off (ALWAYS - this overwrites
