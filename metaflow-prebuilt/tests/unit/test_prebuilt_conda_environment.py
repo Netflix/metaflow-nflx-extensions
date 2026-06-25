@@ -21,6 +21,7 @@ from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment impor
     _image_dedup_key,
     _tag_with_variant,
     _PREBUILT_REGISTRY_CACHE_ENV,
+    _prebuilt_build_worker_count,
     _split_code_package_for_prebuilt_build,
 )
 
@@ -763,6 +764,21 @@ def test_build_prebuilt_images_builds_code_package_once_for_multiple_misses(
 
     package_mock.assert_called_once()
     assert build_service.build_and_push.call_count == 2
+
+
+def test_prebuilt_build_worker_count_caps_default_but_honors_override(monkeypatch):
+    monkeypatch.delenv("METAFLOW_PREBUILT_BUILD_WORKERS", raising=False)
+    assert _prebuilt_build_worker_count(2) == 2
+    assert _prebuilt_build_worker_count(20) == 8
+
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_WORKERS", "12")
+    assert _prebuilt_build_worker_count(20) == 12
+
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_WORKERS", "not-an-int")
+    assert _prebuilt_build_worker_count(20) == 8
+
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_WORKERS", "0")
+    assert _prebuilt_build_worker_count(20) == 8
 
 
 def test_gather_embedded_wheels_prefers_cached_wheel_over_local_sdist():

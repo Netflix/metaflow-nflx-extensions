@@ -53,6 +53,21 @@ def _truthy(value: str) -> bool:
     return value.strip().lower() not in ("", "0", "false", "no", "off")
 
 
+_MINIMAL_CONFIG_HOME: Optional[str] = None
+_MINIMAL_CONFIG_CLEANUP_REGISTERED = False
+
+
+def _cleanup_minimal_metaflow_config() -> None:
+    global _MINIMAL_CONFIG_HOME
+    config_home = _MINIMAL_CONFIG_HOME
+    if not config_home:
+        return
+    shutil.rmtree(config_home, ignore_errors=True)
+    if os.environ.get("METAFLOW_HOME") == config_home:
+        os.environ.pop("METAFLOW_HOME", None)
+    _MINIMAL_CONFIG_HOME = None
+
+
 def _install_minimal_metaflow_config() -> None:
     """Keep build-time Metaflow imports from resolving unrelated plugins.
 
@@ -67,8 +82,13 @@ def _install_minimal_metaflow_config() -> None:
     if not _truthy(os.environ.get("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", "1")):
         return
 
+    global _MINIMAL_CONFIG_HOME, _MINIMAL_CONFIG_CLEANUP_REGISTERED
+    _cleanup_minimal_metaflow_config()
     config_home = tempfile.mkdtemp(prefix="metaflow-prebuilt-config-")
-    atexit.register(lambda: shutil.rmtree(config_home, ignore_errors=True))
+    _MINIMAL_CONFIG_HOME = config_home
+    if not _MINIMAL_CONFIG_CLEANUP_REGISTERED:
+        atexit.register(_cleanup_minimal_metaflow_config)
+        _MINIMAL_CONFIG_CLEANUP_REGISTERED = True
     os.environ["METAFLOW_HOME"] = config_home
 
     plugin_config = {
@@ -592,15 +612,26 @@ def install_env(req_id: str, full_id: str) -> str:
     return env_path
 
 
-if __name__ == "__main__":
-    if len(sys.argv) != 3:
+def main(argv: Optional[List[str]] = None) -> int:
+    args = sys.argv if argv is None else argv
+    if len(args) != 3:
         print(
             "Usage: python -m metaflow_extensions.prebuilt.plugins.conda."
             "prebuilt_build_install <req_id> <full_id>",
             file=sys.stderr,
         )
-        sys.exit(2)
-    path = install_env(sys.argv[1], sys.argv[2])
-    print(path)
-    sys.stdout.flush()
-    os._exit(0)
+        return 2
+    try:
+        path = install_env(args[1], args[2])
+        print(path)
+        sys.stdout.flush()
+        return 0
+    finally:
+        _cleanup_minimal_metaflow_config()
+
+
+if __name__ == "__main__":
+    exit_code = main()
+    if exit_code == 0:
+        os._exit(0)
+    sys.exit(exit_code)

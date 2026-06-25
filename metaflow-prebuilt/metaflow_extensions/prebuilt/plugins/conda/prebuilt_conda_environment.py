@@ -112,6 +112,7 @@ _DEFERRED_BUILDS_CONTAINER_PATH = "/app/deferred_builds.json"
 _DEFERRED_WHEELS_CONTEXT_DIR = "deferred_wheels"
 _DEFERRED_WHEELS_CONTAINER_DIR = "/app/deferred_wheels"
 _PREBUILT_REGISTRY_CACHE_ENV = "METAFLOW_PREBUILT_REGISTRY_CACHE"
+_DEFAULT_PREBUILT_BUILD_WORKERS = 8
 
 
 def _env_flag_enabled(name: str, default: bool) -> bool:
@@ -119,6 +120,20 @@ def _env_flag_enabled(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _prebuilt_build_worker_count(unique_image_count: int) -> int:
+    configured_workers = os.environ.get("METAFLOW_PREBUILT_BUILD_WORKERS")
+    default_workers = min(unique_image_count, _DEFAULT_PREBUILT_BUILD_WORKERS)
+    if configured_workers is None:
+        return default_workers
+    try:
+        workers = int(configured_workers)
+    except ValueError:
+        return default_workers
+    if workers <= 0:
+        return default_workers
+    return workers
 
 
 def _env_path_for(env_id: EnvID) -> str:
@@ -588,20 +603,9 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             image_results[image_key] = result
 
         # METAFLOW_PREBUILT_BUILD_WORKERS caps concurrent image builds.
-        # Default: unbounded (one worker per unique image) so all independent
-        # step images build in parallel. The builds themselves run remotely via
-        # `newt build-docker --remote`, so local resource pressure is minimal.
-        configured_workers = os.environ.get("METAFLOW_PREBUILT_BUILD_WORKERS")
-        try:
-            max_workers = (
-                int(configured_workers)
-                if configured_workers is not None
-                else len(unique_specs)
-            )
-        except ValueError:
-            max_workers = len(unique_specs)
-        if max_workers <= 0:
-            max_workers = len(unique_specs)
+        # Default to a bounded fanout: enough to parallelize common multi-env
+        # flows without letting a very large flow launch unbounded remote builds.
+        max_workers = _prebuilt_build_worker_count(len(unique_specs))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(_build_one, ik, spec): ik

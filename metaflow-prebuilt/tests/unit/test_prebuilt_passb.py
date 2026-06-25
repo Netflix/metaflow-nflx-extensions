@@ -34,12 +34,29 @@ def test_minimal_metaflow_config_uses_core_null_sidecars(monkeypatch):
         with open(os.path.join(config_home, "config.json"), encoding="utf-8") as f:
             config = json.load(f)
     finally:
-        shutil.rmtree(config_home, ignore_errors=True)
+        pbi._cleanup_minimal_metaflow_config()
 
     assert config["METAFLOW_DEFAULT_EVENT_LOGGER"] == "nullSidecarLogger"
     assert config["METAFLOW_DEFAULT_MONITOR"] == "nullSidecarMonitor"
     assert config["METAFLOW_ENABLED_LOGGING_SIDECAR"] == ["nullSidecarLogger"]
     assert config["METAFLOW_ENABLED_MONITOR_SIDECAR"] == ["nullSidecarMonitor"]
+
+
+def test_main_cleans_minimal_metaflow_config_before_fast_exit(monkeypatch, capsys):
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_CONTAINER", "1")
+    monkeypatch.delenv("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", raising=False)
+
+    pbi._install_minimal_metaflow_config()
+    config_home = os.environ["METAFLOW_HOME"]
+    assert os.path.isdir(config_home)
+
+    monkeypatch.setattr(pbi, "install_env", lambda req_id, full_id: "/env/path")
+
+    assert pbi.main(["prebuilt_build_install", "req", "full"]) == 0
+
+    assert capsys.readouterr().out.strip() == "/env/path"
+    assert not os.path.exists(config_home)
+    assert os.environ.get("METAFLOW_HOME") != config_home
 
 
 # --------------------------------------------------------------------------
