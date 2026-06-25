@@ -7,7 +7,9 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
@@ -409,6 +411,8 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
 
         registry = ImageRegistry.from_config()
 
+        # --- Phase 1: Collect build specs for all remote steps (sequential) ---
+        step_specs = []
         for step in self._flow:
             env_id = self.get_env_id(cast(Conda, self.conda), step.name)
             if env_id is None:
@@ -474,35 +478,124 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                 else _env_path_for(env_id)
             )
 
-            if image_key in self.__class__._prebuilt_images:
-                pull_tag = self.__class__._prebuilt_images[image_key]
-            else:
-                result = self._get_or_build_image(
-                    env_id,
-                    step,
-                    echo,
-                    registry,
-                    base_image=build_base_image,
-                    variant=variant,
-                    named_alias=named_alias,
-                )
-                if result is None:
-                    raise MetaflowException(
-                        "Prebuilt image build failed for step %r. "
-                        "--environment=prebuilt does not fall back to "
-                        "standard conda." % step.name
+            step_specs.append(
+                {
+                    "step": step,
+                    "env_id": env_id,
+                    "env_key": env_key,
+                    "env_path": env_path,
+                    "named_alias": named_alias,
+                    "image_key": image_key,
+                    "base_image": build_base_image,
+                    "variant": variant,
+                }
+            )
+
+        if not step_specs:
+            self.__class__._persist_prebuilt_state()
+            return
+
+        # --- Phase 2: Build the MetaflowPackage code tarball once, shared
+        #     across all image builds (it is flow-level, identical for every
+        #     step and expensive to rebuild N times). ---
+        try:
+            code_package_blob = _build_metaflow_code_package(self, echo)
+        except Exception as e:
+            raise MetaflowException(
+                "Failed to build metaflow code package: %s" % e
+            ) from e
+
+        # --- Phase 3: Build unique images concurrently.
+        #     Steps that share the same image_key (same env + base/arch) are
+        #     deduped — only the first spec triggers a build; the result is
+        #     reused by all steps with that key in Phase 4. ---
+        unique_specs: Dict[str, dict] = {}
+        for spec in step_specs:
+            if spec["image_key"] not in unique_specs:
+                unique_specs[spec["image_key"]] = spec
+
+        echo_lock = threading.Lock()
+
+        def _locked_echo(msg: str) -> None:
+            with echo_lock:
+                echo(msg)
+
+        # keyed by image_key; None means the build failed.
+        image_results: Dict[str, Optional[Tuple[str, str]]] = {
+            ik: None for ik in unique_specs
+        }
+
+        def _build_one(image_key: str, spec: dict) -> None:
+            result = self._get_or_build_image(
+                spec["env_id"],
+                spec["step"],
+                _locked_echo,
+                registry,
+                base_image=spec["base_image"],
+                variant=spec["variant"],
+                named_alias=spec["named_alias"],
+                code_package_blob=code_package_blob,
+            )
+            image_results[image_key] = result
+
+        # METAFLOW_PREBUILT_BUILD_WORKERS caps concurrent image builds.
+        # Default: unbounded (one worker per unique image) so all independent
+        # step images build in parallel. The builds themselves run remotely via
+        # `newt build-docker --remote`, so local resource pressure is minimal.
+        max_workers = int(
+            os.environ.get(
+                "METAFLOW_PREBUILT_BUILD_WORKERS", str(len(unique_specs))
+            )
+        )
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_build_one, ik, spec): ik
+                for ik, spec in unique_specs.items()
+            }
+            failed_keys = []
+            for future in as_completed(futures):
+                image_key = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    _locked_echo(
+                        "    ERROR: image build raised exception for %s: %s"
+                        % (image_key, exc)
                     )
-                pull_tag, env_path = result
-                self.__class__._prebuilt_images[image_key] = pull_tag
+                    image_results[image_key] = None
+                if image_results[image_key] is None:
+                    failed_keys.append(image_key)
 
-            self.__class__._prebuilt_env_paths[env_key] = env_path
-            self.__class__._prebuilt_env_paths[_step_state_key(step.name)] = env_path
+        if failed_keys:
+            raise MetaflowException(
+                "Prebuilt image build failed for %d image(s). "
+                "--environment=prebuilt does not fall back to standard conda."
+                % len(failed_keys)
+            )
 
-            pull_tag = self.__class__._prebuilt_images[image_key]
+        # --- Phase 4: Update class state and rewrite step decorators
+        #     (sequential — decorator mutation is not thread-safe). ---
+        for spec in step_specs:
+            image_key = spec["image_key"]
+            result = image_results[image_key]
+            # Should never be None here — failures raised above.
+            if result is None:
+                raise MetaflowException(
+                    "Prebuilt image build failed for step %r. "
+                    "--environment=prebuilt does not fall back to "
+                    "standard conda." % spec["step"].name
+                )
+            pull_tag, env_path = result
+
+            self.__class__._prebuilt_images[image_key] = pull_tag
+            self.__class__._prebuilt_env_paths[spec["env_key"]] = env_path
+            self.__class__._prebuilt_env_paths[
+                _step_state_key(spec["step"].name)
+            ] = env_path
+
             pull_config = registry.pull_config(pull_tag)
-
             found_remote_deco = False
-            for deco in step.decorators:
+            for deco in spec["step"].decorators:
                 if deco.name in CONDA_REMOTE_COMMANDS:
                     prev = deco.attributes.get("image")
                     deco.attributes["image"] = pull_tag
@@ -510,14 +603,15 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                         deco.attributes[k] = v
                     echo(
                         "    @%s image rewritten for step %s: %r -> %r"
-                        % (deco.name, step.name, prev, pull_tag)
+                        % (deco.name, spec["step"].name, prev, pull_tag)
                     )
                     found_remote_deco = True
 
             if not found_remote_deco:
                 raise MetaflowException(
                     "Prebuilt image was built (%s) but no remote compute "
-                    "decorator found on step %r to rewrite." % (pull_tag, step.name)
+                    "decorator found on step %r to rewrite."
+                    % (pull_tag, spec["step"].name)
                 )
 
         self.__class__._persist_prebuilt_state()
@@ -531,6 +625,7 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         base_image: str,
         variant: str,
         named_alias: Optional[str] = None,
+        code_package_blob: Optional[bytes] = None,
     ) -> Optional[Tuple[str, str]]:
         """Build the prebuilt image and return ``(pull_tag, env_path)`` or
         ``None`` on failure. ``base_image`` and ``variant`` are resolved by the
@@ -576,11 +671,12 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             echo("    Reusing existing prebuilt image: %s" % push_tag)
             return pull_tag, env_path
 
-        try:
-            code_package_blob = _build_metaflow_code_package(self, echo)
-        except Exception as e:
-            echo("    ERROR: failed to build metaflow code package: %s" % e)
-            return None
+        if code_package_blob is None:
+            try:
+                code_package_blob = _build_metaflow_code_package(self, echo)
+            except Exception as e:
+                echo("    ERROR: failed to build metaflow code package: %s" % e)
+                return None
 
         # Derive deferred sdists DIRECTLY from this image's resolved env: a pypi
         # package that is a source dist (url_format != ".whl"), web-downloadable,
