@@ -96,6 +96,17 @@ class DockerBuildService(ABC):
 
         return DockerfileBuildOptions()
 
+    def image_identity_suffix(self) -> str:
+        """Return an optional discriminator for build-output identity.
+
+        The prebuilt image tag already includes the env id, base image, and arch.
+        Build backends that can change pushed image compatibility or layer encoding
+        should return a short stable suffix so registry reuse cannot hide that
+        setting.
+        """
+
+        return ""
+
     @classmethod
     def from_config(cls) -> "DockerBuildService":
         """Resolve and instantiate the build service selected by

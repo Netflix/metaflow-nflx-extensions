@@ -52,11 +52,15 @@ def test_generate_dockerfile_regular_has_required_instructions():
     assert "ENV CONDA_ENVS_DIRS=%s" % PREBUILT_ENVS_DIR in dockerfile
     assert "COPY job.tar" in dockerfile
     assert "prebuilt_build_install" in dockerfile
-    assert (
-        "RUN rm -rf %s/pkgs %s/conda-bld /root/.cache/pip"
-        % (PREBUILT_MAMBA_ROOT_PREFIX, PREBUILT_MAMBA_ROOT_PREFIX)
-        in dockerfile
+    cleanup = "rm -rf %s/pkgs %s/conda-bld /root/.cache/pip" % (
+        PREBUILT_MAMBA_ROOT_PREFIX,
+        PREBUILT_MAMBA_ROOT_PREFIX,
     )
+    install_run = next(
+        line for line in dockerfile.splitlines() if "prebuilt_build_install" in line
+    )
+    assert " && %s" % cleanup in install_run
+    assert "RUN %s" % cleanup not in dockerfile
     assert env_id.req_id in dockerfile
     assert env_id.full_id in dockerfile
     assert ".metaflowenv" in dockerfile
@@ -71,6 +75,21 @@ def test_generate_dockerfile_regular_has_required_instructions():
         "wheels": [],
     }
     assert "COPY %s" % _DEFERRED_BUILDS_CONTEXT_NAME in dockerfile
+
+
+def test_generate_dockerfile_installs_env_before_runtime_code_package():
+    env_id = _make_env_id()
+    resolved_env = _make_resolved_env()
+
+    dockerfile, _ = _generate_dockerfile(
+        "ubuntu:22.04", _env_path_for(env_id), env_id, "conda", resolved_env
+    )
+
+    install_support_pos = dockerfile.index("COPY install_support.tar.gz")
+    build_install_pos = dockerfile.index("prebuilt_build_install")
+    runtime_code_pos = dockerfile.index("COPY job.tar")
+
+    assert install_support_pos < build_install_pos < runtime_code_pos
 
 
 def test_generate_dockerfile_deferred_handoff_and_wheels():
@@ -137,7 +156,7 @@ def test_generate_dockerfile_can_mount_deferred_inputs_with_buildkit():
         "RUN --mount=type=bind,source=deferred_builds.json,target=/app/deferred_builds.json,readonly "
         "--mount=type=bind,source=deferred_wheels,target=/app/deferred_wheels,readonly "
         "python -m metaflow_extensions.prebuilt.plugins.conda.prebuilt_build_install"
-        in dockerfile
+        " abc123 def456 && rm -rf /opt/metaflow/conda-root/pkgs" in dockerfile
     )
 
 

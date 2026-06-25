@@ -69,6 +69,7 @@ Select backends via environment variables:
 |---|---|---|
 | `METAFLOW_PREBUILT_BUILD_SERVICE` | `docker` | Which build service to use |
 | `METAFLOW_PREBUILT_IMAGE_REGISTRY` | `dockerhub` | Which image registry to use |
+| `METAFLOW_PREBUILT_REGISTRY_CACHE` | `1` | Reuse existing immutable prebuilt image tags when available |
 
 ## Extension points
 
