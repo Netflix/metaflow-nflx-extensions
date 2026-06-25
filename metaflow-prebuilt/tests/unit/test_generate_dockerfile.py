@@ -160,13 +160,38 @@ def test_generate_dockerfile_can_mount_deferred_inputs_with_buildkit():
         "(python -m pip --version >/dev/null 2>&1 || "
         "python -m ensurepip --upgrade) && "
         "python -m pip install --disable-pip-version-check --no-cache-dir "
-        '--index-url https://pypi.netflix.net/simple --target "$BOOTSTRAP" '
-        "requests) && METAFLOW_PREBUILT_BUILD_CONTAINER=1 "
+        '--target "$BOOTSTRAP" requests) && METAFLOW_PREBUILT_BUILD_CONTAINER=1 '
         'PYTHONPATH="$BOOTSTRAP:$PYTHONPATH" '
         "python -m metaflow_extensions.prebuilt.plugins.conda.prebuilt_build_install"
         ' abc123 def456 && rm -rf "$BOOTSTRAP" && '
         "rm -rf /opt/metaflow/conda-root/pkgs" in dockerfile
     )
+    assert "pypi.netflix.net" not in dockerfile
+
+
+def test_generate_dockerfile_can_configure_bootstrap_pip_options():
+    env_id = _make_env_id()
+    resolved_env = _make_resolved_env()
+
+    dockerfile, _ = _generate_dockerfile(
+        "ubuntu:22.04",
+        _env_path_for(env_id),
+        env_id,
+        "conda",
+        resolved_env,
+        dockerfile_build_options=DockerfileBuildOptions(
+            bootstrap_pip_install_options=(
+                "--index-url",
+                "https://pypi.example/simple",
+            )
+        ),
+    )
+
+    assert (
+        "python -m pip install --disable-pip-version-check --no-cache-dir "
+        "--index-url https://pypi.example/simple "
+        '--target "$BOOTSTRAP" requests'
+    ) in dockerfile
 
 
 def test_generate_dockerfile_named_alias_adds_symlink():

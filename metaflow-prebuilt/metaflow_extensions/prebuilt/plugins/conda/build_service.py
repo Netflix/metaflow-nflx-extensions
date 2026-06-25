@@ -2,7 +2,7 @@ import importlib.metadata
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING, Tuple
 
 if TYPE_CHECKING:
     pass
@@ -38,6 +38,7 @@ class DockerfileBuildOptions:
     """
 
     buildkit_deferred_input_mounts: bool = False
+    bootstrap_pip_install_options: Tuple[str, ...] = ()
 
 
 class DockerBuildService(ABC):

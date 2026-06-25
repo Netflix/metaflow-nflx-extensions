@@ -668,7 +668,7 @@ def test_build_prebuilt_images_includes_build_service_identity_in_tag(
     registry.pull_config.return_value = {}
 
     build_service = MagicMock()
-    build_service.image_identity_suffix.return_value = "newt-zstd"
+    build_service.image_identity_suffix.return_value = "builder-zstd"
 
     monkeypatch.setenv("METAFLOW_TEMPDIR", str(tmp_path))
     monkeypatch.setenv("METAFLOW_PREBUILT_BASE_IMAGE", "cpu-base")
@@ -692,8 +692,8 @@ def test_build_prebuilt_images_includes_build_service_identity_in_tag(
         env._build_prebuilt_images(lambda *args, **kwargs: None)
 
     probed_tag = registry.image_exists.call_args.args[0]
-    assert "-newt-zstd-" in probed_tag
-    assert "-newt-zstd-" in step.decorators[0].attributes["image"]
+    assert "-builder-zstd-" in probed_tag
+    assert "-builder-zstd-" in step.decorators[0].attributes["image"]
 
 
 def test_build_prebuilt_images_builds_code_package_once_for_multiple_misses(
@@ -879,9 +879,9 @@ class TestImageIdentity:
         base = "registry.example/big_data:stable"
         arch = "linux-64"
         default = _image_variant(base, arch)
-        zstd = _image_variant(base, arch, "newt-zstd")
+        zstd = _image_variant(base, arch, "builder-zstd")
         assert default != zstd
-        assert "-newt-zstd-" in zstd
+        assert "-builder-zstd-" in zstd
 
     def test_variant_is_stable(self):
         assert _image_variant("b:1", "linux-64") == _image_variant("b:1", "linux-64")

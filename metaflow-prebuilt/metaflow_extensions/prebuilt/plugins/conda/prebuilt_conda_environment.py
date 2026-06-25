@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -956,9 +957,9 @@ def _split_code_package_for_prebuilt_build(
 
     The build-time installer only needs packaged Metaflow/extension modules plus
     ``OTHER_CONTENT`` metadata. Extracting that stable subset before the env
-    install lets Docker/Newt reuse the expensive env layer when only flow code
-    changes. The runtime tarball is extracted after the env install, preserving
-    the final image's complete package tree.
+    install lets Docker build backends reuse the expensive env layer when only
+    flow code changes. The runtime tarball is extracted after the env install,
+    preserving the final image's complete package tree.
     """
     support_members: List[Tuple[tarfile.TarInfo, bytes]] = []
     runtime_members: List[Tuple[tarfile.TarInfo, bytes]] = []
@@ -1167,6 +1168,14 @@ def _generate_dockerfile(
     ]
 
     options = dockerfile_build_options or DockerfileBuildOptions()
+    bootstrap_pip_options = " ".join(
+        shlex.quote(arg) for arg in options.bootstrap_pip_install_options
+    )
+    bootstrap_pip_command = (
+        "python -m pip install --disable-pip-version-check --no-cache-dir "
+        + (bootstrap_pip_options + " " if bootstrap_pip_options else "")
+        + '--target "$BOOTSTRAP" requests'
+    )
     build_install_command = "python -m %s.prebuilt_build_install %s %s" % (
         build_install_module,
         env_id.req_id,
@@ -1177,12 +1186,10 @@ def _generate_dockerfile(
         "(python -c 'import requests' >/dev/null 2>&1 || "
         "(python -m pip --version >/dev/null 2>&1 || "
         "python -m ensurepip --upgrade) && "
-        "python -m pip install --disable-pip-version-check --no-cache-dir "
-        '--index-url https://pypi.netflix.net/simple --target "$BOOTSTRAP" '
-        "requests) && "
+        "%s) && "
         "METAFLOW_PREBUILT_BUILD_CONTAINER=1 "
         'PYTHONPATH="$BOOTSTRAP:$PYTHONPATH" %s && '
-        'rm -rf "$BOOTSTRAP"' % build_install_command
+        'rm -rf "$BOOTSTRAP"' % (bootstrap_pip_command, build_install_command)
     )
     cleanup_command = "rm -rf %s/pkgs %s/conda-bld /root/.cache/pip" % (
         PREBUILT_MAMBA_ROOT_PREFIX,
