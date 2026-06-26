@@ -1181,9 +1181,9 @@ def _generate_dockerfile(
     bootstrap_command = (
         "BOOTSTRAP=$(mktemp -d) && "
         "(python -c 'import requests' >/dev/null 2>&1 || "
-        "(python -m pip --version >/dev/null 2>&1 || "
+        "((python -m pip --version >/dev/null 2>&1 || "
         "python -m ensurepip --upgrade) && "
-        "%s) && "
+        "%s)) && "
         "METAFLOW_PREBUILT_BUILD_CONTAINER=1 "
         'PYTHONPATH="$BOOTSTRAP:$PYTHONPATH" %s && '
         'rm -rf "$BOOTSTRAP"' % (bootstrap_pip_command, build_install_command)
