@@ -469,8 +469,8 @@ def test_get_or_build_image_can_bypass_registry_cache(monkeypatch):
     env.conda.environment.return_value = SimpleNamespace(env_type="conda", packages=[])
 
     registry = MagicMock()
-    registry.push_tag.return_value = "registry.example/prebuilt:v30-abc_def"
-    registry.pull_tag.return_value = "prebuilt:v30-abc_def"
+    registry.push_tag.return_value = "registry.example/prebuilt:v32-abc_def"
+    registry.pull_tag.return_value = "prebuilt:v32-abc_def"
     registry.image_exists.return_value = True
     registry.push_credentials.return_value = {}
 
@@ -502,7 +502,7 @@ def test_get_or_build_image_can_bypass_registry_cache(monkeypatch):
     )
 
     assert result == (
-        "prebuilt:v30-abc_def-linux-64-1234",
+        "prebuilt:v32-abc_def-linux-64-1234",
         "/opt/metaflow/conda-root/envs/metaflow_%s_%s"
         % (env_id.req_id, env_id.full_id),
     )
@@ -639,10 +639,10 @@ def test_build_prebuilt_images_skips_code_package_when_all_images_exist(
     registry = MagicMock()
     registry.base_image_identity.side_effect = lambda base, _arch: base
     registry.push_tag.side_effect = (
-        lambda env_id: "registry.example/prebuilt:v30-%s_%s"
+        lambda env_id: "registry.example/prebuilt:v32-%s_%s"
         % (env_id.req_id, env_id.full_id)
     )
-    registry.pull_tag.side_effect = lambda env_id: "prebuilt:v30-%s_%s" % (
+    registry.pull_tag.side_effect = lambda env_id: "prebuilt:v32-%s_%s" % (
         env_id.req_id,
         env_id.full_id,
     )
@@ -675,9 +675,44 @@ def test_build_prebuilt_images_skips_code_package_when_all_images_exist(
     build_service.build_and_push.assert_not_called()
     assert registry.image_exists.call_count == 2
     assert all(
-        step.decorators[0].attributes["image"].startswith("prebuilt:v30-")
+        step.decorators[0].attributes["image"].startswith("prebuilt:v32-")
         for step in steps
     )
+
+
+def test_collect_build_specs_caches_missing_base_image_identity(monkeypatch):
+    ids = {
+        "start": _make_env_id("req1", "full1"),
+        "join": _make_env_id("req2", "full2"),
+    }
+    steps = [
+        SimpleNamespace(
+            name=name,
+            decorators=[SimpleNamespace(name="titus", attributes={"image": "base"})],
+        )
+        for name in ids
+    ]
+
+    env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
+    env._flow = steps
+    env.conda = MagicMock()
+    env.get_env_id = MagicMock(side_effect=lambda _conda, name: ids[name])
+
+    registry = MagicMock()
+    registry.base_image_identity.return_value = None
+
+    monkeypatch.setenv("METAFLOW_PREBUILT_BASE_IMAGE", "cpu-base")
+    monkeypatch.setattr(prebuilt_conda_environment, "CONDA_REMOTE_COMMANDS", {"titus"})
+
+    specs = env._collect_build_specs(
+        lambda *args, **kwargs: None,
+        registry,
+        build_identity="",
+    )
+
+    assert len(specs) == 2
+    registry.base_image_identity.assert_called_once_with("cpu-base", "linux-64")
+    assert all(spec.base_image == "cpu-base" for spec in specs)
 
 
 def test_build_prebuilt_images_includes_build_service_identity_in_tag(
@@ -757,10 +792,10 @@ def test_build_prebuilt_images_builds_code_package_once_for_multiple_misses(
     registry = MagicMock()
     registry.base_image_identity.side_effect = lambda base, _arch: base
     registry.push_tag.side_effect = (
-        lambda env_id: "registry.example/prebuilt:v30-%s_%s"
+        lambda env_id: "registry.example/prebuilt:v32-%s_%s"
         % (env_id.req_id, env_id.full_id)
     )
-    registry.pull_tag.side_effect = lambda env_id: "prebuilt:v30-%s_%s" % (
+    registry.pull_tag.side_effect = lambda env_id: "prebuilt:v32-%s_%s" % (
         env_id.req_id,
         env_id.full_id,
     )

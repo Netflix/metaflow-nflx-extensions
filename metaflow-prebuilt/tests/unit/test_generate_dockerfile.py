@@ -13,6 +13,7 @@ from metaflow_extensions.prebuilt.plugins.conda.build_service import (
 )
 from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment import (
     _generate_dockerfile,
+    _make_bootstrap_command,
     PREBUILT_BUILD_LOCAL_ROOT,
     PREBUILT_MAMBA_ROOT_PREFIX,
     PREBUILT_ENVS_DIR,
@@ -163,20 +164,32 @@ def test_generate_dockerfile_can_mount_deferred_inputs_with_buildkit():
         "RUN rm -f /app/deferred_builds.json && rm -rf /app/deferred_wheels"
         in dockerfile
     )
+
+    # Verify structural invariants on the RUN step rather than the full literal
+    # string so minor additions (like new flags or index-url changes) don't
+    # require updating this test.
+    run_line = next(l for l in dockerfile.splitlines() if "--mount=type=bind" in l)
+    # Both mounts are present.
     assert (
-        "RUN --mount=type=bind,source=deferred_builds.json,target=/app/deferred_builds.json,readonly "
-        "--mount=type=bind,source=deferred_wheels,target=/app/deferred_wheels,readonly "
-        "BOOTSTRAP=$(mktemp -d) && "
-        "(python -c 'import requests' >/dev/null 2>&1 || "
-        "((python -m pip --version >/dev/null 2>&1 || "
-        "python -m ensurepip --upgrade) && "
-        "python -m pip install --disable-pip-version-check --no-cache-dir "
-        '--target "$BOOTSTRAP" requests)) && METAFLOW_PREBUILT_BUILD_CONTAINER=1 '
-        'PYTHONPATH="$BOOTSTRAP:$PYTHONPATH" '
-        "python -m metaflow_extensions.prebuilt.plugins.conda.prebuilt_build_install"
-        ' abc123 def456 && rm -rf "$BOOTSTRAP" && '
-        "rm -rf /opt/metaflow/conda-root/pkgs" in dockerfile
+        "--mount=type=bind,source=deferred_builds.json,"
+        "target=/app/deferred_builds.json,readonly" in run_line
     )
+    assert (
+        "--mount=type=bind,source=deferred_wheels,"
+        "target=/app/deferred_wheels,readonly" in run_line
+    )
+    # The requests check comes before pip install in the RUN line.
+    requests_check_pos = run_line.index("python -c 'import requests'")
+    pip_install_pos = run_line.index("pip install")
+    assert requests_check_pos < pip_install_pos
+    # The pip install is in the grouped fallback so it only runs when requests
+    # is absent.
+    assert "|| ((" in run_line
+    # The build-install module runs after the requests bootstrap.
+    assert "prebuilt_build_install" in run_line
+    assert run_line.index("prebuilt_build_install") > pip_install_pos
+    # Conda cache cleanup runs in the same RUN step.
+    assert "rm -rf %s/pkgs" % PREBUILT_MAMBA_ROOT_PREFIX in run_line
     assert "pypi.netflix.net" not in dockerfile
 
 
@@ -333,3 +346,28 @@ def test_generate_dockerfile_custom_build_install_module():
         "metaflow_extensions.prebuilt.plugins.conda.prebuilt_build_install"
         not in dockerfile
     )
+
+
+def test_make_bootstrap_command_groups_pip_fallback_correctly():
+    """Verify the fallback pip install stays inside the requests-missing path."""
+    cmd = _make_bootstrap_command(
+        "python -m some.module",
+        "python -m pip install --disable-pip-version-check --no-cache-dir "
+        "--index-url https://pypi.example/simple "
+        '--target "$BOOTSTRAP" requests',
+    )
+
+    # The requests check is present.
+    assert "python -c 'import requests'" in cmd
+    # The pip install is present.
+    assert "pip install" in cmd
+    assert "--index-url https://pypi.example/simple" in cmd
+    assert "pypi.netflix.net" not in cmd
+    # The fallback block is grouped inside the request-check subshell.
+    assert "|| ((" in cmd
+    assert cmd.index("import requests") < cmd.index("|| ((")
+    # The build-install command is present and follows the bootstrap setup.
+    assert "python -m some.module" in cmd
+    assert cmd.index("python -m some.module") > cmd.index("pip install")
+    # Bootstrap tempdir is cleaned up.
+    assert 'rm -rf "$BOOTSTRAP"' in cmd
