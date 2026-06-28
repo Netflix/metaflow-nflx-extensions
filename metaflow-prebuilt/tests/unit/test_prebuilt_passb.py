@@ -12,6 +12,8 @@ exercise Pass B + the overlay is a controlled unit test like this one.
 
 import os
 import re
+import json
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -20,6 +22,129 @@ import types
 import pytest
 
 from metaflow_extensions.prebuilt.plugins.conda import prebuilt_build_install as pbi
+
+
+def test_minimal_metaflow_config_uses_core_null_sidecars(monkeypatch):
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_CONTAINER", "1")
+    monkeypatch.delenv("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", raising=False)
+
+    pbi._install_minimal_metaflow_config()
+    config_home = os.environ["METAFLOW_HOME"]
+    try:
+        with open(os.path.join(config_home, "config.json"), encoding="utf-8") as f:
+            config = json.load(f)
+    finally:
+        pbi._cleanup_minimal_metaflow_config()
+
+    assert config["METAFLOW_DEFAULT_EVENT_LOGGER"] == "nullSidecarLogger"
+    assert config["METAFLOW_DEFAULT_MONITOR"] == "nullSidecarMonitor"
+    assert config["METAFLOW_ENABLED_LOGGING_SIDECAR"] == ["nullSidecarLogger"]
+    assert config["METAFLOW_ENABLED_MONITOR_SIDECAR"] == ["nullSidecarMonitor"]
+
+
+def test_minimal_metaflow_config_derives_categories_from_metaflow_source(
+    tmp_path, monkeypatch
+):
+    plugins_dir = tmp_path / "metaflow" / "extension_support"
+    plugins_dir.mkdir(parents=True)
+    (tmp_path / "metaflow" / "__init__.py").write_text("")
+    (plugins_dir / "__init__.py").write_text("")
+    (plugins_dir / "plugins.py").write_text(
+        "_plugin_categories = {\n"
+        "    'step_decorator': None,\n"
+        "    'environment': None,\n"
+        "    'datastore': None,\n"
+        "    'logging_sidecar': None,\n"
+        "    'monitor_sidecar': None,\n"
+        "    'new_plugin_category': None,\n"
+        "}\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    config = pbi._minimal_metaflow_config()
+    enabled_categories = {
+        key.removeprefix("METAFLOW_ENABLED_")
+        for key in config
+        if key.startswith("METAFLOW_ENABLED_")
+    }
+
+    assert enabled_categories == {
+        "STEP_DECORATOR",
+        "ENVIRONMENT",
+        "DATASTORE",
+        "LOGGING_SIDECAR",
+        "MONITOR_SIDECAR",
+        "NEW_PLUGIN_CATEGORY",
+    }
+    assert set(pbi._MINIMAL_PLUGIN_ALLOWLIST).issubset(enabled_categories)
+    assert config["METAFLOW_DEFAULT_EVENT_LOGGER"] == "nullSidecarLogger"
+    assert config["METAFLOW_DEFAULT_MONITOR"] == "nullSidecarMonitor"
+    assert config["METAFLOW_ENABLED_ENVIRONMENT"] == ["nflx", "conda"]
+    assert config["METAFLOW_ENABLED_DATASTORE"] == ["local"]
+    assert config["METAFLOW_ENABLED_LOGGING_SIDECAR"] == ["nullSidecarLogger"]
+    assert config["METAFLOW_ENABLED_MONITOR_SIDECAR"] == ["nullSidecarMonitor"]
+    assert config["METAFLOW_ENABLED_STEP_DECORATOR"] == []
+    assert config["METAFLOW_ENABLED_NEW_PLUGIN_CATEGORY"] == []
+
+
+def test_install_minimal_metaflow_config_replaces_previous_home(monkeypatch):
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_CONTAINER", "1")
+    monkeypatch.delenv("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", raising=False)
+
+    pbi._install_minimal_metaflow_config()
+    first_home = os.environ["METAFLOW_HOME"]
+    assert os.path.isdir(first_home)
+    try:
+        pbi._install_minimal_metaflow_config()
+        second_home = os.environ["METAFLOW_HOME"]
+
+        assert second_home != first_home
+        assert not os.path.exists(first_home)
+        assert os.path.isdir(second_home)
+    finally:
+        pbi._cleanup_minimal_metaflow_config()
+
+
+def test_install_minimal_metaflow_config_does_not_publish_partial_home(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_CONTAINER", "1")
+    monkeypatch.delenv("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", raising=False)
+    monkeypatch.setenv("METAFLOW_HOME", "original-home")
+    config_home = tmp_path / "partial-config"
+
+    def fake_mkdtemp(prefix):
+        config_home.mkdir()
+        return str(config_home)
+
+    def fail_config():
+        raise RuntimeError("failed before config write")
+
+    monkeypatch.setattr(pbi.tempfile, "mkdtemp", fake_mkdtemp)
+    monkeypatch.setattr(pbi, "_minimal_metaflow_config", fail_config)
+
+    with pytest.raises(RuntimeError, match="failed before config write"):
+        pbi._install_minimal_metaflow_config()
+
+    assert os.environ["METAFLOW_HOME"] == "original-home"
+    assert not config_home.exists()
+
+
+def test_main_cleans_minimal_metaflow_config_before_fast_exit(monkeypatch, capsys):
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_CONTAINER", "1")
+    monkeypatch.delenv("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", raising=False)
+
+    pbi._install_minimal_metaflow_config()
+    config_home = os.environ["METAFLOW_HOME"]
+    assert os.path.isdir(config_home)
+
+    monkeypatch.setattr(pbi, "install_env", lambda req_id, full_id: "/env/path")
+
+    assert pbi.main(["prebuilt_build_install", "req", "full"]) == 0
+
+    assert capsys.readouterr().out.strip() == "/env/path"
+    assert not os.path.exists(config_home)
+    assert os.environ.get("METAFLOW_HOME") != config_home
 
 
 # --------------------------------------------------------------------------

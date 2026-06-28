@@ -1,7 +1,9 @@
 """Unit tests for PrebuiltCondaEnvironment state file machinery and bootstrap_commands."""
 
+import io
 import json
 import os
+import tarfile
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -18,6 +20,9 @@ from metaflow_extensions.prebuilt.plugins.conda.prebuilt_conda_environment impor
     _image_variant,
     _image_dedup_key,
     _tag_with_variant,
+    _PREBUILT_REGISTRY_CACHE_ENV,
+    _prebuilt_build_worker_count,
+    _build_install_support_package,
 )
 
 
@@ -54,6 +59,23 @@ def _make_env_id(req="abc", full="def"):
     env_id.full_id = full
     env_id.arch = "linux-64"
     return env_id
+
+
+def _make_code_package_blob():
+    package_blob = io.BytesIO()
+    with tarfile.open(fileobj=package_blob, mode="w:gz") as tar:
+        for name, payload in {
+            ".mf_install": b"marker",
+            ".mf_meta/condav2-1.cnd": b"manifest",
+            ".mf_code/metaflow/__init__.py": b"",
+            ".mf_code/metaflow_extensions/prebuilt/__init__.py": b"",
+            "flow.py": b"flow",
+        }.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            info.mtime = 0
+            tar.addfile(info, io.BytesIO(payload))
+    return package_blob.getvalue()
 
 
 class TestStateFilePersistLoad:
@@ -376,6 +398,10 @@ class TestBootstrapCommands:
             PrebuiltCondaEnvironment,
             "_get_or_build_image",
             return_value=("pull-tag", env_path),
+        ), patch.object(
+            prebuilt_conda_environment,
+            "_build_metaflow_code_package",
+            return_value=b"fake-tarball",
         ):
             env._build_prebuilt_images(lambda *args, **kwargs: None)
 
@@ -432,7 +458,362 @@ def test_get_or_build_image_reuses_existing_immutable_tag(monkeypatch):
     registry.image_exists.assert_called_once_with(
         "registry.example/prebuilt:v29-abc_def-linux-64-1234"
     )
+    env.conda.environment.assert_not_called()
     build_service.build_and_push.assert_not_called()
+
+
+def test_get_or_build_image_can_bypass_registry_cache(monkeypatch):
+    env_id = _make_env_id()
+    env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
+    env.conda = MagicMock()
+    env.conda.environment.return_value = SimpleNamespace(env_type="conda", packages=[])
+
+    registry = MagicMock()
+    registry.push_tag.return_value = "registry.example/prebuilt:v30-abc_def"
+    registry.pull_tag.return_value = "prebuilt:v30-abc_def"
+    registry.image_exists.return_value = True
+    registry.push_credentials.return_value = {}
+
+    build_service = MagicMock()
+    build_service.dockerfile_build_options.return_value = (
+        prebuilt_conda_environment.DockerfileBuildOptions()
+    )
+    build_service.build_and_push.return_value = True
+
+    monkeypatch.setenv(_PREBUILT_REGISTRY_CACHE_ENV, "0")
+    monkeypatch.setattr(
+        prebuilt_conda_environment,
+        "_build_metaflow_code_package",
+        MagicMock(return_value=_make_code_package_blob()),
+    )
+    monkeypatch.setattr(
+        prebuilt_conda_environment.DockerBuildService,
+        "from_config",
+        MagicMock(return_value=build_service),
+    )
+
+    result = env._get_or_build_image(
+        env_id,
+        SimpleNamespace(name="start"),
+        lambda *args, **kwargs: None,
+        registry,
+        base_image="cpu-base",
+        variant="linux-64-1234",
+    )
+
+    assert result == (
+        "prebuilt:v30-abc_def-linux-64-1234",
+        "/opt/metaflow/conda-root/envs/metaflow_%s_%s"
+        % (env_id.req_id, env_id.full_id),
+    )
+    registry.image_exists.assert_not_called()
+    build_service.build_and_push.assert_called_once()
+
+
+def test_build_install_support_package_extracts_stable_support_subset():
+    files = {
+        ".mf_install": b"marker",
+        ".mf_meta/condav2-1.cnd": b"manifest",
+        ".mf_code/metaflow/__init__.py": b"",
+        ".mf_code/metaflow_extensions/prebuilt/__init__.py": b"",
+        ".mf_code/user_module.py": b"user",
+        "flow.py": b"flow",
+    }
+
+    def _package_blob(metadata_offset=0):
+        src = io.BytesIO()
+        with tarfile.open(fileobj=src, mode="w:gz") as tar:
+            for name, payload in files.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(payload)
+                info.mtime = metadata_offset
+                info.uid = metadata_offset
+                info.gid = metadata_offset
+                info.uname = "user%d" % metadata_offset
+                info.gname = "group%d" % metadata_offset
+                tar.addfile(info, io.BytesIO(payload))
+        return src.getvalue()
+
+    support = _build_install_support_package(_package_blob())
+    support_again = _build_install_support_package(_package_blob(metadata_offset=123))
+
+    assert support == support_again
+
+    def _names(blob):
+        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+            return sorted(tar.getnames())
+
+    assert _names(support) == [
+        ".mf_code/metaflow/__init__.py",
+        ".mf_code/metaflow_extensions/prebuilt/__init__.py",
+        ".mf_install",
+        ".mf_meta/condav2-1.cnd",
+    ]
+
+
+def test_get_or_build_image_keeps_runtime_code_package_unchanged(monkeypatch):
+    files = {
+        ".mf_install": b"marker",
+        ".mf_meta/condav2-1.cnd": b"manifest",
+        ".mf_code/metaflow/__init__.py": b"",
+        ".mf_code/metaflow_extensions/prebuilt/__init__.py": b"",
+        "flow.py": b"flow",
+    }
+
+    src = io.BytesIO()
+    with tarfile.open(fileobj=src, mode="w:gz") as tar:
+        for name, payload in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            if name == "flow.py":
+                info.mode = 0o755
+            tar.addfile(info, io.BytesIO(payload))
+    code_package_blob = src.getvalue()
+
+    env_id = _make_env_id("req1", "full1")
+    env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
+    env._flow = [SimpleNamespace(name="start", decorators=[])]
+    env.conda = MagicMock()
+    env.conda.environment.return_value = SimpleNamespace(env_type="conda", packages=[])
+
+    captured = {}
+    build_service = MagicMock()
+    build_service.dockerfile_build_options.return_value = None
+
+    def capture_build(_dockerfile, context_files, *_args, **_kwargs):
+        captured.update(context_files)
+        return True
+
+    build_service.build_and_push.side_effect = capture_build
+    registry = MagicMock()
+    registry.push_credentials.return_value = {}
+    registry.push_tag.return_value = "registry.example/prebuilt:v32-req1_full1"
+    registry.pull_tag.return_value = "prebuilt:v32-req1_full1"
+    registry.image_exists.return_value = False
+
+    monkeypatch.setattr(
+        prebuilt_conda_environment.DockerBuildService,
+        "from_config",
+        MagicMock(return_value=build_service),
+    )
+
+    result = env._get_or_build_image(
+        env_id,
+        "start",
+        lambda *args, **kwargs: None,
+        registry,
+        base_image="cpu-base",
+        variant="linux-64-1234",
+        code_package_blob=code_package_blob,
+    )
+
+    assert result is not None
+    assert captured["job.tar"] == code_package_blob
+    with tarfile.open(fileobj=io.BytesIO(captured["job.tar"]), mode="r:gz") as tar:
+        assert tar.getmember("flow.py").mode == 0o755
+
+
+def test_build_prebuilt_images_skips_code_package_when_all_images_exist(
+    tmp_path, monkeypatch
+):
+    ids = {
+        "start": _make_env_id("req1", "full1"),
+        "join": _make_env_id("req2", "full2"),
+    }
+    steps = [
+        SimpleNamespace(
+            name=name,
+            decorators=[SimpleNamespace(name="titus", attributes={"image": "base"})],
+        )
+        for name in ids
+    ]
+
+    env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
+    env._flow = steps
+    env.conda = MagicMock()
+    env.conda.environment.side_effect = lambda env_id: SimpleNamespace(
+        env_type="conda", packages=[]
+    )
+    env.get_env_id = MagicMock(side_effect=lambda _conda, name: ids[name])
+
+    registry = MagicMock()
+    registry.base_image_identity.side_effect = lambda base, _arch: base
+    registry.push_tag.side_effect = (
+        lambda env_id: "registry.example/prebuilt:v30-%s_%s"
+        % (env_id.req_id, env_id.full_id)
+    )
+    registry.pull_tag.side_effect = lambda env_id: "prebuilt:v30-%s_%s" % (
+        env_id.req_id,
+        env_id.full_id,
+    )
+    registry.image_exists.return_value = True
+    registry.pull_config.return_value = {}
+
+    build_service = MagicMock()
+    monkeypatch.setenv("METAFLOW_TEMPDIR", str(tmp_path))
+    monkeypatch.setenv("METAFLOW_PREBUILT_BASE_IMAGE", "cpu-base")
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_WORKERS", "1")
+    monkeypatch.setattr(prebuilt_conda_environment, "CONDA_REMOTE_COMMANDS", {"titus"})
+    monkeypatch.setattr(
+        prebuilt_conda_environment,
+        "_build_metaflow_code_package",
+        MagicMock(side_effect=AssertionError("should not package code")),
+    )
+    monkeypatch.setattr(
+        prebuilt_conda_environment.DockerBuildService,
+        "from_config",
+        MagicMock(return_value=build_service),
+    )
+
+    with patch.object(
+        prebuilt_conda_environment.ImageRegistry,
+        "from_config",
+        return_value=registry,
+    ):
+        env._build_prebuilt_images(lambda *args, **kwargs: None)
+
+    build_service.build_and_push.assert_not_called()
+    assert registry.image_exists.call_count == 2
+    assert all(
+        step.decorators[0].attributes["image"].startswith("prebuilt:v30-")
+        for step in steps
+    )
+
+
+def test_build_prebuilt_images_includes_build_service_identity_in_tag(
+    tmp_path, monkeypatch
+):
+    env_id = _make_env_id("req1", "full1")
+    step = SimpleNamespace(
+        name="start",
+        decorators=[SimpleNamespace(name="titus", attributes={"image": "base"})],
+    )
+
+    env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
+    env._flow = [step]
+    env.conda = MagicMock()
+    env.conda.environment.return_value = SimpleNamespace(env_type="conda", packages=[])
+    env.get_env_id = MagicMock(return_value=env_id)
+
+    registry = MagicMock()
+    registry.base_image_identity.side_effect = lambda base, _arch: base
+    registry.push_tag.return_value = "registry.example/prebuilt:v32-req1_full1"
+    registry.pull_tag.return_value = "prebuilt:v32-req1_full1"
+    registry.image_exists.return_value = True
+    registry.pull_config.return_value = {}
+
+    build_service = MagicMock()
+    build_service.image_identity_suffix.return_value = "builder-zstd"
+
+    monkeypatch.setenv("METAFLOW_TEMPDIR", str(tmp_path))
+    monkeypatch.setenv("METAFLOW_PREBUILT_BASE_IMAGE", "cpu-base")
+    monkeypatch.setattr(prebuilt_conda_environment, "CONDA_REMOTE_COMMANDS", {"titus"})
+    monkeypatch.setattr(
+        prebuilt_conda_environment,
+        "_build_metaflow_code_package",
+        MagicMock(side_effect=AssertionError("should not package code")),
+    )
+    monkeypatch.setattr(
+        prebuilt_conda_environment.DockerBuildService,
+        "from_config",
+        MagicMock(return_value=build_service),
+    )
+
+    with patch.object(
+        prebuilt_conda_environment.ImageRegistry,
+        "from_config",
+        return_value=registry,
+    ):
+        env._build_prebuilt_images(lambda *args, **kwargs: None)
+
+    probed_tag = registry.image_exists.call_args.args[0]
+    assert "-builder-zstd-" in probed_tag
+    assert "-builder-zstd-" in step.decorators[0].attributes["image"]
+
+
+def test_build_prebuilt_images_builds_code_package_once_for_multiple_misses(
+    tmp_path, monkeypatch
+):
+    ids = {
+        "start": _make_env_id("req1", "full1"),
+        "join": _make_env_id("req2", "full2"),
+    }
+    steps = [
+        SimpleNamespace(
+            name=name,
+            decorators=[SimpleNamespace(name="titus", attributes={"image": "base"})],
+        )
+        for name in ids
+    ]
+
+    env = PrebuiltCondaEnvironment.__new__(PrebuiltCondaEnvironment)
+    env._flow = steps
+    env.conda = MagicMock()
+    env.conda.environment.side_effect = lambda env_id: SimpleNamespace(
+        env_type="conda", packages=[]
+    )
+    env.get_env_id = MagicMock(side_effect=lambda _conda, name: ids[name])
+
+    registry = MagicMock()
+    registry.base_image_identity.side_effect = lambda base, _arch: base
+    registry.push_tag.side_effect = (
+        lambda env_id: "registry.example/prebuilt:v30-%s_%s"
+        % (env_id.req_id, env_id.full_id)
+    )
+    registry.pull_tag.side_effect = lambda env_id: "prebuilt:v30-%s_%s" % (
+        env_id.req_id,
+        env_id.full_id,
+    )
+    registry.image_exists.return_value = False
+    registry.pull_config.return_value = {}
+    registry.push_credentials.return_value = {}
+
+    build_service = MagicMock()
+    build_service.dockerfile_build_options.return_value = (
+        prebuilt_conda_environment.DockerfileBuildOptions()
+    )
+    build_service.build_and_push.return_value = True
+    package_mock = MagicMock(return_value=_make_code_package_blob())
+
+    monkeypatch.setenv("METAFLOW_TEMPDIR", str(tmp_path))
+    monkeypatch.setenv("METAFLOW_PREBUILT_BASE_IMAGE", "cpu-base")
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_WORKERS", "2")
+    monkeypatch.setattr(prebuilt_conda_environment, "CONDA_REMOTE_COMMANDS", {"titus"})
+    monkeypatch.setattr(
+        prebuilt_conda_environment,
+        "_build_metaflow_code_package",
+        package_mock,
+    )
+    monkeypatch.setattr(
+        prebuilt_conda_environment.DockerBuildService,
+        "from_config",
+        MagicMock(return_value=build_service),
+    )
+
+    with patch.object(
+        prebuilt_conda_environment.ImageRegistry,
+        "from_config",
+        return_value=registry,
+    ):
+        env._build_prebuilt_images(lambda *args, **kwargs: None)
+
+    package_mock.assert_called_once()
+    assert build_service.build_and_push.call_count == 2
+
+
+def test_prebuilt_build_worker_count_caps_default_but_honors_override(monkeypatch):
+    monkeypatch.delenv("METAFLOW_PREBUILT_BUILD_WORKERS", raising=False)
+    assert _prebuilt_build_worker_count(2) == 2
+    assert _prebuilt_build_worker_count(20) == 8
+
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_WORKERS", "12")
+    assert _prebuilt_build_worker_count(20) == 12
+
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_WORKERS", "not-an-int")
+    assert _prebuilt_build_worker_count(20) == 8
+
+    monkeypatch.setenv("METAFLOW_PREBUILT_BUILD_WORKERS", "0")
+    assert _prebuilt_build_worker_count(20) == 8
 
 
 def test_gather_embedded_wheels_prefers_cached_wheel_over_local_sdist():
@@ -528,6 +909,14 @@ class TestImageIdentity:
     def test_variant_differs_by_arch(self):
         base = "registry.example/big_data:stable"
         assert _image_variant(base, "linux-64") != _image_variant(base, "linux-aarch64")
+
+    def test_variant_differs_by_build_identity(self):
+        base = "registry.example/big_data:stable"
+        arch = "linux-64"
+        default = _image_variant(base, arch)
+        zstd = _image_variant(base, arch, "builder-zstd")
+        assert default != zstd
+        assert "-builder-zstd-" in zstd
 
     def test_variant_is_stable(self):
         assert _image_variant("b:1", "linux-64") == _image_variant("b:1", "linux-64")

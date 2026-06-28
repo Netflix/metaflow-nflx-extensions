@@ -1,13 +1,19 @@
 import atexit
 from contextlib import contextmanager
 import fcntl
+import gzip
+import io
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
+import tarfile
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
@@ -61,13 +67,18 @@ logger = logging.getLogger(__name__)
 # Schema version prefix on the image tag. Bump when the Dockerfile shape,
 # bootstrap activation contract, env_path layout, or tag scheme changes in a way
 # that makes pre-existing images at the same env-id incompatible.
+# v32: the generated Dockerfile bootstraps tiny build-time Python dependencies
+#      when the base image does not provide them, then removes that bootstrap
+#      target in the same RUN as env installation.
+# v31: the generated Dockerfile removes Conda package caches in the same RUN as
+#      env installation, so package archives/extracts never enter the committed
+#      install layer.
 # v30: the generated Dockerfile removes Conda package caches after installing
-#      the runtime env, so exported prebuilt images do not carry build-only
-#      package archives/extracts.
+#      the runtime env.
 # v29: the registry tag now carries a base-image/arch variant suffix (image
 #      identity), so images that share an env but differ by base/arch no longer
 #      collide on one tag.
-PREBUILT_IMAGE_SCHEMA_VERSION = "v30"
+PREBUILT_IMAGE_SCHEMA_VERSION = "v32"
 
 # Docker tag components allow [A-Za-z0-9_.-]; everything else is replaced.
 _TAG_SAFE_CHARS = set(
@@ -84,8 +95,15 @@ PREBUILT_ENVS_DIR = os.path.join(PREBUILT_MAMBA_ROOT_PREFIX, "envs")
 # container — same shape the runtime entry_point uses.
 PREBUILT_BUILD_LOCAL_ROOT = "/opt/metaflow/code-package"
 
-# Name under which the MetaflowPackage tarball lives in the docker build context.
+# Names under which the MetaflowPackage tarballs live in the docker build context.
 _CODE_PACKAGE_TARBALL_NAME = "job.tar"
+_INSTALL_SUPPORT_TARBALL_NAME = "install_support.tar.gz"
+_INSTALL_SUPPORT_PREFIXES = (
+    ".mf_code/metaflow/",
+    ".mf_code/metaflow_extensions/",
+    ".mf_meta/",
+)
+_INSTALL_SUPPORT_FILES = (".mf_install",)
 
 # Wire-format names for the deferred-builds hand-off (schema_version "2"),
 # OWNED by metaflow-prebuilt. Must stay in sync with the container-side
@@ -94,6 +112,29 @@ _DEFERRED_BUILDS_CONTEXT_NAME = "deferred_builds.json"
 _DEFERRED_BUILDS_CONTAINER_PATH = "/app/deferred_builds.json"
 _DEFERRED_WHEELS_CONTEXT_DIR = "deferred_wheels"
 _DEFERRED_WHEELS_CONTAINER_DIR = "/app/deferred_wheels"
+_PREBUILT_REGISTRY_CACHE_ENV = "METAFLOW_PREBUILT_REGISTRY_CACHE"
+_DEFAULT_PREBUILT_BUILD_WORKERS = 8
+
+
+def _env_flag_enabled(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _prebuilt_build_worker_count(unique_image_count: int) -> int:
+    configured_workers = os.environ.get("METAFLOW_PREBUILT_BUILD_WORKERS")
+    default_workers = min(unique_image_count, _DEFAULT_PREBUILT_BUILD_WORKERS)
+    if configured_workers is None:
+        return default_workers
+    try:
+        workers = int(configured_workers)
+    except ValueError:
+        return default_workers
+    if workers <= 0:
+        return default_workers
+    return workers
 
 
 def _env_path_for(env_id: EnvID) -> str:
@@ -196,21 +237,31 @@ def _env_cache_key(env_id: EnvID) -> str:
 _image_cache_key = _env_cache_key
 
 
-def _image_variant(base_image: str, arch: str) -> str:
+def _tag_safe(value: str) -> str:
+    return "".join(c if c in _TAG_SAFE_CHARS else "_" for c in value)
+
+
+def _image_variant(base_image: str, arch: str, build_identity: str = "") -> str:
     """Discriminator for images that share an env (same req_id/full_id) but are
-    built on a DIFFERENT base image (CPU vs GPU) or for a DIFFERENT target arch.
+    built on a DIFFERENT base image (CPU vs GPU), for a DIFFERENT target arch, or
+    with build-service settings that change image output identity.
 
     Folded into BOTH the in-process image-dedup key and the registry tag so such
     images never collide on one tag — without it, a CPU-first flow could run a
-    GPU step on the CPU base, and a GPU build would overwrite the CPU image at
-    the same registry tag. ``env_id.arch`` is included because the env cache key
-    drops it."""
+    GPU step on the CPU base, and a GPU build or alternate layer encoding would
+    overwrite the CPU/default image at the same registry tag. ``env_id.arch`` is
+    included because the env cache key drops it."""
     import hashlib  # noqa: PLC0415
 
-    safe_arch = "".join(c if c in _TAG_SAFE_CHARS else "_" for c in (arch or "noarch"))
+    safe_arch = _tag_safe(arch or "noarch")
+    safe_build_identity = _tag_safe(build_identity).strip("._-")
     digest = hashlib.sha256(
-        ("%s\x00%s" % (base_image or "", arch or "")).encode("utf-8")
+        ("%s\x00%s\x00%s" % (base_image or "", arch or "", build_identity)).encode(
+            "utf-8"
+        )
     ).hexdigest()[:8]
+    if safe_build_identity:
+        return "%s-%s-%s" % (safe_arch, safe_build_identity[:32], digest)
     return "%s-%s" % (safe_arch, digest)
 
 
@@ -408,7 +459,14 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         self.__class__._prebuilt_env_paths = {}
 
         registry = ImageRegistry.from_config()
+        build_svc = DockerBuildService.from_config()
+        build_identity = build_svc.image_identity_suffix()
+        if not isinstance(build_identity, str):
+            build_identity = ""
 
+        # --- Phase 1: Collect build specs for all remote steps (sequential) ---
+        step_specs = []
+        base_identity_cache: Dict[Tuple[str, str], str] = {}
         for step in self._flow:
             env_id = self.get_env_id(cast(Conda, self.conda), step.name)
             if env_id is None:
@@ -459,14 +517,18 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                     "(for GPU steps) or METAFLOW_PREBUILT_BASE_IMAGE."
                 )
             arch = getattr(env_id, "arch", "")
-            base_identity = registry.base_image_identity(base_image, arch)
+            base_identity_key = (base_image, arch)
+            base_identity = base_identity_cache.get(base_identity_key)
+            if base_identity is None:
+                base_identity = registry.base_image_identity(base_image, arch)
+                base_identity_cache[base_identity_key] = base_identity
             if base_identity != base_image:
                 echo(
                     "    Base image resolved for prebuilt tag: %s -> %s"
                     % (base_image, base_identity)
                 )
             build_base_image = base_identity or base_image
-            variant = _image_variant(build_base_image, arch)
+            variant = _image_variant(build_base_image, arch, build_identity)
             image_key = _image_dedup_key(env_key, variant)
             env_path = (
                 _env_path_for_named(named_alias)
@@ -474,35 +536,120 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                 else _env_path_for(env_id)
             )
 
-            if image_key in self.__class__._prebuilt_images:
-                pull_tag = self.__class__._prebuilt_images[image_key]
-            else:
-                result = self._get_or_build_image(
-                    env_id,
-                    step,
-                    echo,
-                    registry,
-                    base_image=build_base_image,
-                    variant=variant,
-                    named_alias=named_alias,
-                )
-                if result is None:
-                    raise MetaflowException(
-                        "Prebuilt image build failed for step %r. "
-                        "--environment=prebuilt does not fall back to "
-                        "standard conda." % step.name
+            step_specs.append(
+                {
+                    "step": step,
+                    "env_id": env_id,
+                    "env_key": env_key,
+                    "env_path": env_path,
+                    "named_alias": named_alias,
+                    "image_key": image_key,
+                    "base_image": build_base_image,
+                    "variant": variant,
+                }
+            )
+
+        if not step_specs:
+            self.__class__._persist_prebuilt_state()
+            return
+
+        # --- Phase 2: Build unique images concurrently.
+        #     Steps that share the same image_key (same env + base/arch) are
+        #     deduped — only the first spec triggers a build; the result is
+        #     reused by all steps with that key in Phase 3. ---
+        unique_specs: Dict[str, dict] = {}
+        for spec in step_specs:
+            if spec["image_key"] not in unique_specs:
+                unique_specs[spec["image_key"]] = spec
+
+        echo_lock = threading.Lock()
+
+        def _locked_echo(msg: str) -> None:
+            with echo_lock:
+                echo(msg)
+
+        # The code package is flow-level and identical for every step image. Build
+        # it lazily so all-registry-hit deploys skip packaging entirely, but share
+        # the bytes across concurrent misses so it is still built at most once.
+        code_package_lock = threading.Lock()
+        code_package: Dict[str, bytes] = {}
+
+        def _shared_code_package_blob() -> bytes:
+            blob = code_package.get("blob")
+            if blob is not None:
+                return blob
+            with code_package_lock:
+                blob = code_package.get("blob")
+                if blob is None:
+                    blob = _build_metaflow_code_package(self, _locked_echo)
+                    code_package["blob"] = blob
+                return blob
+
+        # keyed by image_key; None means the build failed.
+        image_results: Dict[str, Optional[Tuple[str, str]]] = {
+            ik: None for ik in unique_specs
+        }
+
+        def _build_one(image_key: str, spec: dict) -> None:
+            result = self._get_or_build_image(
+                spec["env_id"],
+                spec["step"],
+                _locked_echo,
+                registry,
+                base_image=spec["base_image"],
+                variant=spec["variant"],
+                named_alias=spec["named_alias"],
+                code_package_blob_supplier=_shared_code_package_blob,
+            )
+            image_results[image_key] = result
+
+        # METAFLOW_PREBUILT_BUILD_WORKERS caps concurrent image builds.
+        # Default to a bounded fanout: enough to parallelize common multi-env
+        # flows without letting a very large flow launch unbounded remote builds.
+        max_workers = _prebuilt_build_worker_count(len(unique_specs))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_build_one, ik, spec): ik
+                for ik, spec in unique_specs.items()
+            }
+            failed_keys = []
+            for future in as_completed(futures):
+                image_key = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    _locked_echo(
+                        "    ERROR: image build raised exception for %s: %s"
+                        % (image_key, exc)
                     )
-                pull_tag, env_path = result
-                self.__class__._prebuilt_images[image_key] = pull_tag
+                    image_results[image_key] = None
+                if image_results[image_key] is None:
+                    failed_keys.append(image_key)
 
-            self.__class__._prebuilt_env_paths[env_key] = env_path
-            self.__class__._prebuilt_env_paths[_step_state_key(step.name)] = env_path
+        if failed_keys:
+            raise MetaflowException(
+                "Prebuilt image build failed for %d image(s). "
+                "--environment=prebuilt does not fall back to standard conda."
+                % len(failed_keys)
+            )
 
-            pull_tag = self.__class__._prebuilt_images[image_key]
+        # --- Phase 3: Update class state and rewrite step decorators
+        #     (sequential — decorator mutation is not thread-safe). ---
+        for spec in step_specs:
+            image_key = spec["image_key"]
+            result = image_results[image_key]
+            assert result is not None  # guaranteed: failed_keys raised above.
+            pull_tag, env_path = result
+
+            self.__class__._prebuilt_images[image_key] = pull_tag
+            self.__class__._prebuilt_env_paths[spec["env_key"]] = env_path
+            self.__class__._prebuilt_env_paths[_step_state_key(spec["step"].name)] = (
+                env_path
+            )
+
             pull_config = registry.pull_config(pull_tag)
-
             found_remote_deco = False
-            for deco in step.decorators:
+            for deco in spec["step"].decorators:
                 if deco.name in CONDA_REMOTE_COMMANDS:
                     prev = deco.attributes.get("image")
                     deco.attributes["image"] = pull_tag
@@ -510,14 +657,15 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                         deco.attributes[k] = v
                     echo(
                         "    @%s image rewritten for step %s: %r -> %r"
-                        % (deco.name, step.name, prev, pull_tag)
+                        % (deco.name, spec["step"].name, prev, pull_tag)
                     )
                     found_remote_deco = True
 
             if not found_remote_deco:
                 raise MetaflowException(
                     "Prebuilt image was built (%s) but no remote compute "
-                    "decorator found on step %r to rewrite." % (pull_tag, step.name)
+                    "decorator found on step %r to rewrite."
+                    % (pull_tag, spec["step"].name)
                 )
 
         self.__class__._persist_prebuilt_state()
@@ -531,6 +679,8 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         base_image: str,
         variant: str,
         named_alias: Optional[str] = None,
+        code_package_blob: Optional[bytes] = None,
+        code_package_blob_supplier: Optional[Callable[[], bytes]] = None,
     ) -> Optional[Tuple[str, str]]:
         """Build the prebuilt image and return ``(pull_tag, env_path)`` or
         ``None`` on failure. ``base_image`` and ``variant`` are resolved by the
@@ -556,12 +706,6 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                 % (env_id.req_id[:8], env_id.full_id[:8])
             )
 
-        resolved_env = cast(Conda, self.conda).environment(env_id)
-        if resolved_env is None:
-            echo("    WARNING: Could not find resolved environment for %s" % (env_id,))
-            return None
-
-        env_type = resolved_env.env_type
         env_path = (
             _env_path_for_named(named_alias)
             if named_alias is not None
@@ -572,15 +716,36 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         # this exact env/base/arch image, reuse it instead of rebuilding and
         # repushing the large conda layer. Named env tags remain mutable and must
         # rebuild so a new deploy can intentionally move the alias.
-        if named_alias is None and registry.image_exists(push_tag):
+        registry_cache_enabled = _env_flag_enabled(_PREBUILT_REGISTRY_CACHE_ENV, True)
+        if (
+            named_alias is None
+            and registry_cache_enabled
+            and registry.image_exists(push_tag)
+        ):
             echo("    Reusing existing prebuilt image: %s" % push_tag)
             return pull_tag, env_path
+        if named_alias is None and not registry_cache_enabled:
+            echo(
+                "    Registry prebuilt image reuse disabled by %s; rebuilding: %s"
+                % (_PREBUILT_REGISTRY_CACHE_ENV, push_tag)
+            )
 
-        try:
-            code_package_blob = _build_metaflow_code_package(self, echo)
-        except Exception as e:
-            echo("    ERROR: failed to build metaflow code package: %s" % e)
+        resolved_env = cast(Conda, self.conda).environment(env_id)
+        if resolved_env is None:
+            echo("    WARNING: Could not find resolved environment for %s" % (env_id,))
             return None
+
+        env_type = resolved_env.env_type
+
+        if code_package_blob is None:
+            try:
+                if code_package_blob_supplier is not None:
+                    code_package_blob = code_package_blob_supplier()
+                else:
+                    code_package_blob = _build_metaflow_code_package(self, echo)
+            except Exception as e:
+                echo("    ERROR: failed to build metaflow code package: %s" % e)
+                return None
 
         # Derive deferred sdists DIRECTLY from this image's resolved env: a pypi
         # package that is a source dist (url_format != ".whl"), web-downloadable,
@@ -642,6 +807,12 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             dockerfile_build_options=build_options,
         )
         context_files.update(embedded_wheel_files)
+        context_files[_INSTALL_SUPPORT_TARBALL_NAME] = _build_install_support_package(
+            code_package_blob
+        )
+        # Keep the runtime package byte-for-byte identical to MetaflowPackage
+        # output. The support tarball above is only an early, cache-friendly
+        # extract for the build-time installer.
         context_files[_CODE_PACKAGE_TARBALL_NAME] = code_package_blob
 
         success = build_svc.build_and_push(
@@ -751,6 +922,63 @@ def _build_metaflow_code_package(
         raise RuntimeError("MetaflowPackage blob is empty")
     echo("    Code package: %.1f MB" % (len(data) / (1024 * 1024)))
     return data
+
+
+def _is_install_support_member(name: str) -> bool:
+    return name in _INSTALL_SUPPORT_FILES or name.startswith(_INSTALL_SUPPORT_PREFIXES)
+
+
+def _write_deterministic_gzip_tar(
+    members: List[Tuple[tarfile.TarInfo, bytes]],
+) -> bytes:
+    out = io.BytesIO()
+    with gzip.GzipFile(fileobj=out, mode="wb", mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode="w") as tar:
+            for member, payload in members:
+                normalized = tarfile.TarInfo(member.name)
+                normalized.size = len(payload) if member.isfile() else 0
+                normalized.mode = member.mode
+                normalized.type = member.type
+                normalized.linkname = member.linkname
+                normalized.mtime = 0
+                normalized.uid = 0
+                normalized.gid = 0
+                normalized.uname = ""
+                normalized.gname = ""
+                if member.isfile():
+                    tar.addfile(normalized, io.BytesIO(payload))
+                else:
+                    tar.addfile(normalized)
+    return out.getvalue()
+
+
+def _build_install_support_package(
+    code_package_blob: bytes,
+) -> bytes:
+    """Return the env-install support subset of a Metaflow code package.
+
+    The build-time installer only needs packaged Metaflow/extension modules plus
+    ``OTHER_CONTENT`` metadata. Extracting that stable subset before the env
+    install lets Docker build backends reuse the expensive env layer when only
+    flow code changes. The full original code package is still extracted after
+    the env install, preserving the final image's complete package tree exactly.
+    """
+    support_members: List[Tuple[tarfile.TarInfo, bytes]] = []
+    with tarfile.open(fileobj=io.BytesIO(code_package_blob), mode="r:*") as src:
+        for member in src.getmembers():
+            if member.isdir():
+                continue
+            if not _is_install_support_member(member.name):
+                continue
+            payload = src.extractfile(member).read() if member.isfile() else b""
+            support_members.append((member, payload))
+
+    if not support_members:
+        raise MetaflowException(
+            "Failed to build prebuilt install-support package: no support files found."
+        )
+
+    return _write_deterministic_gzip_tar(support_members)
 
 
 def _gather_embedded_wheels(
@@ -923,12 +1151,13 @@ def _generate_dockerfile(
         "ENV CONDA_ENVS_DIRS=%s" % PREBUILT_ENVS_DIR,
         "",
         "RUN mkdir -p %s" % PREBUILT_BUILD_LOCAL_ROOT,
-        "COPY %s /tmp/%s" % (_CODE_PACKAGE_TARBALL_NAME, _CODE_PACKAGE_TARBALL_NAME),
+        "COPY %s /tmp/%s"
+        % (_INSTALL_SUPPORT_TARBALL_NAME, _INSTALL_SUPPORT_TARBALL_NAME),
         "RUN tar -xzf /tmp/%s -C %s && rm /tmp/%s"
         % (
-            _CODE_PACKAGE_TARBALL_NAME,
+            _INSTALL_SUPPORT_TARBALL_NAME,
             PREBUILT_BUILD_LOCAL_ROOT,
-            _CODE_PACKAGE_TARBALL_NAME,
+            _INSTALL_SUPPORT_TARBALL_NAME,
         ),
         "WORKDIR %s" % PREBUILT_BUILD_LOCAL_ROOT,
         "",
@@ -936,10 +1165,32 @@ def _generate_dockerfile(
     ]
 
     options = dockerfile_build_options or DockerfileBuildOptions()
+    bootstrap_pip_options = " ".join(
+        shlex.quote(arg) for arg in options.bootstrap_pip_install_options
+    )
+    bootstrap_pip_command = (
+        "python -m pip install --disable-pip-version-check --no-cache-dir "
+        + (bootstrap_pip_options + " " if bootstrap_pip_options else "")
+        + '--target "$BOOTSTRAP" requests'
+    )
     build_install_command = "python -m %s.prebuilt_build_install %s %s" % (
         build_install_module,
         env_id.req_id,
         env_id.full_id,
+    )
+    bootstrap_command = (
+        "BOOTSTRAP=$(mktemp -d) && "
+        "(python -c 'import requests' >/dev/null 2>&1 || "
+        "((python -m pip --version >/dev/null 2>&1 || "
+        "python -m ensurepip --upgrade) && "
+        "%s)) && "
+        "METAFLOW_PREBUILT_BUILD_CONTAINER=1 "
+        'PYTHONPATH="$BOOTSTRAP:$PYTHONPATH" %s && '
+        'rm -rf "$BOOTSTRAP"' % (bootstrap_pip_command, build_install_command)
+    )
+    cleanup_command = "rm -rf %s/pkgs %s/conda-bld /root/.cache/pip" % (
+        PREBUILT_MAMBA_ROOT_PREFIX,
+        PREBUILT_MAMBA_ROOT_PREFIX,
     )
 
     if options.buildkit_deferred_input_mounts:
@@ -960,7 +1211,9 @@ def _generate_dockerfile(
                 "--mount=type=bind,source=%s,target=%s,readonly"
                 % (_DEFERRED_WHEELS_CONTEXT_DIR, _DEFERRED_WHEELS_CONTAINER_DIR)
             )
-        lines.append("RUN %s %s" % (" ".join(mounts), build_install_command))
+        lines.append(
+            "RUN %s %s && %s" % (" ".join(mounts), bootstrap_command, cleanup_command)
+        )
     else:
         # COPY the current deferred-builds hand-off (ALWAYS - this overwrites
         # any stale hand-off inherited from the base image) and any embedded
@@ -974,10 +1227,18 @@ def _generate_dockerfile(
                 "COPY %s %s"
                 % (_DEFERRED_WHEELS_CONTEXT_DIR, _DEFERRED_WHEELS_CONTAINER_DIR)
             )
-        lines.append("RUN %s" % build_install_command)
-    lines.append(
-        "RUN rm -rf %s/pkgs %s/conda-bld /root/.cache/pip"
-        % (PREBUILT_MAMBA_ROOT_PREFIX, PREBUILT_MAMBA_ROOT_PREFIX)
+        lines.append("RUN %s && %s" % (bootstrap_command, cleanup_command))
+    lines.extend(
+        [
+            "COPY %s /tmp/%s"
+            % (_CODE_PACKAGE_TARBALL_NAME, _CODE_PACKAGE_TARBALL_NAME),
+            "RUN tar -xzf /tmp/%s -C %s && rm /tmp/%s"
+            % (
+                _CODE_PACKAGE_TARBALL_NAME,
+                PREBUILT_BUILD_LOCAL_ROOT,
+                _CODE_PACKAGE_TARBALL_NAME,
+            ),
+        ]
     )
 
     if named_alias is not None:

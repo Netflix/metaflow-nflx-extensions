@@ -1,5 +1,7 @@
 """Unit tests for _generate_dockerfile()."""
 
+import os
+import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -35,6 +37,15 @@ def _make_resolved_env(env_type="conda"):
     return env
 
 
+def _bootstrap_shell_command(dockerfile):
+    install_run = next(
+        line for line in dockerfile.splitlines() if "prebuilt_build_install" in line
+    )
+    assert install_run.startswith("RUN ")
+    cleanup_marker = " && rm -rf %s/pkgs" % PREBUILT_MAMBA_ROOT_PREFIX
+    return install_run[len("RUN ") :].split(cleanup_marker, 1)[0]
+
+
 def test_generate_dockerfile_regular_has_required_instructions():
     env_id = _make_env_id()
     resolved_env = _make_resolved_env()
@@ -52,11 +63,15 @@ def test_generate_dockerfile_regular_has_required_instructions():
     assert "ENV CONDA_ENVS_DIRS=%s" % PREBUILT_ENVS_DIR in dockerfile
     assert "COPY job.tar" in dockerfile
     assert "prebuilt_build_install" in dockerfile
-    assert (
-        "RUN rm -rf %s/pkgs %s/conda-bld /root/.cache/pip"
-        % (PREBUILT_MAMBA_ROOT_PREFIX, PREBUILT_MAMBA_ROOT_PREFIX)
-        in dockerfile
+    cleanup = "rm -rf %s/pkgs %s/conda-bld /root/.cache/pip" % (
+        PREBUILT_MAMBA_ROOT_PREFIX,
+        PREBUILT_MAMBA_ROOT_PREFIX,
     )
+    install_run = next(
+        line for line in dockerfile.splitlines() if "prebuilt_build_install" in line
+    )
+    assert " && %s" % cleanup in install_run
+    assert "RUN %s" % cleanup not in dockerfile
     assert env_id.req_id in dockerfile
     assert env_id.full_id in dockerfile
     assert ".metaflowenv" in dockerfile
@@ -71,6 +86,21 @@ def test_generate_dockerfile_regular_has_required_instructions():
         "wheels": [],
     }
     assert "COPY %s" % _DEFERRED_BUILDS_CONTEXT_NAME in dockerfile
+
+
+def test_generate_dockerfile_installs_env_before_runtime_code_package():
+    env_id = _make_env_id()
+    resolved_env = _make_resolved_env()
+
+    dockerfile, _ = _generate_dockerfile(
+        "ubuntu:22.04", _env_path_for(env_id), env_id, "conda", resolved_env
+    )
+
+    install_support_pos = dockerfile.index("COPY install_support.tar.gz")
+    build_install_pos = dockerfile.index("prebuilt_build_install")
+    runtime_code_pos = dockerfile.index("COPY job.tar")
+
+    assert install_support_pos < build_install_pos < runtime_code_pos
 
 
 def test_generate_dockerfile_deferred_handoff_and_wheels():
@@ -136,9 +166,111 @@ def test_generate_dockerfile_can_mount_deferred_inputs_with_buildkit():
     assert (
         "RUN --mount=type=bind,source=deferred_builds.json,target=/app/deferred_builds.json,readonly "
         "--mount=type=bind,source=deferred_wheels,target=/app/deferred_wheels,readonly "
+        "BOOTSTRAP=$(mktemp -d) && "
+        "(python -c 'import requests' >/dev/null 2>&1 || "
+        "((python -m pip --version >/dev/null 2>&1 || "
+        "python -m ensurepip --upgrade) && "
+        "python -m pip install --disable-pip-version-check --no-cache-dir "
+        '--target "$BOOTSTRAP" requests)) && METAFLOW_PREBUILT_BUILD_CONTAINER=1 '
+        'PYTHONPATH="$BOOTSTRAP:$PYTHONPATH" '
         "python -m metaflow_extensions.prebuilt.plugins.conda.prebuilt_build_install"
-        in dockerfile
+        ' abc123 def456 && rm -rf "$BOOTSTRAP" && '
+        "rm -rf /opt/metaflow/conda-root/pkgs" in dockerfile
     )
+    assert "pypi.netflix.net" not in dockerfile
+
+
+def test_generate_dockerfile_can_configure_bootstrap_pip_options():
+    env_id = _make_env_id()
+    resolved_env = _make_resolved_env()
+
+    dockerfile, _ = _generate_dockerfile(
+        "ubuntu:22.04",
+        _env_path_for(env_id),
+        env_id,
+        "conda",
+        resolved_env,
+        dockerfile_build_options=DockerfileBuildOptions(
+            bootstrap_pip_install_options=(
+                "--index-url",
+                "https://pypi.example/simple",
+            )
+        ),
+    )
+
+    assert (
+        "python -m pip install --disable-pip-version-check --no-cache-dir "
+        "--index-url https://pypi.example/simple "
+        '--target "$BOOTSTRAP" requests'
+    ) in dockerfile
+    assert "|| ((python -m pip --version" in dockerfile
+    assert "requests)) && METAFLOW_PREBUILT_BUILD_CONTAINER=1" in dockerfile
+
+
+def test_generate_dockerfile_skips_requests_install_when_import_succeeds(tmp_path):
+    env_id = _make_env_id()
+    resolved_env = _make_resolved_env()
+
+    dockerfile, _ = _generate_dockerfile(
+        "ubuntu:22.04", _env_path_for(env_id), env_id, "conda", resolved_env
+    )
+    command = _bootstrap_shell_command(dockerfile)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    pip_marker = tmp_path / "pip_was_called"
+    build_install_marker = tmp_path / "build_install_was_called"
+    python_calls = tmp_path / "python_calls"
+    fake_python = fake_bin / "python"
+    fake_python.write_text(
+        """#!/bin/sh
+printf '%s\\n' "$*" >> "$PYTHON_CALLS"
+if [ "$1" = "-c" ] && [ "$2" = "import requests" ]; then
+    exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
+    echo pip >> "$PIP_MARKER"
+    exit 42
+fi
+if [ "$1" = "-m" ] && [ "$2" = "ensurepip" ]; then
+    echo ensurepip >> "$PIP_MARKER"
+    exit 42
+fi
+if [ "$1" = "-m" ]; then
+    case "$2" in
+        *.prebuilt_build_install)
+            echo build-install >> "$BUILD_INSTALL_MARKER"
+            exit 0
+            ;;
+    esac
+fi
+echo "unexpected python args: $*" >&2
+exit 2
+"""
+    )
+    fake_python.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": "%s%s%s" % (fake_bin, os.pathsep, env.get("PATH", "")),
+            "PIP_MARKER": str(pip_marker),
+            "BUILD_INSTALL_MARKER": str(build_install_marker),
+            "PYTHON_CALLS": str(python_calls),
+        }
+    )
+
+    result = subprocess.run(
+        ["sh", "-c", command],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not pip_marker.exists(), python_calls.read_text()
+    assert build_install_marker.read_text() == "build-install\n"
 
 
 def test_generate_dockerfile_named_alias_adds_symlink():

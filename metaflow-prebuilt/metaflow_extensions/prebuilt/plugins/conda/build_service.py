@@ -2,7 +2,7 @@ import importlib.metadata
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING, Tuple
 
 if TYPE_CHECKING:
     pass
@@ -38,6 +38,7 @@ class DockerfileBuildOptions:
     """
 
     buildkit_deferred_input_mounts: bool = False
+    bootstrap_pip_install_options: Tuple[str, ...] = ()
 
 
 class DockerBuildService(ABC):
@@ -95,6 +96,17 @@ class DockerBuildService(ABC):
         """
 
         return DockerfileBuildOptions()
+
+    def image_identity_suffix(self) -> str:
+        """Return an optional discriminator for build-output identity.
+
+        The prebuilt image tag already includes the env id, base image, and arch.
+        Build backends that can change pushed image compatibility or layer encoding
+        should return a short stable suffix so registry reuse cannot hide that
+        setting.
+        """
+
+        return ""
 
     @classmethod
     def from_config(cls) -> "DockerBuildService":

@@ -30,6 +30,9 @@ import tarfile
 import tempfile
 import time
 import zipfile
+import atexit
+import ast
+import importlib.machinery
 
 from typing import List, Optional
 
@@ -47,14 +50,140 @@ from typing import List, Optional
 # ever set in the generated Dockerfile.
 os.environ.setdefault("METAFLOW_CONDA_IGNORE_CACHING_DATASTORES", '["local"]')
 
-from metaflow.cli import echo_always
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+_MINIMAL_CONFIG_HOME: Optional[str] = None
+_MINIMAL_CONFIG_CLEANUP_REGISTERED = False
+_MINIMAL_EVENT_LOGGER = "nullSidecarLogger"
+_MINIMAL_MONITOR = "nullSidecarMonitor"
+_MINIMAL_PLUGIN_ALLOWLIST = {
+    "ENVIRONMENT": ("nflx", "conda"),
+    "DATASTORE": ("local",),
+    "LOGGING_SIDECAR": (_MINIMAL_EVENT_LOGGER,),
+    "MONITOR_SIDECAR": (_MINIMAL_MONITOR,),
+}
+
+
+def _metaflow_plugin_categories() -> List[str]:
+    """Return Metaflow plugin categories without importing Metaflow.
+
+    This module writes ``METAFLOW_HOME/config.json`` before importing
+    ``metaflow``. Importing ``metaflow.extension_support.plugins`` directly would
+    execute Metaflow's package init too early, so read the installed source file
+    and parse the source for the ``_plugin_categories`` dict keys instead.
+    """
+
+    spec = importlib.machinery.PathFinder.find_spec("metaflow", sys.path)
+    locations = list(spec.submodule_search_locations or []) if spec else []
+    if not locations:
+        raise RuntimeError("Cannot locate installed metaflow package")
+
+    plugins_path = os.path.join(locations[0], "extension_support", "plugins.py")
+    try:
+        with open(plugins_path, encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=plugins_path)
+    except OSError as e:
+        raise RuntimeError("Cannot read Metaflow plugin categories: %s" % e) from e
+
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "_plugin_categories"
+            for target in node.targets
+        ):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            break
+        categories: List[str] = []
+        for key in node.value.keys:
+            if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                raise RuntimeError(
+                    "Metaflow _plugin_categories contains a non-string key"
+                )
+            categories.append(key.value.upper())
+        return categories
+
+    raise RuntimeError("Cannot find Metaflow _plugin_categories")
+
+
+def _minimal_metaflow_config() -> dict:
+    categories = _metaflow_plugin_categories()
+    config = {
+        "METAFLOW_DEFAULT_EVENT_LOGGER": _MINIMAL_EVENT_LOGGER,
+        "METAFLOW_DEFAULT_MONITOR": _MINIMAL_MONITOR,
+    }
+    config.update(
+        {
+            "METAFLOW_ENABLED_%s"
+            % category: list(_MINIMAL_PLUGIN_ALLOWLIST.get(category, ()))
+            for category in categories
+        }
+    )
+    return config
+
+
+def _cleanup_minimal_metaflow_config() -> None:
+    global _MINIMAL_CONFIG_HOME
+    config_home = _MINIMAL_CONFIG_HOME
+    _MINIMAL_CONFIG_HOME = None
+    if not config_home:
+        return
+    if os.environ.get("METAFLOW_HOME") == config_home:
+        os.environ.pop("METAFLOW_HOME", None)
+    shutil.rmtree(config_home, ignore_errors=True)
+
+
+def _install_minimal_metaflow_config() -> None:
+    """Keep build-time Metaflow imports from resolving unrelated plugins.
+
+    The base-image Python runs this installer before the target env exists. Some
+    base images intentionally do not include every transitive dependency needed
+    by all Netflix runtime plugins, so plugin resolution must be restricted to
+    the tiny set needed for Conda environment creation.
+    """
+
+    if not _truthy(os.environ.get("METAFLOW_PREBUILT_BUILD_CONTAINER", "0")):
+        return
+    if not _truthy(os.environ.get("METAFLOW_PREBUILT_MINIMAL_PLUGIN_CONFIG", "1")):
+        return
+
+    global _MINIMAL_CONFIG_HOME, _MINIMAL_CONFIG_CLEANUP_REGISTERED
+    _cleanup_minimal_metaflow_config()
+    config_home = tempfile.mkdtemp(prefix="metaflow-prebuilt-config-")
+    try:
+        plugin_config = _minimal_metaflow_config()
+        with open(os.path.join(config_home, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(plugin_config, f)
+
+        # Publish METAFLOW_HOME only after config.json exists. Deploy-side
+        # parallelism runs separate Docker builds, so these process globals are
+        # not shared across step image builds.
+        _MINIMAL_CONFIG_HOME = config_home
+        if not _MINIMAL_CONFIG_CLEANUP_REGISTERED:
+            atexit.register(_cleanup_minimal_metaflow_config)
+            _MINIMAL_CONFIG_CLEANUP_REGISTERED = True
+        os.environ["METAFLOW_HOME"] = config_home
+        config_home = None
+    finally:
+        if config_home:
+            shutil.rmtree(config_home, ignore_errors=True)
+
+
+def echo_always(msg: str = "", nl: bool = True, err: bool = True, **_: object) -> None:
+    print(msg, end="\n" if nl else "", file=sys.stderr if err else sys.stdout)
+
+
+_install_minimal_metaflow_config()
 
 try:
+    from metaflow.metaflow_config import DATASTORE_LOCAL_DIR, CONDA_MAGIC_FILE_V2
+    from metaflow.packaging_sys import ContentType, MetaflowCodeContent
     from metaflow_extensions.netflixext.plugins.conda.conda import Conda
     from metaflow_extensions.netflixext.plugins.conda.env_descr import EnvID
-    from metaflow_extensions.netflixext.plugins.conda.remote_bootstrap import (
-        setup_conda_manifest,
-    )
     from metaflow_extensions.netflixext.plugins.conda.utils import (
         CondaException,
         arch_id,
@@ -90,6 +219,20 @@ _SETUPTOOLS_CHECK = (
     "    sys.exit(3)\n"
     "sys.exit(0 if major < 82 else 4)\n"
 )
+
+
+def setup_conda_manifest() -> None:
+    manifest_folder = os.path.join(os.getcwd(), DATASTORE_LOCAL_DIR)
+    os.makedirs(manifest_folder, exist_ok=True)
+    path_to_manifest = MetaflowCodeContent.get_filename(
+        CONDA_MAGIC_FILE_V2, ContentType.OTHER_CONTENT
+    )
+    if path_to_manifest is None:
+        raise RuntimeError(
+            "Cannot find the conda manifest file %s in the package"
+            % CONDA_MAGIC_FILE_V2
+        )
+    shutil.move(path_to_manifest, os.path.join(manifest_folder, CONDA_MAGIC_FILE_V2))
 
 
 def _parse_build_system_requires(text: str) -> List[str]:
@@ -526,15 +669,26 @@ def install_env(req_id: str, full_id: str) -> str:
     return env_path
 
 
-if __name__ == "__main__":
-    if len(sys.argv) != 3:
+def main(argv: Optional[List[str]] = None) -> int:
+    args = sys.argv if argv is None else argv
+    if len(args) != 3:
         print(
             "Usage: python -m metaflow_extensions.prebuilt.plugins.conda."
             "prebuilt_build_install <req_id> <full_id>",
             file=sys.stderr,
         )
-        sys.exit(2)
-    path = install_env(sys.argv[1], sys.argv[2])
-    print(path)
-    sys.stdout.flush()
-    os._exit(0)
+        return 2
+    try:
+        path = install_env(args[1], args[2])
+        print(path)
+        sys.stdout.flush()
+        return 0
+    finally:
+        _cleanup_minimal_metaflow_config()
+
+
+if __name__ == "__main__":
+    exit_code = main()
+    if exit_code == 0:
+        os._exit(0)
+    sys.exit(exit_code)
