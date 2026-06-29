@@ -22,7 +22,13 @@ from metaflow._vendor import click
     default=False,
     help="Pre-fetch all artifacts during initialization instead of lazy loading",
 )
-def main(input_map, output_map, data_watcher, reference, prefetch_artifacts):
+@click.option(
+    "--runtime-component",
+    "runtime_components",
+    multiple=True,
+    help="Fully-qualified class name of a runtime component to activate (repeatable)",
+)
+def main(input_map, output_map, data_watcher, reference, prefetch_artifacts, runtime_components):
     """
     Memory Backend Runtime for Metaflow Functions.
 
@@ -40,6 +46,7 @@ def main(input_map, output_map, data_watcher, reference, prefetch_artifacts):
             data_watcher_name=data_watcher,
             reference=reference,
             prefetch_artifacts=prefetch_artifacts,
+            runtime_components=list(runtime_components),
         )
     except Exception as e:
         click.echo(f"Memory backend runtime error: {e}", err=True)

@@ -11,6 +11,7 @@ if sys.version_info >= (3, 10):
     from ..plugins.functions.backends.memory.supervisor.supervisor import (
         function_supervisor,
     )
+    from ..plugins.functions.components import AbstractRuntimeComponent
 
 from .functions_version import _ext_version
 

@@ -473,9 +473,11 @@ class MemoryBackend(AbstractBackend):
             local_reference,
         ]
 
-        # Add prefetch-artifacts flag if enabled
         if prefetch_artifacts:
             cmd.append("--prefetch-artifacts")
+
+        for class_name in connection_params.get("runtime_components", []):
+            cmd.extend(["--runtime-component", class_name])
 
         return cmd
 
@@ -568,6 +570,9 @@ class MemoryBackend(AbstractBackend):
             params["num_rings"] = kwargs["process"] * BUFFER_PER_PROCESS
             params["process"] = kwargs["process"]
 
+        if "runtime_components" in kwargs:
+            params["runtime_components"] = kwargs["runtime_components"]
+
         return params
 
     @classmethod
@@ -584,11 +589,17 @@ class MemoryBackend(AbstractBackend):
         from metaflow_extensions.nflx.plugins.functions.core.function import (
             function_from_json,
         )
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            load_component_instances,
+            start_components,
+            stop_components,
+        )
 
         input_map_name = connection_params.get("input_map_name")
         output_map_name = connection_params.get("output_map_name")
         data_watcher_name = connection_params.get("data_watcher_name")
         prefetch_artifacts = connection_params.get("prefetch_artifacts", False)
+        component_class_names = connection_params.get("runtime_components", [])
 
         if not input_map_name or not output_map_name:
             raise MetaflowFunctionRuntimeException(
@@ -637,10 +648,15 @@ class MemoryBackend(AbstractBackend):
 
         debug.functions_exec("Runtime IO buffers ready")
 
+        component_instances = start_components(
+            load_component_instances(component_class_names)
+        )
         try:
-            cls._runtime_with_buffers(inp, out, sem, func_instance, prefetch_artifacts)
+            cls._runtime_with_buffers(
+                inp, out, sem, func_instance, prefetch_artifacts, component_instances
+            )
         finally:
-            # Clean up I/O buffers
+            stop_components(component_instances)
             inp.close()
             out.close()
             sem.close()
@@ -653,6 +669,7 @@ class MemoryBackend(AbstractBackend):
         sem: Semaphore,
         func_instance,
         prefetch_artifacts: bool = False,
+        component_instances: List = [],
     ):
         debug.functions_exec("Setting up serializers using registry")
         registry = get_global_registry()
@@ -728,9 +745,15 @@ class MemoryBackend(AbstractBackend):
 
                     try:
                         debug.functions_exec("Call the function _execute method")
+                        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+                            before_call_components,
+                            after_call_components,
+                        )
+                        before_call_components(component_instances)
                         result = func_instance.execute(
                             input_data, parameters, **kwargs_copy
                         )
+                        after_call_components(component_instances)
                     except Exception as user_error:
                         debug.functions_exec("User exception")
                         result = output_cls()
@@ -778,6 +801,7 @@ class MemoryBackend(AbstractBackend):
         data_watcher_name: str,
         reference: str,
         prefetch_artifacts: bool = False,
+        runtime_components: List[str] = [],
     ) -> None:
         """
         This function is called from a subprocess and handles memory buffer-based
@@ -795,6 +819,8 @@ class MemoryBackend(AbstractBackend):
             Path to the function specification file
         prefetch_artifacts : bool, default False
             Whether to pre-fetch all artifacts during initialization
+        runtime_components : List[str], default []
+            Fully-qualified class names of runtime components to activate
         """
 
         def execute_runtime():
@@ -804,6 +830,7 @@ class MemoryBackend(AbstractBackend):
                 "output_map_name": output_map_name,
                 "data_watcher_name": data_watcher_name,
                 "prefetch_artifacts": prefetch_artifacts,
+                "runtime_components": runtime_components,
             }
 
             debug.functions_exec(

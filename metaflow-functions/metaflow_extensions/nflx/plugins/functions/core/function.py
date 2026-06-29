@@ -42,7 +42,7 @@ import shutil
 from abc import ABC, abstractmethod
 from dataclasses import asdict
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Any, Dict, Optional, Type, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, cast
 
 if TYPE_CHECKING:
     from metaflow import S3, Task
@@ -790,6 +790,7 @@ def function_from_json(
     use_proxy: bool = True,
     backend: Optional[str] = None,
     process: int = 1,
+    runtime_components: Optional[List] = None,
 ) -> "MetaflowFunction":
     """
     Load a relocatable function from a reference JSON.
@@ -824,6 +825,11 @@ def function_from_json(
         If not provided, uses the backend from METAFLOW_FUNCTION_BACKEND config.
     process: int, default 1
         Number of process to back this function
+    runtime_components : Optional[List], default None
+        List of AbstractRuntimeComponent subclasses to activate in the runtime.
+        Components are instantiated inside the subprocess and their lifecycle hooks
+        (start, stop, before_call, after_call) are called automatically.
+        User code can call a component class directly: ``MyComponent("msg")``.
 
     Returns
     -------
@@ -876,6 +882,10 @@ def function_from_json(
     else:
         # Subprocess - return concrete function with full environment
         func = subclass.from_spec(fs, base_path, backend=backend)
+
+    # Store runtime_components on the function instance so the backend can
+    # forward them to the subprocess.
+    func._runtime_components = runtime_components or []
 
     # Start the runtime if requested
     if start_runtime:

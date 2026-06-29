@@ -5,7 +5,7 @@ Provides local Ray cluster execution with automatic resource allocation
 from @resources decorator metadata.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import ray
 
@@ -241,8 +241,18 @@ class RayBackend(AbstractBackend):
         # Ray will use all available resources by default
         FunctionActor = ray.remote(runtime_env=runtime_env)(FunctionActorClass)
 
-        # Instantiate actor with function reference
-        cls._actor_pool[uuid] = FunctionActor.remote(func_instance.spec.reference)
+        # Serialize runtime component specs for the actor subprocess
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            serialize_components,
+        )
+        component_class_names = serialize_components(
+            getattr(func_instance, "_runtime_components", [])
+        )
+
+        # Instantiate actor with function reference and component class names
+        cls._actor_pool[uuid] = FunctionActor.remote(
+            func_instance.spec.reference, component_class_names
+        )
 
         debug.functions_exec(
             f"Created Ray actor for function '{func_instance.name}' with runtime_env: {runtime_env}"
@@ -280,6 +290,10 @@ class RayBackend(AbstractBackend):
 
         if actor:
             try:
+                ray.get(actor.shutdown.remote())
+            except Exception as e:
+                debug.functions_exec(f"Error shutting down Ray actor components: {e}")
+            try:
                 ray.kill(actor)
                 debug.functions_exec(
                     f"Terminated Ray actor for function '{func_instance.name}'"
@@ -308,8 +322,12 @@ class RayBackend(AbstractBackend):
         cleanup or application shutdown.
         """
         if force:
-            # Kill all remaining actors
+            # Gracefully stop components then kill all remaining actors
             for uuid, actor in list(cls._actor_pool.items()):
+                try:
+                    ray.get(actor.shutdown.remote())
+                except Exception as e:
+                    debug.functions_exec(f"Error shutting down Ray actor components for uuid '{uuid}': {e}")
                 try:
                     ray.kill(actor)
                     debug.functions_exec(
@@ -348,7 +366,7 @@ class FunctionActorClass:
     for the conda environment.
     """
 
-    def __init__(self, function_reference: str):
+    def __init__(self, function_reference: str, component_class_names: List[str] = []):
         """
         Initialize actor by extracting code and loading concrete function.
 
@@ -356,6 +374,8 @@ class FunctionActorClass:
         ----------
         function_reference : str
             S3 path to function specification JSON
+        component_class_names : List[str]
+            Fully-qualified class names of runtime components to activate
         """
         import tempfile
         from metaflow_extensions.nflx.plugins.functions.core.function_spec import (
@@ -408,6 +428,24 @@ class FunctionActorClass:
         # Store the code directory for cleanup
         self.code_dir = code_dir
 
+        # Load and start runtime components inside the actor process
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            load_component_instances,
+            start_components,
+        )
+
+        self._component_instances = start_components(
+            load_component_instances(component_class_names)
+        )
+
+    def shutdown(self):
+        """Stop runtime components. Called before the actor is killed."""
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            stop_components,
+        )
+
+        stop_components(self._component_instances)
+
     def execute(self, data, **kwargs):
         """
         Execute function on data in-process.
@@ -428,13 +466,16 @@ class FunctionActorClass:
         Any
             Result from function execution
         """
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            before_call_components,
+            after_call_components,
+        )
+
         # Use params from kwargs if provided, otherwise use pre-created params
         params = kwargs.pop("params", self.params)
 
-        # Call the concrete function directly
-        # Since we used use_proxy=False with backend="local", this goes through:
-        # __call__ -> local_backend.apply() -> execute(data, params)
-        # So we pass params separately, not in kwargs
+        before_call_components(self._component_instances)
         result = self.function(data, params=params, **kwargs)
+        after_call_components(self._component_instances)
 
         return result
