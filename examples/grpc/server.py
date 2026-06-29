@@ -88,15 +88,26 @@ class PredictorServicer(predict_pb2_grpc.PredictorServicer):
                 result = json.loads(result_json)
                 return predict_pb2.PredictResponse(prediction=float(result["prediction"]))
 
-        tasks = []
+        pending = set()
         async for req in request_iterator:
-            tasks.append(asyncio.create_task(_call_one(req)))
+            pending.add(asyncio.create_task(_call_one(req)))
+            # Non-blocking drain: yield any tasks that finished during this read
+            done = {t for t in pending if t.done()}
+            pending -= done
+            for t in done:
+                try:
+                    yield t.result()
+                except Exception as exc:
+                    yield predict_pb2.PredictResponse(error=str(exc))
 
-        for task in asyncio.as_completed(tasks):
-            try:
-                yield await task
-            except Exception as exc:
-                yield predict_pb2.PredictResponse(error=str(exc))
+        # Drain remaining tasks in completion order
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                try:
+                    yield t.result()
+                except Exception as exc:
+                    yield predict_pb2.PredictResponse(error=str(exc))
 
 
 async def serve():

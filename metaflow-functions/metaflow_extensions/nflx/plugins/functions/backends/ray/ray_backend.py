@@ -184,7 +184,7 @@ class RayBackend(AbstractBackend):
         try:
             result_ref = actor.execute.remote(data, **kwargs)
             # ray.get blocks — offload to thread pool so the event loop stays free
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, ray.get, result_ref)
             return result
 

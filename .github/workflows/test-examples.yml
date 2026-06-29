@@ -159,6 +159,12 @@ jobs:
         if: always()
         run: kill $GRPC_PID 2>/dev/null || true
 
+      - name: Run Ray batch inference
+        shell: bash -eo pipefail -l
+        env:
+          METAFLOW_FUNCTION_REFERENCE: ${{ env.JSON_FUNCTION_REF }}
+        run: python examples/ray/batch_predict.py
+
       # -----------------------------------------------------------------
       # Verify no zombie subprocesses left behind
       # -----------------------------------------------------------------

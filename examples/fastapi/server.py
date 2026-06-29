@@ -76,7 +76,7 @@ async def predict(req: PredictRequest):
     if fn is None:
         raise HTTPException(status_code=503, detail="Function not ready")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(
             _executor, fn, {"features": req.features}

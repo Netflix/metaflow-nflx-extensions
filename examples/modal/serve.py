@@ -111,7 +111,7 @@ class FunctionServer:
             return {"error": "body must have 'features' list"}
 
         # Offload CPU-bound inference to thread pool — keeps the event loop free
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         with ThreadPoolExecutor(max_workers=1) as pool:
             result = await loop.run_in_executor(
                 pool, self.fn, {"features": features}
