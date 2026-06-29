@@ -1,5 +1,6 @@
 import atexit
 from contextlib import contextmanager
+import dataclasses
 import fcntl
 import gzip
 import io
@@ -98,6 +99,11 @@ PREBUILT_BUILD_LOCAL_ROOT = "/opt/metaflow/code-package"
 # Names under which the MetaflowPackage tarballs live in the docker build context.
 _CODE_PACKAGE_TARBALL_NAME = "job.tar"
 _INSTALL_SUPPORT_TARBALL_NAME = "install_support.tar.gz"
+# These paths must exactly match what MetaflowPackage writes into the tarball.
+# See metaflow.package.MetaflowPackage for the authoritative layout.
+# If MetaflowPackage adds a new internal directory (e.g. .mf_plugins/), add it
+# here too; otherwise _build_install_support_package will leave it out of the
+# install-support tarball, and the container-side installer won't find it.
 _INSTALL_SUPPORT_PREFIXES = (
     ".mf_code/metaflow/",
     ".mf_code/metaflow_extensions/",
@@ -162,6 +168,31 @@ def _named_state_key(name: str) -> str:
 
 def _step_state_key(step_name: str) -> str:
     return "step:%s" % step_name
+
+
+# Sentinel for the base-image identity cache: distinguishes "not yet looked up"
+# from "looked up and got None", so a registry returning None is cached and not
+# re-queried on every step.
+_CACHE_SENTINEL: object = object()
+
+
+@dataclasses.dataclass
+class _BuildSpec:
+    """Typed carrier for per-step build parameters collected in Phase 1.
+
+    Replaces the stringly-typed Dict[str, Any] that previously passed through
+    all three phases of _build_prebuilt_images.  Field access is statically
+    checked and typos fail at definition time, not at runtime.
+    """
+
+    step: Any
+    env_id: Any  # EnvID (or duck-typed equivalent in OSS mode)
+    env_key: str
+    env_path: str
+    named_alias: Optional[str]
+    image_key: str
+    base_image: str
+    variant: str
 
 
 @contextmanager
@@ -464,9 +495,33 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
         if not isinstance(build_identity, str):
             build_identity = ""
 
-        # --- Phase 1: Collect build specs for all remote steps (sequential) ---
-        step_specs = []
-        base_identity_cache: Dict[Tuple[str, str], str] = {}
+        # Phase 1: collect, Phase 2: build concurrently, Phase 3: rewrite decorators.
+        step_specs = self._collect_build_specs(echo, registry, build_identity)
+        if not step_specs:
+            self.__class__._persist_prebuilt_state()
+            return
+
+        image_results = self._build_images_concurrently(step_specs, echo, registry)
+        self._rewrite_step_decorators(step_specs, image_results, registry, echo)
+        self.__class__._persist_prebuilt_state()
+
+    def _collect_build_specs(
+        self,
+        echo: Callable[..., None],
+        registry: "ImageRegistry",
+        build_identity: str,
+    ) -> "List[_BuildSpec]":
+        """Phase 1: walk remote steps and build a typed spec for each.
+
+        Sequential — the conda resolver and registry identity call are not
+        thread-safe.  Returns an empty list when there are no remote steps.
+        """
+        step_specs: List[_BuildSpec] = []
+        # Maps (base_image, arch) -> resolved identity string.
+        # Uses _CACHE_SENTINEL to distinguish "not yet queried" from a cached
+        # None return (which base_image_identity() may legitimately return).
+        base_identity_cache: Dict[Tuple[str, str], Any] = {}
+
         for step in self._flow:
             env_id = self.get_env_id(cast(Conda, self.conda), step.name)
             if env_id is None:
@@ -518,10 +573,11 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                 )
             arch = getattr(env_id, "arch", "")
             base_identity_key = (base_image, arch)
-            base_identity = base_identity_cache.get(base_identity_key)
-            if base_identity is None:
-                base_identity = registry.base_image_identity(base_image, arch)
-                base_identity_cache[base_identity_key] = base_identity
+            cached = base_identity_cache.get(base_identity_key, _CACHE_SENTINEL)
+            if cached is _CACHE_SENTINEL:
+                cached = registry.base_image_identity(base_image, arch)
+                base_identity_cache[base_identity_key] = cached
+            base_identity = cached
             if base_identity != base_image:
                 echo(
                     "    Base image resolved for prebuilt tag: %s -> %s"
@@ -537,30 +593,37 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             )
 
             step_specs.append(
-                {
-                    "step": step,
-                    "env_id": env_id,
-                    "env_key": env_key,
-                    "env_path": env_path,
-                    "named_alias": named_alias,
-                    "image_key": image_key,
-                    "base_image": build_base_image,
-                    "variant": variant,
-                }
+                _BuildSpec(
+                    step=step,
+                    env_id=env_id,
+                    env_key=env_key,
+                    env_path=env_path,
+                    named_alias=named_alias,
+                    image_key=image_key,
+                    base_image=build_base_image,
+                    variant=variant,
+                )
             )
 
-        if not step_specs:
-            self.__class__._persist_prebuilt_state()
-            return
+        return step_specs
 
-        # --- Phase 2: Build unique images concurrently.
-        #     Steps that share the same image_key (same env + base/arch) are
-        #     deduped — only the first spec triggers a build; the result is
-        #     reused by all steps with that key in Phase 3. ---
-        unique_specs: Dict[str, dict] = {}
+    def _build_images_concurrently(
+        self,
+        step_specs: "List[_BuildSpec]",
+        echo: Callable[..., None],
+        registry: "ImageRegistry",
+    ) -> "Dict[str, Tuple[str, str]]":
+        """Phase 2: build each unique image concurrently and return results.
+
+        Returns a dict keyed by image_key mapping to (pull_tag, env_path).
+        Raises MetaflowException if any build fails, naming the affected steps.
+        """
+        # Deduplicate: steps that share the same image_key (same env + base/arch)
+        # produce one build; the result is reused by all of them in Phase 3.
+        unique_specs: Dict[str, _BuildSpec] = {}
         for spec in step_specs:
-            if spec["image_key"] not in unique_specs:
-                unique_specs[spec["image_key"]] = spec
+            if spec.image_key not in unique_specs:
+                unique_specs[spec.image_key] = spec
 
         echo_lock = threading.Lock()
 
@@ -568,37 +631,35 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
             with echo_lock:
                 echo(msg)
 
-        # The code package is flow-level and identical for every step image. Build
-        # it lazily so all-registry-hit deploys skip packaging entirely, but share
-        # the bytes across concurrent misses so it is still built at most once.
+        # The code package is flow-level and identical for every step image.
+        # Build it lazily: all-registry-hit deploys skip packaging entirely,
+        # while concurrent misses share the bytes (built at most once).
+        # A list cell is the standard Python pattern for a thread-safe,
+        # write-once nullable: populated under the lock, read lock-free after.
         code_package_lock = threading.Lock()
-        code_package: Dict[str, bytes] = {}
+        _code_pkg: List[bytes] = []
 
         def _shared_code_package_blob() -> bytes:
-            blob = code_package.get("blob")
-            if blob is not None:
-                return blob
+            if _code_pkg:
+                return _code_pkg[0]
             with code_package_lock:
-                blob = code_package.get("blob")
-                if blob is None:
-                    blob = _build_metaflow_code_package(self, _locked_echo)
-                    code_package["blob"] = blob
-                return blob
+                if not _code_pkg:
+                    _code_pkg.append(_build_metaflow_code_package(self, _locked_echo))
+                return _code_pkg[0]
 
-        # keyed by image_key; None means the build failed.
-        image_results: Dict[str, Optional[Tuple[str, str]]] = {
-            ik: None for ik in unique_specs
-        }
+        # keyed by image_key; populated only on completion (success or failure).
+        # A missing key means "not yet run"; None means "build failed".
+        image_results: Dict[str, Optional[Tuple[str, str]]] = {}
 
-        def _build_one(image_key: str, spec: dict) -> None:
+        def _build_one(image_key: str, spec: _BuildSpec) -> None:
             result = self._get_or_build_image(
-                spec["env_id"],
-                spec["step"],
+                spec.env_id,
+                spec.step,
                 _locked_echo,
                 registry,
-                base_image=spec["base_image"],
-                variant=spec["variant"],
-                named_alias=spec["named_alias"],
+                base_image=spec.base_image,
+                variant=spec.variant,
+                named_alias=spec.named_alias,
                 code_package_blob_supplier=_shared_code_package_blob,
             )
             image_results[image_key] = result
@@ -623,33 +684,54 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                         % (image_key, exc)
                     )
                     image_results[image_key] = None
-                if image_results[image_key] is None:
+                if image_results.get(image_key) is None:
                     failed_keys.append(image_key)
 
         if failed_keys:
+            failed_steps = [
+                unique_specs[k].step.name for k in failed_keys if k in unique_specs
+            ]
             raise MetaflowException(
-                "Prebuilt image build failed for %d image(s). "
+                "Prebuilt image build failed for %d image(s) (steps: %s). "
                 "--environment=prebuilt does not fall back to standard conda."
-                % len(failed_keys)
+                % (len(failed_keys), ", ".join(failed_steps))
             )
 
-        # --- Phase 3: Update class state and rewrite step decorators
-        #     (sequential — decorator mutation is not thread-safe). ---
+        return {k: v for k, v in image_results.items() if v is not None}
+
+    def _rewrite_step_decorators(
+        self,
+        step_specs: "List[_BuildSpec]",
+        image_results: "Dict[str, Tuple[str, str]]",
+        registry: "ImageRegistry",
+        echo: Callable[..., None],
+    ) -> None:
+        """Phase 3: update class state and rewrite remote-compute decorators.
+
+        Sequential — decorator mutation is not thread-safe.
+        """
         for spec in step_specs:
-            image_key = spec["image_key"]
-            result = image_results[image_key]
-            assert result is not None  # guaranteed: failed_keys raised above.
+            result = image_results.get(spec.image_key)
+            if result is None:
+                # This branch is unreachable: _build_images_concurrently raises
+                # before returning if any key is absent.  Guard explicitly rather
+                # than relying on assert (which is disabled under -O).
+                raise MetaflowException(
+                    "Internal error: image_key %r missing from build results "
+                    "after Phase 2. This is a bug in _build_prebuilt_images."
+                    % spec.image_key
+                )
             pull_tag, env_path = result
 
-            self.__class__._prebuilt_images[image_key] = pull_tag
-            self.__class__._prebuilt_env_paths[spec["env_key"]] = env_path
-            self.__class__._prebuilt_env_paths[_step_state_key(spec["step"].name)] = (
+            self.__class__._prebuilt_images[spec.image_key] = pull_tag
+            self.__class__._prebuilt_env_paths[spec.env_key] = env_path
+            self.__class__._prebuilt_env_paths[_step_state_key(spec.step.name)] = (
                 env_path
             )
 
             pull_config = registry.pull_config(pull_tag)
             found_remote_deco = False
-            for deco in spec["step"].decorators:
+            for deco in spec.step.decorators:
                 if deco.name in CONDA_REMOTE_COMMANDS:
                     prev = deco.attributes.get("image")
                     deco.attributes["image"] = pull_tag
@@ -657,7 +739,7 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                         deco.attributes[k] = v
                     echo(
                         "    @%s image rewritten for step %s: %r -> %r"
-                        % (deco.name, spec["step"].name, prev, pull_tag)
+                        % (deco.name, spec.step.name, prev, pull_tag)
                     )
                     found_remote_deco = True
 
@@ -665,10 +747,8 @@ class PrebuiltCondaEnvironment(CondaEnvironment):
                 raise MetaflowException(
                     "Prebuilt image was built (%s) but no remote compute "
                     "decorator found on step %r to rewrite."
-                    % (pull_tag, spec["step"].name)
+                    % (pull_tag, spec.step.name)
                 )
-
-        self.__class__._persist_prebuilt_state()
 
     def _get_or_build_image(
         self,
@@ -967,6 +1047,10 @@ def _build_install_support_package(
     with tarfile.open(fileobj=io.BytesIO(code_package_blob), mode="r:*") as src:
         for member in src.getmembers():
             if member.isdir():
+                # Explicit directory TarInfo entries are dropped intentionally.
+                # Docker's tar extraction recreates parent directories from file
+                # paths, so explicit dir entries with custom modes are not needed
+                # for correct extraction inside a container build.
                 continue
             if not _is_install_support_member(member.name):
                 continue
@@ -1109,6 +1193,29 @@ def _gather_embedded_wheels(
     return records, files
 
 
+def _make_bootstrap_command(
+    build_install_command: str, bootstrap_pip_command: str
+) -> str:
+    """Produce the shell snippet that installs the build-time `requests` dep
+    (if the base image doesn't already carry it) and then runs the env
+    installer.
+
+    Shell grouping detail: the fallback is kept inside the surrounding
+    parenthesized request-check block, so the pip/ensurepip work is only reached
+    when importing requests fails.
+    """
+    return (
+        "BOOTSTRAP=$(mktemp -d) && "
+        "(python -c 'import requests' >/dev/null 2>&1 || "
+        "((python -m pip --version >/dev/null 2>&1 || "
+        "python -m ensurepip --upgrade) && "
+        "%s)) && "
+        "METAFLOW_PREBUILT_BUILD_CONTAINER=1 "
+        'PYTHONPATH="$BOOTSTRAP:$PYTHONPATH" %s && '
+        'rm -rf "$BOOTSTRAP"' % (bootstrap_pip_command, build_install_command)
+    )
+
+
 def _generate_dockerfile(
     base_image: str,
     env_path: str,
@@ -1178,15 +1285,8 @@ def _generate_dockerfile(
         env_id.req_id,
         env_id.full_id,
     )
-    bootstrap_command = (
-        "BOOTSTRAP=$(mktemp -d) && "
-        "(python -c 'import requests' >/dev/null 2>&1 || "
-        "((python -m pip --version >/dev/null 2>&1 || "
-        "python -m ensurepip --upgrade) && "
-        "%s)) && "
-        "METAFLOW_PREBUILT_BUILD_CONTAINER=1 "
-        'PYTHONPATH="$BOOTSTRAP:$PYTHONPATH" %s && '
-        'rm -rf "$BOOTSTRAP"' % (bootstrap_pip_command, build_install_command)
+    bootstrap_command = _make_bootstrap_command(
+        build_install_command, bootstrap_pip_command
     )
     cleanup_command = "rm -rf %s/pkgs %s/conda-bld /root/.cache/pip" % (
         PREBUILT_MAMBA_ROOT_PREFIX,
