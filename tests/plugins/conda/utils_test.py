@@ -1,6 +1,12 @@
 from itertools import chain
+
+# Import Metaflow first so its extension plugin registry is initialized before
+# importing plugin modules directly.
+import metaflow
 from metaflow_extensions.netflixext.plugins.conda.utils import (
+    dict_to_strlist,
     filter_packages_by_markers,
+    sanitize_python_version,
 )
 from metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver import (
     PylockTomlResolver,
@@ -9,8 +15,28 @@ from metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver
 import pytest
 import tomli
 from io import BytesIO
+from metaflow._vendor.packaging.utils import canonicalize_version
 from metaflow._vendor.packaging.version import InvalidVersion
 from contextlib import nullcontext as does_not_raise
+
+
+@pytest.mark.parametrize(
+    ("launcher_version", "conda_version", "conda_requirement"),
+    [
+        ("3.10.20", "3.10.*", "python==3.10.*"),
+        ("3.11.14", "3.11.*", "python==3.11.*"),
+        ("3.12.12", "3.12.*", "python==3.12.*"),
+    ],
+)
+def test_sanitize_python_version_preserves_patch_range_semantics(
+    launcher_version, conda_version, conda_requirement
+):
+    sanitized = sanitize_python_version(launcher_version)
+
+    assert sanitized == conda_version
+    assert dict_to_strlist({"python": canonicalize_version(sanitized)}) == [
+        conda_requirement
+    ]
 
 
 def test_filter_packages_by_marker():
