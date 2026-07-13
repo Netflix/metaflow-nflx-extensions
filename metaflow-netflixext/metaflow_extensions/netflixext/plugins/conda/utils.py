@@ -973,10 +973,12 @@ version_maps = {
 
 
 def sanitize_python_version(v: str) -> str:
-    # Use major.minor version only to avoid OS-specific patch version constraints
+    # Avoid pinning the launcher's OS-specific patch build, while preserving
+    # Conda's range semantics. "python==3.10" is an exact 3.10.0 match;
+    # "python==3.10.*" selects a compatible 3.10 patch release.
     mapped_version = version_maps.get(v, v)
     version_parts = mapped_version.split(".")
-    return f"{version_parts[0]}.{version_parts[1]}"
+    return f"{version_parts[0]}.{version_parts[1]}.*"
 
 
 # Function heavily inspired from https://github.com/hauntsaninja/change_wheel_version
