@@ -8,6 +8,8 @@ Covers:
   4. Local backend integration — lifecycle fires end-to-end through LocalBackend.apply()
   5. Memory backend serialisation — component specs round-trip through connection_params
      and CLI args without spawning a subprocess
+  6. configure() — class-level config accumulation, per-subclass isolation, and
+     visibility from start()
 
 The test component (RecordingComponent) writes one line per lifecycle event to a
 temporary file so tests that run in a subprocess (e.g. memory backend) can verify
@@ -350,4 +352,118 @@ def test_memory_backend_runtime_command_includes_flags():
         cmd = MemoryBackend.get_runtime_command(params, "/fake/reference.json", "/usr/bin/python")
     cmd_str = " ".join(cmd)
     assert "--runtime-component" in cmd_str
+
+
+# ---------------------------------------------------------------------------
+# 6. configure()
+# ---------------------------------------------------------------------------
+
+class _ConfigA(AbstractRuntimeComponent):
+    def start(self, *args, **kwargs): pass
+    def stop(self, *args, **kwargs): pass
+    def before_call(self, *args, **kwargs): pass
+    def after_call(self, *args, **kwargs): pass
+
+
+class _ConfigB(AbstractRuntimeComponent):
+    def start(self, *args, **kwargs): pass
+    def stop(self, *args, **kwargs): pass
+    def before_call(self, *args, **kwargs): pass
+    def after_call(self, *args, **kwargs): pass
+
+
+class ConfiguringComponent(AbstractRuntimeComponent):
+    """Writes a snapshot of ``_class_config`` (as seen at start() time) to a file."""
+
+    _log_path: str = ""
+
+    def start(self, *args, **kwargs) -> None:
+        with open(type(self)._log_path, "a") as fh:
+            fh.write(f"start:{dict(sorted(self._class_config.items()))}\n")
+
+    def stop(self, *args, **kwargs) -> None:
+        pass
+
+    def before_call(self, *args, **kwargs) -> None:
+        pass
+
+    def after_call(self, *args, **kwargs) -> None:
+        pass
+
+
+def test_configure_stores_kwargs_in_class_config():
+    """configure() kwargs land in cls._class_config."""
+    try:
+        _ConfigA.configure(stream_name="my_stream", app_name="my_app")
+        assert _ConfigA._class_config == {
+            "stream_name": "my_stream",
+            "app_name": "my_app",
+        }
+    finally:
+        _ConfigA._class_config.clear()
+
+
+def test_configure_accumulates_last_write_wins():
+    """Repeated configure() calls accumulate; last write wins per key."""
+    try:
+        _ConfigA.configure(a=1, b=2)
+        _ConfigA.configure(b=3, c=4)
+        assert _ConfigA._class_config == {"a": 1, "b": 3, "c": 4}
+    finally:
+        _ConfigA._class_config.clear()
+
+
+def test_configure_isolated_per_subclass():
+    """configure() on one subclass never leaks into another's _class_config."""
+    try:
+        _ConfigA.configure(owner="a")
+        _ConfigB.configure(owner="b")
+        assert _ConfigA._class_config == {"owner": "a"}
+        assert _ConfigB._class_config == {"owner": "b"}
+    finally:
+        _ConfigA._class_config.clear()
+        _ConfigB._class_config.clear()
+
+
+def test_configure_visible_in_start_via_file():
+    """configure() called before start_components is visible inside start()."""
+    log = _tmp_log()
+    ConfiguringComponent._log_path = log
+    try:
+        ConfiguringComponent.configure(stream_name="my_stream")
+        instances = start_components([ConfiguringComponent])
+        assert _read_events(log) == [
+            "start:{'stream_name': 'my_stream'}",
+        ]
+        stop_components(instances)
+    finally:
+        ConfiguringComponent._log_path = ""
+        ConfiguringComponent._class_config.clear()
+        os.unlink(log)
+
+
+def test_configure_after_start_does_not_affect_running_instance():
+    """configure() after start() doesn't retroactively change what start() saw."""
+    log = _tmp_log()
+    ConfiguringComponent._log_path = log
+    try:
+        ConfiguringComponent.configure(stream_name="my_stream")
+        instances = start_components([ConfiguringComponent])
+        assert _read_events(log) == [
+            "start:{'stream_name': 'my_stream'}",
+        ]
+
+        # configure() after start still updates the class-level dict...
+        ConfiguringComponent.configure(stream_name="changed")
+        assert ConfiguringComponent._class_config == {"stream_name": "changed"}
+
+        # ...but the already-written start() snapshot is untouched.
+        assert _read_events(log) == [
+            "start:{'stream_name': 'my_stream'}",
+        ]
+        stop_components(instances)
+    finally:
+        ConfiguringComponent._log_path = ""
+        ConfiguringComponent._class_config.clear()
+        os.unlink(log)
     assert fqn in cmd_str

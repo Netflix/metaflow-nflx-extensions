@@ -1,5 +1,5 @@
 from abc import ABCMeta, abstractmethod
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 
 class ComponentMeta(ABCMeta):
@@ -9,7 +9,15 @@ class ComponentMeta(ABCMeta):
     Manages the `active_instance` class attribute that the runtime sets after
     `start()` and clears after `stop()`.  Subclasses use it to implement their
     own no-op-when-inactive interaction patterns (e.g. a `log()` classmethod).
+
+    Also gives every subclass its own `_class_config` dict (rather than one
+    shared dict inherited from the base class) so that `configure()` calls on
+    one component class never leak into another's config.
     """
+
+    def __init__(cls, name: str, bases: tuple, namespace: dict) -> None:
+        super().__init__(name, bases, namespace)
+        cls._class_config = {}
 
 
 class AbstractRuntimeComponent(metaclass=ComponentMeta):
@@ -41,14 +49,46 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
                 inst = cls.active_instance
                 if inst is not None:
                     inst._entries.update(payload)
+
+    Subclasses may also be configured from user code before the runtime
+    starts them, via ``configure()``::
+
+        Logger.configure(stream_name="my_stream", app_name="my_app")
+
+    ``configure()`` kwargs land in ``cls._class_config`` (a dict private to
+    each subclass, thanks to ``ComponentMeta``).  It is up to each subclass
+    to decide how ``_class_config`` is merged with constructor kwargs — e.g.
+    consumed directly in ``__init__``/``start()``, or held onto and merged
+    with per-call overrides.
     """
 
     # Set by the runtime after start(); cleared after stop().
     # Declared here so subclasses inherit it as a distinct per-class slot.
     active_instance: Optional["AbstractRuntimeComponent"] = None
 
+    # Populated by configure(). ComponentMeta gives every subclass its own
+    # dict, so this annotation is documentation only.
+    _class_config: Dict[str, Any] = {}
+
     def __init__(self, **kwargs: Any) -> None:
         self._init_kwargs = kwargs
+
+    @classmethod
+    def configure(cls, **kwargs: Any) -> None:
+        """
+        Set config for this component class from user code, before the
+        runtime constructs and starts it.
+
+        Call this at module level so config is available when the platform
+        instantiates the component::
+
+            MyComponent.configure(some_option="value")
+
+        Repeated calls accumulate; last write wins per key. Calling
+        ``configure()`` after the component has started has no effect on the
+        already-running instance.
+        """
+        cls._class_config.update(kwargs)
 
     @abstractmethod
     def start(self, *args: Any, **kwargs: Any) -> None:
