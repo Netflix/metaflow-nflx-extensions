@@ -1,13 +1,14 @@
 from io import BytesIO
+import hashlib
 import itertools
 
 import metaflow
 
-from metaflow_extensions.nflx.plugins.conda.resolvers.pylock_toml_resolver import (
+from metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver import (
     PylockTomlResolver,
 )
-from metaflow_extensions.nflx.plugins.conda.conda import Conda
-from metaflow_extensions.nflx.plugins.conda.env_descr import (
+from metaflow_extensions.netflixext.plugins.conda.conda import Conda
+from metaflow_extensions.netflixext.plugins.conda.env_descr import (
     CondaPackageSpecification,
     EnvID,
     PackageSpecification,
@@ -16,7 +17,7 @@ from metaflow_extensions.nflx.plugins.conda.env_descr import (
     ResolvedEnvironment,
 )
 
-from metaflow_extensions.nflx.plugins.conda.utils import (
+from metaflow_extensions.netflixext.plugins.conda.utils import (
     get_best_compatible_packages,
     get_maximum_glibc_version,
     pypi_tags_from_arch,
@@ -26,7 +27,7 @@ from metaflow_extensions.nflx.plugins.conda.utils import (
 from metaflow._vendor.packaging.tags import (
     Tag,
 )
-from metaflow_extensions.nflx.plugins.conda.conda import CondaException
+from metaflow_extensions.netflixext.plugins.conda.conda import CondaException
 
 
 from pathlib import Path
@@ -296,10 +297,11 @@ test_case_params = [
                 wheels = [ { url = "https://pypi.netflix.net/packages/18653672681/charset_normalizer-3.4.2-cp310-cp310-macosx_10_9_universal2.whl", upload-time = 2025-05-02T08:31:46Z, size = 201818 }, ]
             """,
             "supported_tags": [("cp310", "cp310", "macosx_10_9_universal2")],
-            "expected": {},
+            "expected": {
+                "charset-normalizer": "charset_normalizer-3.4.2-cp310-cp310-macosx_10_9_universal2",
+            },
             "check_subset": True,
             "id": "no_hash_in_wheel",
-            "expected_conda_exception": "We encountered a wheel package that's missing an url or a hash.",
         }
     ),
 ]
@@ -310,7 +312,11 @@ test_case_params = [
     test_case_params,
     ids=[tuple["id"] for tuple in test_case_params],
 )
-def test_package_matching(case):
+def test_package_matching(case, mocker):
+    mocker.patch(
+        "metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver._compute_remote_url_sha256",
+        return_value="f" * 64,
+    )
     expected_exception_msg = case.get("expected_conda_exception", None)
     if expected_exception_msg:
         with pytest.raises(CondaException, match=expected_exception_msg):
@@ -445,6 +451,35 @@ def parse_toml_str(toml_str: str) -> Dict[str, List[PypiPackageSpecification]]:
     return d
 
 
+def test_hashless_wheel_computes_sha256(mocker):
+    url = "https://user:token@example.com/packages/demo-1.0-py3-none-any.whl"
+    wheel_bytes = b"fake wheel bytes"
+    mock_urlopen = mocker.patch(
+        "metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver.urlopen",
+        return_value=BytesIO(wheel_bytes),
+    )
+    package_obj = tomli.loads(
+        """
+        lock-version = "1.0"
+        created-by = "uv"
+        requires-python = ">=3.10"
+
+        [[packages]]
+        name = "demo"
+        version = "1.0"
+        wheels = [{ url = "https://user:token@example.com/packages/demo-1.0-py3-none-any.whl" }]
+        """
+    )
+
+    packages_dict, _ = PylockTomlResolver._pylock_toml_root_obj_to_packages(package_obj)
+
+    assert (
+        packages_dict["demo"][0].pkg_hash("sha256")
+        == hashlib.sha256(wheel_bytes).hexdigest()
+    )
+    mock_urlopen.assert_called_once_with(url, timeout=60)
+
+
 @pytest.fixture
 def deps():
     return {
@@ -562,11 +597,11 @@ def test_pylock_toml_to_resolved_env(deps, mocker):
         "osx-arm64",
     )
     mocker.patch(
-        "metaflow_extensions.nflx.plugins.conda.resolvers.pylock_toml_resolver.get_python_full_version_from_builder_envs",
+        "metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver.get_python_full_version_from_builder_envs",
         return_value="3.10.1",
     )
     mocker.patch(
-        "metaflow_extensions.nflx.plugins.conda.utils.arch_id",
+        "metaflow_extensions.netflixext.plugins.conda.utils.arch_id",
         return_value="osx-arm64",
     )
 
@@ -712,11 +747,11 @@ def test_pylock_toml_to_resolved_env(deps, mocker):
         "osx-arm64",
     )
     mocker.patch(
-        "metaflow_extensions.nflx.plugins.conda.resolvers.pylock_toml_resolver.get_python_full_version_from_builder_envs",
+        "metaflow_extensions.netflixext.plugins.conda.resolvers.pylock_toml_resolver.get_python_full_version_from_builder_envs",
         return_value="3.10.1",
     )
     mocker.patch(
-        "metaflow_extensions.nflx.plugins.conda.utils.arch_id",
+        "metaflow_extensions.netflixext.plugins.conda.utils.arch_id",
         return_value="osx-arm64",
     )
 

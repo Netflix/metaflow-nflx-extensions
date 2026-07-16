@@ -1,13 +1,13 @@
 import metaflow
 
-from metaflow_extensions.nflx.plugins.conda.conda import Conda
-from metaflow_extensions.nflx.plugins.conda.conda_common_decorator import (
+from metaflow_extensions.netflixext.plugins.conda.conda import Conda
+from metaflow_extensions.netflixext.plugins.conda.conda_common_decorator import (
     StepRequirement,
 )
-from metaflow_extensions.nflx.plugins.conda.conda_environment import (
+from metaflow_extensions.netflixext.plugins.conda.conda_environment import (
     CondaEnvironment,
 )
-from metaflow_extensions.nflx.plugins.conda.env_descr import EnvType
+from metaflow_extensions.netflixext.plugins.conda.env_descr import EnvType
 
 import pytest
 

@@ -3,7 +3,7 @@ import os
 import tempfile
 from unittest.mock import patch
 
-from metaflow_extensions.nflx.plugins.conda.env_descr import (
+from metaflow_extensions.netflixext.plugins.conda.env_descr import (
     CachedEnvironmentInfo,
     write_to_conda_manifest,
 )

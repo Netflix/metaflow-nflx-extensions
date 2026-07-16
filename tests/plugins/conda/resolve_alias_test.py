@@ -1,7 +1,7 @@
 import pytest
 
 from metaflow.exception import MetaflowException
-from metaflow_extensions.nflx.plugins.conda.utils import (
+from metaflow_extensions.netflixext.plugins.conda.utils import (
     resolve_env_alias,
     AliasType,
 )

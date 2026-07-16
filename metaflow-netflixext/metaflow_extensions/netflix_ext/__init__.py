@@ -1,6 +1,6 @@
-# Backwards compatibility alias: netflix_ext -> nflx
+# Backwards compatibility alias: netflix_ext -> netflixext
 # This allows `import metaflow_extensions.netflix_ext.X.Y` to work
-# while the actual package lives under metaflow_extensions.nflx.
+# while the actual package lives under metaflow_extensions.netflixext.
 
 import importlib
 import sys
@@ -8,11 +8,11 @@ import sys
 from types import ModuleType
 
 _ALIAS_PREFIX = "metaflow_extensions.netflix_ext"
-_REAL_PREFIX = "metaflow_extensions.nflx"
+_REAL_PREFIX = "metaflow_extensions.netflixext"
 
 
 class _NetflixExtFinder:
-    """Meta path finder that redirects netflix_ext imports to nflx."""
+    """Meta path finder that redirects netflix_ext imports to netflixext."""
 
     def find_module(self, fullname, path=None):
         if fullname == _ALIAS_PREFIX or fullname.startswith(_ALIAS_PREFIX + "."):

@@ -2,7 +2,7 @@ import io
 import os
 import time
 import zipfile
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from ..build_service import DockerBuildService
 
@@ -34,7 +34,11 @@ class CodeBuildService(DockerBuildService):
         image_tag: str,
         push_credentials: Dict[str, Any],
         echo: Callable[..., None],
+        target_platform: Optional[str] = None,
     ) -> bool:
+        # target_platform is accepted for the unified build-service contract but
+        # not applied here: the build runs on the CodeBuild project's configured
+        # compute, so its arch is fixed by the operator's project, not this call.
         s3_bucket = push_credentials.get(
             "s3_bucket",
             os.environ.get("METAFLOW_PREBUILT_CODEBUILD_S3_BUCKET", ""),
@@ -43,9 +47,14 @@ class CodeBuildService(DockerBuildService):
             "codebuild_project",
             os.environ.get("METAFLOW_PREBUILT_CODEBUILD_PROJECT", ""),
         )
-        region = push_credentials.get(
-            "region",
-            os.environ.get("METAFLOW_PREBUILT_CODEBUILD_REGION"),
+        # The CodeBuild project (and its build-context S3 bucket) may live in a
+        # DIFFERENT region than ECR. Prefer an explicit codebuild region; fall back
+        # to the registry's generic "region" (ECR region), then the env var. (An
+        # ECR registry sets codebuild_region from METAFLOW_PREBUILT_CODEBUILD_REGION.)
+        region = (
+            push_credentials.get("codebuild_region")
+            or push_credentials.get("region")
+            or os.environ.get("METAFLOW_PREBUILT_CODEBUILD_REGION")
         )
 
         if not s3_bucket or not project:

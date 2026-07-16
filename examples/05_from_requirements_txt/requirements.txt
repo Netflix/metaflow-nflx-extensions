@@ -1,0 +1,10 @@
+# Standard PyPI packages
+requests==2.31.0
+pandas==2.0.3
+
+# Non-Python Conda packages (extension to standard requirements.txt format).
+# These are pulled from Conda even though everything else here is PyPI.
+--conda-pkg openssl
+
+# Additional PyPI index (standard pip option)
+# --extra-index-url https://pypi.example.com/simple

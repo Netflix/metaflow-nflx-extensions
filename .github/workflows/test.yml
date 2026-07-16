@@ -76,7 +76,7 @@ jobs:
           set -x
           which pytest
           mkdir .metaflow
-          pytest tests/environments tests/plugins/conda -v \
+          pytest tests/environments tests/plugins/conda tests/namespace -v \
             --junit-xml=junit.xml \
             --cov=metaflow_extensions \
             --cov-report=term-missing \

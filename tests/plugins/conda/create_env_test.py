@@ -13,12 +13,12 @@ class TestConda(unittest.TestCase):
         # Arrange
         os.environ["METAFLOW_CONDA_PYPI_DEPENDENCY_RESOLVER"] = "uv"
         # Import after setting the environment variable
-        from metaflow_extensions.nflx.plugins.conda.env_descr import (
+        from metaflow_extensions.netflixext.plugins.conda.env_descr import (
             EnvID,
             PypiPackageSpecification,
             ResolvedEnvironment,
         )
-        from metaflow_extensions.nflx.plugins.conda.conda import Conda
+        from metaflow_extensions.netflixext.plugins.conda.conda import Conda
 
         self.env_dir = tempfile.mkdtemp()
         self.local_pkg = tempfile.mktemp()

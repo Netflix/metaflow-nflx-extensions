@@ -9,7 +9,7 @@ with open(
     os.path.join(
         os.path.dirname(__file__),
         "metaflow_extensions",
-        "nflx",
+        "netflixext",
         "toplevel",
         "nflxext_version.py",
     ),
@@ -48,8 +48,9 @@ setup(
         "metaflow_extensions",
     ],
     package_data={
-        "metaflow_extensions.nflx.plugins.conda.resources": ["*.png", "*.svg"]
+        "metaflow_extensions.netflixext.plugins.conda.resources": ["*.png", "*.svg"]
     },
+    # Mirrors the internal minimum (support for <3.10 was dropped internally).
     python_requires=">=3.10",
     install_requires=["metaflow>=2.16.0"],
     extras_require={

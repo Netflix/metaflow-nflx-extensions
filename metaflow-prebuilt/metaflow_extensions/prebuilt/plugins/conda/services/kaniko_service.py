@@ -3,7 +3,7 @@ import os
 import tarfile
 import tempfile
 import time
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from ..build_service import DockerBuildService
 
@@ -33,6 +33,7 @@ class KanikoBuildService(DockerBuildService):
         image_tag: str,
         push_credentials: Dict[str, Any],
         echo: Callable[..., None],
+        target_platform: Optional[str] = None,
     ) -> bool:
         bucket = os.environ.get("METAFLOW_PREBUILT_KANIKO_CONTEXT_BUCKET", "")
         if not bucket:
@@ -69,6 +70,7 @@ class KanikoBuildService(DockerBuildService):
                 image_tag=image_tag,
                 secret_name=secret_name,
                 echo=echo,
+                target_platform=target_platform,
             )
         except Exception as e:
             echo("    ERROR: kaniko Job failed: %s" % e)
@@ -106,7 +108,11 @@ def _upload_context(bucket: str, key: str, data: bytes) -> None:
             )
         client = storage.Client()
         bucket_name = bucket[5:].split("/")[0]
-        blob_path = "/".join(bucket[5:].split("/")[1:] + [key])
+        # Drop empty path components (e.g. from a trailing slash in
+        # gs://bucket/prefix/) so blob_path stays aligned with context_url, which
+        # is built from bucket.rstrip("/"); otherwise Kaniko looks for the context
+        # at prefix/<key> while we upload to prefix//<key>.
+        blob_path = "/".join([p for p in bucket[5:].split("/")[1:] if p] + [key])
         client.bucket(bucket_name).blob(blob_path).upload_from_string(data)
     elif bucket.startswith("s3://"):
         try:
@@ -118,7 +124,9 @@ def _upload_context(bucket: str, key: str, data: bytes) -> None:
             )
         parts = bucket[5:].split("/", 1)
         bucket_name = parts[0]
-        prefix = parts[1] + "/" if len(parts) > 1 and parts[1] else ""
+        prefix = (
+            parts[1].strip("/") + "/" if len(parts) > 1 and parts[1].strip("/") else ""
+        )
         boto3.client("s3").put_object(Bucket=bucket_name, Key=prefix + key, Body=data)
     else:
         raise ValueError("Unsupported bucket scheme: %s (use gs:// or s3://)" % bucket)
@@ -132,6 +140,7 @@ def _run_kaniko_job(
     image_tag: str,
     secret_name: str,
     echo: Callable[..., None],
+    target_platform: Optional[str] = None,
 ) -> bool:
     try:
         from kubernetes import (
@@ -156,6 +165,10 @@ def _run_kaniko_job(
         "--dockerfile=Dockerfile",
         "--destination=%s" % image_tag,
     ]
+    # Build for the REMOTE step's arch (not the kaniko pod's default node arch),
+    # so the image matches the resolved manifest on a cross-arch deploy.
+    if target_platform:
+        args.append("--custom-platform=%s" % target_platform)
 
     volume_mounts = []
     volumes = []

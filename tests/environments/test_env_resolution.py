@@ -14,7 +14,7 @@ import pytest
 
 from metaflow import FlowAPI
 
-from metaflow_extensions.nflx.plugins.conda.parsers import req_parser, yml_parser
+from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser, yml_parser
 
 # Get the test data directory
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
