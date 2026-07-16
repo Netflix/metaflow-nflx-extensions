@@ -1,7 +1,7 @@
 """Helpers for serializing, activating, and deactivating runtime components."""
 
 import json
-from typing import List, Type, Union, TYPE_CHECKING
+from typing import Any, Dict, List, Type, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .abstract_component import AbstractRuntimeComponent
@@ -97,6 +97,20 @@ def before_call_components(
 
 def after_call_components(
     instances: List["AbstractRuntimeComponent"], *args, **kwargs
-) -> None:
+) -> Dict[str, Any]:
+    """Call after_call() then collect_output() on each instance.
+
+    Returns a ``{"module.ClassName": output}`` map for instances whose
+    ``collect_output()`` returned non-``None``, using the same naming scheme
+    as ``serialize_components`` so callers can match output back to the
+    component that produced it.
+    """
+    collected: Dict[str, Any] = {}
     for instance in instances:
         instance.after_call(*args, **kwargs)
+        output = instance.collect_output(*args, **kwargs)
+        if output is not None:
+            instance.last_output = output
+            cls = type(instance)
+            collected[f"{cls.__module__}.{cls.__qualname__}"] = output
+    return collected

@@ -89,6 +89,22 @@ class RayBackend(AbstractBackend):
         cls._cluster_initialized = True
 
     @classmethod
+    def _route_component_output(
+        cls, func_instance, component_output: Dict[str, Any]
+    ) -> None:
+        """
+        Stamp last_output onto the caller-side runtime component instances that
+        match component_output entries, by "module.ClassName".
+        """
+        if not component_output:
+            return
+        for component in getattr(func_instance, "_runtime_components", []):
+            component_cls = type(component)
+            spec_name = f"{component_cls.__module__}.{component_cls.__qualname__}"
+            if spec_name in component_output:
+                component.last_output = component_output[spec_name]
+
+    @classmethod
     def _sync_serializers(cls):
         """
         Sync Metaflow serializers to Ray's serialization system.
@@ -132,7 +148,8 @@ class RayBackend(AbstractBackend):
         # Execute on actor (Ray automatically puts data in object store)
         try:
             result_ref = actor.execute.remote(data, **kwargs)
-            result = ray.get(result_ref)
+            result, component_output = ray.get(result_ref)
+            cls._route_component_output(func_instance, component_output)
             return result
 
         except ray.exceptions.RayActorError as e:
@@ -476,6 +493,6 @@ class FunctionActorClass:
 
         before_call_components(self._component_instances)
         result = self.function(data, params=params, **kwargs)
-        after_call_components(self._component_instances)
+        component_output = after_call_components(self._component_instances)
 
-        return result
+        return result, component_output

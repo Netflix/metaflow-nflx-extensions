@@ -39,6 +39,7 @@ from ...memory.concurrency import Semaphore
 IO_WAIT = 10**-6
 BUFFER_PER_PROCESS = 2
 MFF_ERROR_KEY = "__mf_ERROR__"
+MFF_COMPONENT_OUTPUT_KEY = "__mf_COMPONENT_OUTPUT__"
 KEYWORDS = {"process", "params"}
 
 # Sentinel object to distinguish "no result ready" from "result is falsy"
@@ -102,6 +103,24 @@ class MemoryBackend(AbstractBackend):
                         kwargs[key] = new_value
                 else:
                     kwargs[key] = new_value
+
+    @classmethod
+    def _route_component_output(
+        cls, func_instance, result_kwargs: Dict[str, Any]
+    ) -> None:
+        """
+        Pop the reserved component-output map out of result_kwargs (mutated
+        in-place) and stamp last_output onto the caller-side runtime component
+        instances it matches, by "module.ClassName".
+        """
+        component_output = result_kwargs.pop(MFF_COMPONENT_OUTPUT_KEY, None)
+        if not component_output:
+            return
+        for component in getattr(func_instance, "_runtime_components", []):
+            component_cls = type(component)
+            spec_name = f"{component_cls.__module__}.{component_cls.__qualname__}"
+            if spec_name in component_output:
+                component.last_output = component_output[spec_name]
 
     @classmethod
     def _setup_apply(cls, func_instance, data, kwargs):
@@ -304,6 +323,7 @@ class MemoryBackend(AbstractBackend):
 
             # Update original kwargs with modified values from subprocess
             if state.kwargs:
+                cls._route_component_output(func_instance, state.kwargs)
                 cls._update_kwargs_from_subprocess(filtered_kwargs, state.kwargs)
 
             # Aggregate results using OUTPUT type
@@ -363,6 +383,7 @@ class MemoryBackend(AbstractBackend):
 
             # Update original kwargs with modified values from subprocess
             if state.kwargs:
+                cls._route_component_output(func_instance, state.kwargs)
                 cls._update_kwargs_from_subprocess(filtered_kwargs, state.kwargs)
 
             # Aggregate results using OUTPUT type
@@ -742,6 +763,7 @@ class MemoryBackend(AbstractBackend):
 
                     # Keep reference to kwargs before function execution
                     kwargs_copy = function_payload.kwargs.copy()
+                    component_output: dict = {}
 
                     try:
                         debug.functions_exec("Call the function _execute method")
@@ -753,7 +775,7 @@ class MemoryBackend(AbstractBackend):
                         result = func_instance.execute(
                             input_data, parameters, **kwargs_copy
                         )
-                        after_call_components(component_instances)
+                        component_output = after_call_components(component_instances)
                     except Exception as user_error:
                         debug.functions_exec("User exception")
                         result = output_cls()
@@ -761,6 +783,8 @@ class MemoryBackend(AbstractBackend):
 
                     # Wrap result with potentially modified kwargs (modifications happen in-place)
                     kwargs.update(kwargs_copy)
+                    if component_output:
+                        kwargs[MFF_COMPONENT_OUTPUT_KEY] = component_output
                     result_payload = FunctionPayload(result, kwargs)
 
                     # We need to hold on to the input memory since the

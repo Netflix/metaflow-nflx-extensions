@@ -466,4 +466,301 @@ def test_configure_after_start_does_not_affect_running_instance():
         ConfiguringComponent._log_path = ""
         ConfiguringComponent._class_config.clear()
         os.unlink(log)
+
+
+# ---------------------------------------------------------------------------
+# 7. collect_output() / after_call_components output routing
+# ---------------------------------------------------------------------------
+
+class _NoOutputComponent(AbstractRuntimeComponent):
+    def start(self, *args, **kwargs): pass
+    def stop(self, *args, **kwargs): pass
+    def before_call(self, *args, **kwargs): pass
+    def after_call(self, *args, **kwargs): pass
+
+
+class _OutputComponent(AbstractRuntimeComponent):
+    def start(self, *args, **kwargs): pass
+    def stop(self, *args, **kwargs): pass
+    def before_call(self, *args, **kwargs): pass
+    def after_call(self, *args, **kwargs): pass
+    def collect_output(self, *args, **kwargs):
+        return {"count": 1}
+
+
+def test_collect_output_default_returns_none():
+    """Default collect_output() is a no-op returning None."""
+    inst = _NoOutputComponent()
+    assert inst.collect_output() is None
+    assert inst.last_output is None
+
+
+def test_after_call_components_returns_empty_dict_when_no_output():
+    """Instances with default collect_output() contribute nothing to the returned map."""
+    inst = _NoOutputComponent()
+    collected = after_call_components([inst])
+    assert collected == {}
+    assert inst.last_output is None
+
+
+def test_after_call_components_collects_output_and_sets_last_output():
+    """collect_output() output is both returned (keyed by spec name) and stamped onto last_output."""
+    inst = _OutputComponent()
+    collected = after_call_components([inst])
+
+    fqn = f"{_OutputComponent.__module__}.{_OutputComponent.__qualname__}"
+    assert collected == {fqn: {"count": 1}}
+    assert inst.last_output == {"count": 1}
+
+
+def test_after_call_components_mixed_instances():
+    """Only instances that report output appear in the returned map; all still get after_call()."""
+    log = _tmp_log()
+    RecordingComponent._log_path = log
+    try:
+        recorder = RecordingComponent()
+        producer = _OutputComponent()
+        collected = after_call_components([recorder, producer])
+
+        fqn = f"{_OutputComponent.__module__}.{_OutputComponent.__qualname__}"
+        assert collected == {fqn: {"count": 1}}
+        assert recorder.last_output is None
+        assert producer.last_output == {"count": 1}
+        assert _read_events(log) == ["after_call"]
+    finally:
+        RecordingComponent._log_path = ""
+        os.unlink(log)
+
+
+# ---------------------------------------------------------------------------
+# 8. MetaflowFunction.runtime_components / get_runtime_component
+# ---------------------------------------------------------------------------
+
+class _StubMetaflowFunction:
+    """
+    Minimal stand-in exercising only the runtime_components/get_runtime_component
+    mixin behavior, without pulling in the full MetaflowFunction ABC machinery
+    (spec/backend/task loading, which is out of scope for these tests).
+    """
+
+    def __init__(self, components=None):
+        if components is not None:
+            self._runtime_components = components
+
+    from metaflow_extensions.nflx.plugins.functions.core.function import (
+        MetaflowFunction,
+    )
+    runtime_components = MetaflowFunction.__dict__["runtime_components"]
+    get_runtime_component = MetaflowFunction.__dict__["get_runtime_component"]
+
+
+def test_runtime_components_property_defaults_to_empty_list():
+    """runtime_components is [] when _runtime_components was never set."""
+    func = _StubMetaflowFunction()
+    assert func.runtime_components == []
+
+
+def test_runtime_components_property_returns_scheduled_instances():
+    """runtime_components returns exactly the instances passed at construction."""
+    recorder = RecordingComponent()
+    producer = _OutputComponent()
+    func = _StubMetaflowFunction([recorder, producer])
+    assert func.runtime_components == [recorder, producer]
+
+
+def test_get_runtime_component_returns_matching_instance():
+    """get_runtime_component finds the instance whose exact type matches."""
+    recorder = RecordingComponent()
+    producer = _OutputComponent()
+    func = _StubMetaflowFunction([recorder, producer])
+    assert func.get_runtime_component(_OutputComponent) is producer
+    assert func.get_runtime_component(RecordingComponent) is recorder
+
+
+def test_get_runtime_component_returns_none_when_absent():
+    """get_runtime_component returns None when no instance of that type was scheduled."""
+    func = _StubMetaflowFunction([RecordingComponent()])
+    assert func.get_runtime_component(_OutputComponent) is None
+
+
+def test_get_runtime_component_no_subclass_matching():
+    """get_runtime_component matches by exact type, not subclass relationship."""
+
+    class SubRecordingComponent(RecordingComponent):
+        pass
+
+    func = _StubMetaflowFunction([SubRecordingComponent()])
+    assert func.get_runtime_component(RecordingComponent) is None
+    assert isinstance(func.get_runtime_component(SubRecordingComponent), SubRecordingComponent)
+
+
+# ---------------------------------------------------------------------------
+# 9. function_from_json — duplicate runtime_components validation
+# ---------------------------------------------------------------------------
+
+def test_function_from_json_rejects_duplicate_component_types():
+    """Two instances of the same component type raise MetaflowFunctionException."""
+    from unittest.mock import patch, MagicMock
+    from metaflow_extensions.nflx.plugins.functions.core.function import (
+        function_from_json,
+    )
+    from metaflow_extensions.nflx.plugins.functions.exceptions import (
+        MetaflowFunctionException,
+    )
+
+    fake_spec = MagicMock()
+    fake_spec.serializer_configs = None
+    fake_spec.class_name = "fake.module.FakeFunction"
+
+    fake_subclass = MagicMock()
+    fake_subclass._create_proxy_from_spec.return_value = MagicMock()
+
+    with patch(
+        "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
+        return_value=fake_spec,
+    ), patch(
+        "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
+        return_value=fake_subclass,
+    ):
+        with pytest.raises(MetaflowFunctionException, match="Duplicate runtime component"):
+            function_from_json(
+                "fake-reference.json",
+                start_runtime=False,
+                runtime_components=[RecordingComponent(), RecordingComponent()],
+            )
+
+
+def test_function_from_json_allows_distinct_component_types():
+    """Distinct component types pass validation and land on func._runtime_components."""
+    from unittest.mock import patch, MagicMock
+    from metaflow_extensions.nflx.plugins.functions.core.function import (
+        function_from_json,
+    )
+
+    fake_spec = MagicMock()
+    fake_spec.serializer_configs = None
+    fake_spec.class_name = "fake.module.FakeFunction"
+
+    fake_func = MagicMock()
+    fake_subclass = MagicMock()
+    fake_subclass._create_proxy_from_spec.return_value = fake_func
+
+    recorder = RecordingComponent()
+    producer = _OutputComponent()
+
+    with patch(
+        "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
+        return_value=fake_spec,
+    ), patch(
+        "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
+        return_value=fake_subclass,
+    ):
+        func = function_from_json(
+            "fake-reference.json",
+            start_runtime=False,
+            runtime_components=[recorder, producer],
+        )
+
+    assert func._runtime_components == [recorder, producer]
+
+
+# ---------------------------------------------------------------------------
+# 10. Memory backend — component output routing
+# ---------------------------------------------------------------------------
+
+def test_memory_backend_route_component_output_sets_last_output():
+    """_route_component_output pops the reserved key and stamps last_output by type name."""
+    from metaflow_extensions.nflx.plugins.functions.backends.memory.memory_backend import (
+        MemoryBackend,
+        MFF_COMPONENT_OUTPUT_KEY,
+    )
+
+    producer = _OutputComponent()
+    func = _MockFunction([producer])
+
+    fqn = f"{_OutputComponent.__module__}.{_OutputComponent.__qualname__}"
+    result_kwargs = {
+        "user_kwarg": "unchanged",
+        MFF_COMPONENT_OUTPUT_KEY: {fqn: {"count": 5}},
+    }
+
+    MemoryBackend._route_component_output(func, result_kwargs)
+
+    assert producer.last_output == {"count": 5}
+    # Reserved key must never leak into user-visible kwargs.
+    assert MFF_COMPONENT_OUTPUT_KEY not in result_kwargs
+    assert result_kwargs == {"user_kwarg": "unchanged"}
+
+
+def test_memory_backend_route_component_output_noop_when_absent():
+    """_route_component_output is a no-op when the reserved key isn't present."""
+    from metaflow_extensions.nflx.plugins.functions.backends.memory.memory_backend import (
+        MemoryBackend,
+    )
+
+    producer = _OutputComponent()
+    func = _MockFunction([producer])
+    result_kwargs = {"user_kwarg": "unchanged"}
+
+    MemoryBackend._route_component_output(func, result_kwargs)
+
+    assert producer.last_output is None
+    assert result_kwargs == {"user_kwarg": "unchanged"}
+
+
+# ---------------------------------------------------------------------------
+# 11. Ray backend — component output routing
+#
+# Ray is a real install_requires dependency of metaflow-functions (setup.py),
+# so these tests are expected to run in any properly set-up environment. Same
+# convention as tests/functions/backends/ray/test_ray_backend.py, which skips
+# only as a workaround for incomplete local installs, not because Ray support
+# is optional.
+# ---------------------------------------------------------------------------
+
+pytest.importorskip("ray")
+
+
+def test_ray_backend_route_component_output_sets_last_output():
+    """RayBackend._route_component_output stamps last_output by matching type name."""
+    from metaflow_extensions.nflx.plugins.functions.backends.ray.ray_backend import (
+        RayBackend,
+    )
+
+    producer = _OutputComponent()
+    func = _MockFunction([producer])
+
+    fqn = f"{_OutputComponent.__module__}.{_OutputComponent.__qualname__}"
+    RayBackend._route_component_output(func, {fqn: {"count": 7}})
+
+    assert producer.last_output == {"count": 7}
+
+
+def test_ray_backend_route_component_output_ignores_unmatched_entries():
+    """Output for a spec name with no matching scheduled component is ignored."""
+    from metaflow_extensions.nflx.plugins.functions.backends.ray.ray_backend import (
+        RayBackend,
+    )
+
+    producer = _OutputComponent()
+    func = _MockFunction([producer])
+
+    RayBackend._route_component_output(func, {"some.other.Component": {"count": 1}})
+
+    assert producer.last_output is None
+
+
+def test_ray_backend_route_component_output_handles_empty():
+    """RayBackend._route_component_output no-ops on falsy component_output."""
+    from metaflow_extensions.nflx.plugins.functions.backends.ray.ray_backend import (
+        RayBackend,
+    )
+
+    producer = _OutputComponent()
+    func = _MockFunction([producer])
+
+    RayBackend._route_component_output(func, {})
+    RayBackend._route_component_output(func, None)
+
+    assert producer.last_output is None
     assert fqn in cmd_str

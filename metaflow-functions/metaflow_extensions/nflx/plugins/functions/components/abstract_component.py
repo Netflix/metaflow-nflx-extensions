@@ -56,10 +56,18 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
         Logger.configure(stream_name="my_stream", app_name="my_app")
 
     ``configure()`` kwargs land in ``cls._class_config`` (a dict private to
-    each subclass, thanks to ``ComponentMeta``).  It is up to each subclass
-    to decide how ``_class_config`` is merged with constructor kwargs — e.g.
-    consumed directly in ``__init__``/``start()``, or held onto and merged
-    with per-call overrides.
+    each subclass, thanks to ``ComponentMeta``) and act as defaults.  The base
+    ``__init__`` merges them under whatever kwargs the constructor receives —
+    explicit constructor kwargs win on conflicts::
+
+        Logger.configure(app_name="my_app")
+        Logger(app_name="override")._init_kwargs  # {"app_name": "override"}
+        Logger()._init_kwargs                      # {"app_name": "my_app"}
+
+    Subclasses with a custom ``__init__`` signature must call
+    ``super().__init__(**kwargs)`` (or replicate the merge) to get this
+    behavior. Calling ``configure()`` after an instance is constructed has no
+    effect on that instance — the merge only happens at construction time.
     """
 
     # Set by the runtime after start(); cleared after stop().
@@ -71,7 +79,8 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
     _class_config: Dict[str, Any] = {}
 
     def __init__(self, **kwargs: Any) -> None:
-        self._init_kwargs = kwargs
+        self._init_kwargs = {**type(self)._class_config, **kwargs}
+        self.last_output: Optional[Dict[str, Any]] = None
 
     @classmethod
     def configure(cls, **kwargs: Any) -> None:
@@ -105,3 +114,14 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
     @abstractmethod
     def after_call(self, *args: Any, **kwargs: Any) -> None:
         """Called after each function invocation."""
+
+    def collect_output(self, *args: Any, **kwargs: Any) -> Optional[Dict[str, Any]]:
+        """
+        Called once after each ``after_call()``. Return a dict to surface back
+        to the caller via the component's ``last_output`` attribute on the
+        caller-side handle returned by ``function_from_json``.
+
+        Default implementation returns ``None`` (nothing surfaced). Override
+        to report data collected during ``before_call``/``after_call``.
+        """
+        return None

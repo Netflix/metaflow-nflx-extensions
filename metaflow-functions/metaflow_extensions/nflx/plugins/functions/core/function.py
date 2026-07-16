@@ -177,6 +177,43 @@ class MetaflowFunction(ABC):
             "Please ensure you construct the function with a backend."
         )
 
+    @property
+    def runtime_components(self) -> List[Any]:
+        """
+        Return the runtime component instances scheduled for this function.
+
+        These are the same instances passed to ``function_from_json`` via
+        ``runtime_components=[...]``. Each instance's ``last_output``
+        attribute reflects the most recent value reported by that
+        component's ``collect_output()``, once the backend has run.
+
+        Returns
+        -------
+        List[Any]
+            The runtime component instances scheduled for this function.
+        """
+        return getattr(self, "_runtime_components", [])
+
+    def get_runtime_component(self, component_type: Type[Any]) -> Optional[Any]:
+        """
+        Look up the runtime component instance of the given type.
+
+        Parameters
+        ----------
+        component_type : Type[Any]
+            The concrete component class to look up.
+
+        Returns
+        -------
+        Optional[Any]
+            The matching instance, or None if no component of that type was
+            scheduled for this function.
+        """
+        for component in self.runtime_components:
+            if type(component) is component_type:
+                return component
+        return None
+
     def _build_function_spec(self, **kwargs) -> FunctionSpec:
         """
         Builds the function specification for the Metaflow function.
@@ -826,15 +863,21 @@ def function_from_json(
     process: int, default 1
         Number of process to back this function
     runtime_components : Optional[List], default None
-        List of AbstractRuntimeComponent subclasses to activate in the runtime.
-        Components are instantiated inside the subprocess and their lifecycle hooks
-        (start, stop, before_call, after_call) are called automatically.
-        User code can call a component class directly: ``MyComponent("msg")``.
+        List of AbstractRuntimeComponent instances to activate in the runtime.
+        Components are reconstructed inside the subprocess and their lifecycle
+        hooks (start, stop, before_call, after_call) are called automatically.
+        At most one instance per component type is allowed.
 
     Returns
     -------
     MetaflowFunction
         A function instance configured as specified by the parameters
+
+    Raises
+    ------
+    MetaflowFunctionException
+        If ``runtime_components`` contains more than one instance of the same
+        component type.
     """
     # Load the spec from json reference
     fs = FunctionSpec.from_json(reference)
@@ -885,7 +928,17 @@ def function_from_json(
 
     # Store runtime_components on the function instance so the backend can
     # forward them to the subprocess.
-    func._runtime_components = runtime_components or []
+    runtime_components = runtime_components or []
+    seen_types: Dict[type, Any] = {}
+    for component in runtime_components:
+        component_type = type(component)
+        if component_type in seen_types:
+            raise MetaflowFunctionException(
+                f"Duplicate runtime component of type '{component_type.__name__}'. "
+                "Only one instance per component type is allowed."
+            )
+        seen_types[component_type] = component
+    func._runtime_components = runtime_components
 
     # Start the runtime if requested
     if start_runtime:
