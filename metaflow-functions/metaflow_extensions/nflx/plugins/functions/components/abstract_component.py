@@ -125,3 +125,16 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
         to report data collected during ``before_call``/``after_call``.
         """
         return None
+
+    def on_runtime_started(self, function_root_dir: str) -> None:
+        """
+        Called once on the caller side, after the function's runtime has
+        started, on the same instance returned by ``function_from_json``
+        (not the reconstructed instance the runtime uses).
+
+        ``function_root_dir`` is the directory the function's code package
+        is extracted into, so components can read files from it.
+
+        Default implementation is a no-op.
+        """
+        pass

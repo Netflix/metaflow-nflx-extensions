@@ -394,7 +394,12 @@ class FunctionActorClass:
         component_class_names : List[str]
             Fully-qualified class names of runtime components to activate
         """
-        import tempfile
+        import os
+
+        from metaflow_extensions.nflx.config.mfextinit_functions import (
+            FUNCTION_RUNTIME_PATH,
+        )
+        from metaflow_extensions.nflx.plugins.functions.config import Config
         from metaflow_extensions.nflx.plugins.functions.core.function_spec import (
             FunctionSpec,
         )
@@ -417,11 +422,18 @@ class FunctionActorClass:
                 "Function spec missing task_code_path"
             )
 
-        # Extract code packages immediately to a working directory
+        # Extract code to the same deterministic directory the other backends
+        # use (FUNCTION_RUNTIME_PATH/metaflow-function-<uuid>) so caller-side
+        # code can compute this function's root dir without needing the
+        # backend to report it back (e.g. for on_runtime_started()).
+        function_dir = os.path.join(
+            FUNCTION_RUNTIME_PATH,
+            f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}{func_spec.uuid}",
+        )
         code_dir = extract_code_packages(
             func_spec.code_package,
             func_spec.task_code_path,
-            tempfile.mkdtemp(prefix="mf_ray_actor_"),
+            function_dir,
         )
 
         debug.functions_exec(f"Code extracted to: {code_dir}")

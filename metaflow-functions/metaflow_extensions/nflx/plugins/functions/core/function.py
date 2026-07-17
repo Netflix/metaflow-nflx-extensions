@@ -947,6 +947,22 @@ def function_from_json(
         func._prefetch_artifacts = True
         func.backend.start(func, process=process)
 
+        # Every backend extracts the function's code package to the same
+        # deterministic directory, so it can be computed here on the caller
+        # side without needing the backend to report it back (some backends,
+        # e.g. Ray, extract inside a remote process the caller can't inspect).
+        if not base_path:
+            from metaflow_extensions.nflx.config.mfextinit_functions import (
+                FUNCTION_RUNTIME_PATH,
+            )
+
+            base_path = FUNCTION_RUNTIME_PATH
+        function_root_dir = os.path.join(
+            base_path, f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}{fs.uuid}"
+        )
+        for component in func._runtime_components:
+            component.on_runtime_started(function_root_dir)
+
     return func
 
 

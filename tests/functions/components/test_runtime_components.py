@@ -763,4 +763,128 @@ def test_ray_backend_route_component_output_handles_empty():
     RayBackend._route_component_output(func, None)
 
     assert producer.last_output is None
-    assert fqn in cmd_str
+
+
+# ---------------------------------------------------------------------------
+# 12. on_runtime_started — caller-side hook
+# ---------------------------------------------------------------------------
+
+def test_on_runtime_started_default_is_noop():
+    """Base class default implementation does nothing and returns None."""
+
+    class _PlainComponent(AbstractRuntimeComponent):
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            pass
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+    component = _PlainComponent()
+    assert component.on_runtime_started("/some/function/dir") is None
+
+
+class _RuntimeStartedRecorder(AbstractRuntimeComponent):
+    """Component that records every on_runtime_started(function_root_dir) call."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.on_runtime_started_calls = []
+
+    def start(self, *args, **kwargs):
+        pass
+
+    def stop(self, *args, **kwargs):
+        pass
+
+    def before_call(self, *args, **kwargs):
+        pass
+
+    def after_call(self, *args, **kwargs):
+        pass
+
+    def on_runtime_started(self, function_root_dir):
+        self.on_runtime_started_calls.append(function_root_dir)
+
+
+def test_function_from_json_invokes_on_runtime_started_with_computed_dir():
+    """function_from_json computes function_root_dir from base_path + spec.uuid
+    and invokes on_runtime_started on every scheduled component, without the
+    backend needing to report the directory back."""
+    from unittest.mock import patch, MagicMock
+    from metaflow_extensions.nflx.plugins.functions.core.function import (
+        function_from_json,
+    )
+    from metaflow_extensions.nflx.plugins.functions.config import Config
+
+    fake_spec = MagicMock()
+    fake_spec.serializer_configs = None
+    fake_spec.class_name = "fake.module.FakeFunction"
+    fake_spec.uuid = "abc-123"
+
+    fake_func = MagicMock()
+    fake_func._runtime_components = []
+    fake_subclass = MagicMock()
+    fake_subclass._create_proxy_from_spec.return_value = fake_func
+
+    recorder = _RuntimeStartedRecorder()
+
+    with patch(
+        "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
+        return_value=fake_spec,
+    ), patch(
+        "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
+        return_value=fake_subclass,
+    ):
+        function_from_json(
+            "fake-reference.json",
+            base_path="/tmp/some-base",
+            start_runtime=True,
+            runtime_components=[recorder],
+        )
+
+    fake_func.backend.start.assert_called_once()
+    expected_dir = os.path.join(
+        "/tmp/some-base", f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}abc-123"
+    )
+    assert recorder.on_runtime_started_calls == [expected_dir]
+
+
+def test_function_from_json_skips_on_runtime_started_when_not_starting():
+    """on_runtime_started is only invoked when start_runtime=True."""
+    from unittest.mock import patch, MagicMock
+    from metaflow_extensions.nflx.plugins.functions.core.function import (
+        function_from_json,
+    )
+
+    fake_spec = MagicMock()
+    fake_spec.serializer_configs = None
+    fake_spec.class_name = "fake.module.FakeFunction"
+    fake_spec.uuid = "abc-123"
+
+    fake_func = MagicMock()
+    fake_func._runtime_components = []
+    fake_subclass = MagicMock()
+    fake_subclass._create_proxy_from_spec.return_value = fake_func
+
+    recorder = _RuntimeStartedRecorder()
+
+    with patch(
+        "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
+        return_value=fake_spec,
+    ), patch(
+        "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
+        return_value=fake_subclass,
+    ):
+        function_from_json(
+            "fake-reference.json",
+            start_runtime=False,
+            runtime_components=[recorder],
+        )
+
+    assert recorder.on_runtime_started_calls == []
