@@ -19,6 +19,10 @@ from metaflow.metaflow_environment import MetaflowEnvironment
 from metaflow.package import DEFAULT_SUFFIXES_LIST
 from metaflow.util import to_unicode, walk_without_cycles
 
+# Avro schema files are always packaged alongside function code, since
+# functions commonly load a co-located .avsc file at runtime.
+FUNCTION_DEFAULT_SUFFIXES_LIST = DEFAULT_SUFFIXES_LIST + [".avsc"]
+
 from metaflow_extensions.nflx.plugins.functions.core.function_spec import (
     FunctionSpec,
 )
@@ -33,10 +37,10 @@ class MetaflowFunctionPackage:
     ) -> None:
         self.suffixes: List[str]
         if suffixes is None:
-            self.suffixes = DEFAULT_SUFFIXES_LIST
+            self.suffixes = FUNCTION_DEFAULT_SUFFIXES_LIST
         else:
             self.suffixes = list(
-                set().union(suffixes.split(","), DEFAULT_SUFFIXES_LIST)
+                set().union(suffixes.split(","), FUNCTION_DEFAULT_SUFFIXES_LIST)
             )
         self.metaflow_root: str = os.path.dirname(metaflow.__file__)
         self.name: Optional[str] = function_spec.name
