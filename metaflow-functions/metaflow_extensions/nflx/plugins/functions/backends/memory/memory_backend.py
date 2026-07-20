@@ -38,7 +38,8 @@ from ...memory.concurrency import Semaphore
 
 IO_WAIT = 10**-6
 BUFFER_PER_PROCESS = 2
-MFF_ERROR_KEY = "__mf_ERROR__"
+MFF_USER_ERROR_KEY = "__mf_USER_ERROR__"
+MFF_SYSTEM_ERROR_KEY = "__mf_SYSTEM_ERROR__"
 MFF_COMPONENT_OUTPUT_KEY = "__mf_COMPONENT_OUTPUT__"
 KEYWORDS = {"process", "params"}
 
@@ -51,6 +52,7 @@ _NO_RESULT = object()
 class ApplyState:
     kwargs: Optional[Dict[str, Any]] = None
     error: str = ""
+    system_error: bool = False
     can_yield: bool = False
     done: bool = False
     uuids: deque = field(default_factory=deque)
@@ -160,26 +162,38 @@ class MemoryBackend(AbstractBackend):
     @classmethod
     def _handle_error(cls, lease, queue, state):
         """
-        Handle errors by clearing the queue and draining buffers
-        """
-        # Check if an exception was thrown in the function
-        if state.kwargs is not None and MFF_ERROR_KEY in state.kwargs:
-            # Cleanup and mark as done
-            error = state.kwargs[MFF_ERROR_KEY]
+        Handle errors by clearing the queue and draining buffers.
 
-            # If we have an error just drain the data queue.
-            # We need to free though all the maps.
-            queue.clear()
-            debug.functions_exec(f"Draining buffers on error. {len(state.uuids)}")
-            while state.uuids:
-                uuid = state.uuids.pop()
-                with lease.runtime.io["output_map"].acquire(uuid=uuid) as out_mem:
-                    if out_mem.valid:
-                        lease.runtime.io["output_map"].free(out_mem)
-                    else:
-                        state.uuids.append(uuid)
-            return error
-        return None
+        Returns a ``(error, is_system_error)`` tuple: ``error`` is ``None`` if
+        neither a user nor a system error was raised, otherwise the formatted
+        traceback. ``is_system_error`` distinguishes an exception raised by a
+        runtime component (``MFF_SYSTEM_ERROR_KEY``) from one raised by the
+        user's function code (``MFF_USER_ERROR_KEY``).
+        """
+        if state.kwargs is None:
+            return None, False
+
+        if MFF_SYSTEM_ERROR_KEY in state.kwargs:
+            error = state.kwargs[MFF_SYSTEM_ERROR_KEY]
+            is_system_error = True
+        elif MFF_USER_ERROR_KEY in state.kwargs:
+            error = state.kwargs[MFF_USER_ERROR_KEY]
+            is_system_error = False
+        else:
+            return None, False
+
+        # If we have an error just drain the data queue.
+        # We need to free though all the maps.
+        queue.clear()
+        debug.functions_exec(f"Draining buffers on error. {len(state.uuids)}")
+        while state.uuids:
+            uuid = state.uuids.pop()
+            with lease.runtime.io["output_map"].acquire(uuid=uuid) as out_mem:
+                if out_mem.valid:
+                    lease.runtime.io["output_map"].free(out_mem)
+                else:
+                    state.uuids.append(uuid)
+        return error, is_system_error
 
     @classmethod
     def _process_exceptions(cls, lease, e):
@@ -258,7 +272,7 @@ class MemoryBackend(AbstractBackend):
                     state.can_yield = False
 
         # Check if error:
-        state.error = cls._handle_error(lease, queue, state)
+        state.error, state.system_error = cls._handle_error(lease, queue, state)
 
         # We are all done if the data and result queue are zero'd
         state.done = len(queue) == 0 and len(state.uuids) == 0
@@ -314,8 +328,12 @@ class MemoryBackend(AbstractBackend):
                 if result is not _NO_RESULT:
                     results.append(result)
 
-            # Process user error
+            # Process user or runtime component errors
             if state.error:
+                if state.system_error:
+                    raise MetaflowFunctionRuntimeException(
+                        f"Runtime component exception in function '{lease.runtime.uuid}': {state.error}"
+                    )
                 raise MetaflowFunctionUserException(
                     f"Exception in function '{lease.runtime.uuid}': {state.error}"
                 )
@@ -374,8 +392,12 @@ class MemoryBackend(AbstractBackend):
                 if result is not _NO_RESULT:
                     results.append(result)
 
-            # Process user error
+            # Process user or runtime component errors
             if state.error:
+                if state.system_error:
+                    raise MetaflowFunctionRuntimeException(
+                        f"Runtime component exception in function '{lease.runtime.uuid}': {state.error}"
+                    )
                 raise MetaflowFunctionUserException(
                     f"Exception in function '{lease.runtime.uuid}': {state.error}"
                 )
@@ -765,21 +787,38 @@ class MemoryBackend(AbstractBackend):
                     kwargs_copy = function_payload.kwargs.copy()
                     component_output: dict = {}
 
+                    from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+                        before_call_components,
+                        after_call_components,
+                    )
+
                     try:
-                        debug.functions_exec("Call the function _execute method")
-                        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
-                            before_call_components,
-                            after_call_components,
-                        )
                         before_call_components(component_instances)
-                        result = func_instance.execute(
-                            input_data, parameters, **kwargs_copy
-                        )
-                        component_output = after_call_components(component_instances)
-                    except Exception as user_error:
-                        debug.functions_exec("User exception")
+                    except Exception:
+                        debug.functions_exec("System exception in before_call_components")
                         result = output_cls()
-                        kwargs = {MFF_ERROR_KEY: traceback.format_exc()}
+                        kwargs = {MFF_SYSTEM_ERROR_KEY: traceback.format_exc()}
+                    else:
+                        try:
+                            debug.functions_exec("Call the function _execute method")
+                            result = func_instance.execute(
+                                input_data, parameters, **kwargs_copy
+                            )
+                        except Exception:
+                            debug.functions_exec("User exception")
+                            result = output_cls()
+                            kwargs = {MFF_USER_ERROR_KEY: traceback.format_exc()}
+                        else:
+                            try:
+                                component_output = after_call_components(
+                                    component_instances
+                                )
+                            except Exception:
+                                debug.functions_exec(
+                                    "System exception in after_call_components"
+                                )
+                                result = output_cls()
+                                kwargs = {MFF_SYSTEM_ERROR_KEY: traceback.format_exc()}
 
                     # Wrap result with potentially modified kwargs (modifications happen in-place)
                     kwargs.update(kwargs_copy)
