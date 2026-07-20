@@ -5,7 +5,7 @@ Provides local Ray cluster execution with automatic resource allocation
 from @resources decorator metadata.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import ray
 
@@ -94,15 +94,14 @@ class RayBackend(AbstractBackend):
     ) -> None:
         """
         Stamp last_output onto the caller-side runtime component instances that
-        match component_output entries, by "module.ClassName".
+        match component_output entries, by ``component_id``.
         """
         if not component_output:
             return
         for component in getattr(func_instance, "_runtime_components", []):
-            component_cls = type(component)
-            spec_name = f"{component_cls.__module__}.{component_cls.__qualname__}"
-            if spec_name in component_output:
-                component.last_output = component_output[spec_name]
+            component_id = type(component).component_id
+            if component_id in component_output:
+                component.last_output = component_output[component_id]
 
     @classmethod
     def _sync_serializers(cls):
@@ -383,7 +382,11 @@ class FunctionActorClass:
     for the conda environment.
     """
 
-    def __init__(self, function_reference: str, component_class_names: List[str] = []):
+    def __init__(
+        self,
+        function_reference: str,
+        component_class_names: Optional[List[str]] = None,
+    ):
         """
         Initialize actor by extracting code and loading concrete function.
 
@@ -391,9 +394,10 @@ class FunctionActorClass:
         ----------
         function_reference : str
             S3 path to function specification JSON
-        component_class_names : List[str]
+        component_class_names : Optional[List[str]]
             Fully-qualified class names of runtime components to activate
         """
+        component_class_names = component_class_names or []
         import os
 
         from metaflow_extensions.nflx.config.mfextinit_functions import (

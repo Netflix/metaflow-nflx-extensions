@@ -250,7 +250,9 @@ class FunctionPipeline(MetaflowFunction):
         Any
             The result of the pipeline call.
         """
-        return self.backend.apply(self, data, **kwargs)
+        result = self.backend.apply(self, data, **kwargs)
+        self._notify_output_received()
+        return result
 
     def _make_func_params(
         self, pipeline_params: "FunctionParameters", func: MetaflowFunction

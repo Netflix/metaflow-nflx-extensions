@@ -1,29 +1,25 @@
 """Helpers for serializing, activating, and deactivating runtime components."""
 
 import json
-from typing import Any, Dict, List, Type, Union, TYPE_CHECKING
+from typing import Any, Dict, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .abstract_component import AbstractRuntimeComponent
 
 
 def serialize_components(
-    components: List[Union[Type["AbstractRuntimeComponent"], "AbstractRuntimeComponent"]],
+    components: List["AbstractRuntimeComponent"],
 ) -> List[str]:
-    """Serialize a list of component classes or instances to strings.
+    """Serialize a list of component instances to strings.
 
-    Classes produce ``"module.ClassName"``.
-    Instances produce ``"module.ClassName:json_kwargs"`` using the kwargs
-    captured in ``_init_kwargs`` at construction time.
+    Produces ``"module.ClassName:json_kwargs"`` using the kwargs captured in
+    ``_init_kwargs`` at construction time.
     """
     result = []
     for c in components:
-        if isinstance(c, type):
-            result.append(f"{c.__module__}.{c.__qualname__}")
-        else:
-            cls = type(c)
-            kwargs_json = json.dumps(c._init_kwargs)
-            result.append(f"{cls.__module__}.{cls.__qualname__}:{kwargs_json}")
+        cls = type(c)
+        kwargs_json = json.dumps(c._init_kwargs)
+        result.append(f"{cls.__module__}.{cls.__qualname__}:{kwargs_json}")
     return result
 
 
@@ -59,21 +55,17 @@ def load_component_instances(
 
 
 def start_components(
-    components: List[Union[Type["AbstractRuntimeComponent"], "AbstractRuntimeComponent"]],
+    instances: List["AbstractRuntimeComponent"],
     *args,
     **kwargs,
 ) -> List["AbstractRuntimeComponent"]:
-    """Start a list of component classes or instances.
+    """Start a list of component instances.
 
-    Classes are instantiated with no arguments.  Instances are used directly.
     ``start()`` is called on each and ``active_instance`` is set on the class.
     """
-    instances = []
-    for item in components:
-        instance = item() if isinstance(item, type) else item
+    for instance in instances:
         instance.start(*args, **kwargs)
         type(instance).active_instance = instance
-        instances.append(instance)
     return instances
 
 
@@ -100,10 +92,10 @@ def after_call_components(
 ) -> Dict[str, Any]:
     """Call after_call() then collect_output() on each instance.
 
-    Returns a ``{"module.ClassName": output}`` map for instances whose
-    ``collect_output()`` returned non-``None``, using the same naming scheme
-    as ``serialize_components`` so callers can match output back to the
-    component that produced it.
+    Returns a ``{component_id: output}`` map for instances whose
+    ``collect_output()`` returned non-``None``, keyed by each component's
+    ``component_id`` so callers can match output back to the component that
+    produced it.
     """
     collected: Dict[str, Any] = {}
     for instance in instances:
@@ -111,6 +103,5 @@ def after_call_components(
         output = instance.collect_output(*args, **kwargs)
         if output is not None:
             instance.last_output = output
-            cls = type(instance)
-            collected[f"{cls.__module__}.{cls.__qualname__}"] = output
+            collected[type(instance).component_id] = output
     return collected

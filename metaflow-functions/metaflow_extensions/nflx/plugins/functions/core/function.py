@@ -210,7 +210,7 @@ class MetaflowFunction(ABC):
             scheduled for this function.
         """
         for component in self.runtime_components:
-            if type(component) is component_type:
+            if isinstance(component, component_type):
                 return component
         return None
 
@@ -467,6 +467,12 @@ class MetaflowFunction(ABC):
 
         return self._func(data, params, **kwargs)
 
+    def _notify_output_received(self) -> None:
+        """Call ``on_output_received()`` on each runtime component, once
+        ``last_output`` has been routed onto the caller-side instances."""
+        for component in self.runtime_components:
+            component.on_output_received()
+
     def __call__(self, data: Any, **kwargs) -> Any:
         """
         Calls the function with the given data and keyword arguments.
@@ -484,7 +490,9 @@ class MetaflowFunction(ABC):
         Any
             The result of the function call.
         """
-        return self.backend.apply(self, data, **kwargs)
+        result = self.backend.apply(self, data, **kwargs)
+        self._notify_output_received()
+        return result
 
     async def call_async(self, data: Any, **kwargs) -> Any:
         """
@@ -503,7 +511,9 @@ class MetaflowFunction(ABC):
         Any
             The result of the function call.
         """
-        return await self.backend.apply_async(self, data, **kwargs)
+        result = await self.backend.apply_async(self, data, **kwargs)
+        self._notify_output_received()
+        return result
 
     @classmethod
     def from_json(
@@ -930,6 +940,7 @@ def function_from_json(
     # forward them to the subprocess.
     runtime_components = runtime_components or []
     seen_types: Dict[type, Any] = {}
+    seen_component_ids: Dict[str, Any] = {}
     for component in runtime_components:
         component_type = type(component)
         if component_type in seen_types:
@@ -938,6 +949,17 @@ def function_from_json(
                 "Only one instance per component type is allowed."
             )
         seen_types[component_type] = component
+
+        component_id = component_type.component_id
+        if component_id in seen_component_ids:
+            other_type = type(seen_component_ids[component_id])
+            raise MetaflowFunctionException(
+                f"Runtime components '{other_type.__name__}' and "
+                f"'{component_type.__name__}' both declare component_id "
+                f"'{component_id}'. Each component class must have a unique "
+                "component_id."
+            )
+        seen_component_ids[component_id] = component
     func._runtime_components = runtime_components
 
     # Start the runtime if requested

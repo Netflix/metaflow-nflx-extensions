@@ -111,16 +111,15 @@ class MemoryBackend(AbstractBackend):
         """
         Pop the reserved component-output map out of result_kwargs (mutated
         in-place) and stamp last_output onto the caller-side runtime component
-        instances it matches, by "module.ClassName".
+        instances it matches, by ``component_id``.
         """
         component_output = result_kwargs.pop(MFF_COMPONENT_OUTPUT_KEY, None)
         if not component_output:
             return
         for component in getattr(func_instance, "_runtime_components", []):
-            component_cls = type(component)
-            spec_name = f"{component_cls.__module__}.{component_cls.__qualname__}"
-            if spec_name in component_output:
-                component.last_output = component_output[spec_name]
+            component_id = type(component).component_id
+            if component_id in component_output:
+                component.last_output = component_output[component_id]
 
     @classmethod
     def _setup_apply(cls, func_instance, data, kwargs):
@@ -690,8 +689,9 @@ class MemoryBackend(AbstractBackend):
         sem: Semaphore,
         func_instance,
         prefetch_artifacts: bool = False,
-        component_instances: List = [],
+        component_instances: Optional[List] = None,
     ):
+        component_instances = component_instances or []
         debug.functions_exec("Setting up serializers using registry")
         registry = get_global_registry()
 

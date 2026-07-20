@@ -56,6 +56,7 @@ class RecordingComponent(AbstractRuntimeComponent):
     """
 
     _log_path: str = ""  # set by each test before use
+    component_id = "recording"
 
     def _write(self, event: str) -> None:
         with open(type(self)._log_path, "a") as fh:
@@ -102,7 +103,7 @@ def test_component_lifecycle_order():
     log = _tmp_log()
     RecordingComponent._log_path = log
     try:
-        instances = start_components([RecordingComponent])
+        instances = start_components([RecordingComponent()])
         before_call_components(instances)
         after_call_components(instances)
         stop_components(instances)
@@ -118,7 +119,7 @@ def test_component_start_activates_class():
     log = _tmp_log()
     RecordingComponent._log_path = log
     try:
-        instances = start_components([RecordingComponent])
+        instances = start_components([RecordingComponent()])
         assert RecordingComponent.active_instance is instances[0]
         stop_components(instances)
         assert RecordingComponent.active_instance is None
@@ -131,12 +132,14 @@ def test_stop_clears_instance_even_on_error():
     """stop() deactivates the class even if stop() itself raises."""
 
     class BrokenStop(AbstractRuntimeComponent):
+        component_id = "broken_stop"
+
         def start(self, *args, **kwargs): pass
         def stop(self, *args, **kwargs): raise RuntimeError("boom")
         def before_call(self, *args, **kwargs): pass
         def after_call(self, *args, **kwargs): pass
 
-    instances = start_components([BrokenStop])
+    instances = start_components([BrokenStop()])
     assert BrokenStop.active_instance is not None
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -155,12 +158,12 @@ def test_active_instance_none_before_start():
     assert RecordingComponent.active_instance is None
 
 
-def test_serialize_class():
-    """serialize_components produces a plain 'module.ClassName' string for a class."""
-    specs = serialize_components([RecordingComponent])
+def test_serialize_instance_no_kwargs():
+    """serialize_components produces 'module.ClassName:{}' for a no-kwargs instance."""
+    specs = serialize_components([RecordingComponent()])
     assert len(specs) == 1
     fqn = f"{RecordingComponent.__module__}.{RecordingComponent.__qualname__}"
-    assert specs[0] == fqn
+    assert specs[0] == f"{fqn}:{{}}"
 
 
 def test_serialize_instance_with_kwargs():
@@ -168,6 +171,8 @@ def test_serialize_instance_with_kwargs():
     import json
 
     class KwargsComponent(AbstractRuntimeComponent):
+        component_id = "kwargs_component"
+
         def start(self, *args, **kwargs): pass
         def stop(self, *args, **kwargs): pass
         def before_call(self, *args, **kwargs): pass
@@ -234,7 +239,7 @@ def test_local_backend_fires_lifecycle():
     log = _tmp_log()
     RecordingComponent._log_path = log
     try:
-        func = _MockFunction([RecordingComponent])
+        func = _MockFunction([RecordingComponent()])
 
         result = LocalBackend.apply(func, "hello", params=FunctionParameters())
         assert result == "echo:hello"
@@ -283,7 +288,7 @@ def test_local_backend_stop_not_called_on_exception():
             raise ValueError("user error")
 
     try:
-        func = FailingFunction([RecordingComponent])
+        func = FailingFunction([RecordingComponent()])
         with pytest.raises(MetaflowFunctionUserException):
             LocalBackend.apply(func, "x", params=FunctionParameters())
 
@@ -376,6 +381,7 @@ class ConfiguringComponent(AbstractRuntimeComponent):
     """Writes a snapshot of ``_class_config`` (as seen at start() time) to a file."""
 
     _log_path: str = ""
+    component_id = "configuring_component"
 
     def start(self, *args, **kwargs) -> None:
         with open(type(self)._log_path, "a") as fh:
@@ -431,7 +437,7 @@ def test_configure_visible_in_start_via_file():
     ConfiguringComponent._log_path = log
     try:
         ConfiguringComponent.configure(stream_name="my_stream")
-        instances = start_components([ConfiguringComponent])
+        instances = start_components([ConfiguringComponent()])
         assert _read_events(log) == [
             "start:{'stream_name': 'my_stream'}",
         ]
@@ -448,7 +454,7 @@ def test_configure_after_start_does_not_affect_running_instance():
     ConfiguringComponent._log_path = log
     try:
         ConfiguringComponent.configure(stream_name="my_stream")
-        instances = start_components([ConfiguringComponent])
+        instances = start_components([ConfiguringComponent()])
         assert _read_events(log) == [
             "start:{'stream_name': 'my_stream'}",
         ]
@@ -473,6 +479,8 @@ def test_configure_after_start_does_not_affect_running_instance():
 # ---------------------------------------------------------------------------
 
 class _NoOutputComponent(AbstractRuntimeComponent):
+    component_id = "no_output_component"
+
     def start(self, *args, **kwargs): pass
     def stop(self, *args, **kwargs): pass
     def before_call(self, *args, **kwargs): pass
@@ -480,6 +488,8 @@ class _NoOutputComponent(AbstractRuntimeComponent):
 
 
 class _OutputComponent(AbstractRuntimeComponent):
+    component_id = "output_component"
+
     def start(self, *args, **kwargs): pass
     def stop(self, *args, **kwargs): pass
     def before_call(self, *args, **kwargs): pass
@@ -504,12 +514,11 @@ def test_after_call_components_returns_empty_dict_when_no_output():
 
 
 def test_after_call_components_collects_output_and_sets_last_output():
-    """collect_output() output is both returned (keyed by spec name) and stamped onto last_output."""
+    """collect_output() output is both returned (keyed by component_id) and stamped onto last_output."""
     inst = _OutputComponent()
     collected = after_call_components([inst])
 
-    fqn = f"{_OutputComponent.__module__}.{_OutputComponent.__qualname__}"
-    assert collected == {fqn: {"count": 1}}
+    assert collected == {_OutputComponent.component_id: {"count": 1}}
     assert inst.last_output == {"count": 1}
 
 
@@ -522,8 +531,7 @@ def test_after_call_components_mixed_instances():
         producer = _OutputComponent()
         collected = after_call_components([recorder, producer])
 
-        fqn = f"{_OutputComponent.__module__}.{_OutputComponent.__qualname__}"
-        assert collected == {fqn: {"count": 1}}
+        assert collected == {_OutputComponent.component_id: {"count": 1}}
         assert recorder.last_output is None
         assert producer.last_output == {"count": 1}
         assert _read_events(log) == ["after_call"]
@@ -583,14 +591,14 @@ def test_get_runtime_component_returns_none_when_absent():
     assert func.get_runtime_component(_OutputComponent) is None
 
 
-def test_get_runtime_component_no_subclass_matching():
-    """get_runtime_component matches by exact type, not subclass relationship."""
+def test_get_runtime_component_matches_subclass():
+    """get_runtime_component matches subclasses via isinstance, not exact type."""
 
     class SubRecordingComponent(RecordingComponent):
         pass
 
     func = _StubMetaflowFunction([SubRecordingComponent()])
-    assert func.get_runtime_component(RecordingComponent) is None
+    assert isinstance(func.get_runtime_component(RecordingComponent), SubRecordingComponent)
     assert isinstance(func.get_runtime_component(SubRecordingComponent), SubRecordingComponent)
 
 
@@ -678,10 +686,9 @@ def test_memory_backend_route_component_output_sets_last_output():
     producer = _OutputComponent()
     func = _MockFunction([producer])
 
-    fqn = f"{_OutputComponent.__module__}.{_OutputComponent.__qualname__}"
     result_kwargs = {
         "user_kwarg": "unchanged",
-        MFF_COMPONENT_OUTPUT_KEY: {fqn: {"count": 5}},
+        MFF_COMPONENT_OUTPUT_KEY: {_OutputComponent.component_id: {"count": 5}},
     }
 
     MemoryBackend._route_component_output(func, result_kwargs)
@@ -730,8 +737,7 @@ def test_ray_backend_route_component_output_sets_last_output():
     producer = _OutputComponent()
     func = _MockFunction([producer])
 
-    fqn = f"{_OutputComponent.__module__}.{_OutputComponent.__qualname__}"
-    RayBackend._route_component_output(func, {fqn: {"count": 7}})
+    RayBackend._route_component_output(func, {_OutputComponent.component_id: {"count": 7}})
 
     assert producer.last_output == {"count": 7}
 
@@ -773,6 +779,8 @@ def test_on_runtime_started_default_is_noop():
     """Base class default implementation does nothing and returns None."""
 
     class _PlainComponent(AbstractRuntimeComponent):
+        component_id = "plain_component"
+
         def start(self, *args, **kwargs):
             pass
 
@@ -791,6 +799,8 @@ def test_on_runtime_started_default_is_noop():
 
 class _RuntimeStartedRecorder(AbstractRuntimeComponent):
     """Component that records every on_runtime_started(function_root_dir) call."""
+
+    component_id = "runtime_started_recorder"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

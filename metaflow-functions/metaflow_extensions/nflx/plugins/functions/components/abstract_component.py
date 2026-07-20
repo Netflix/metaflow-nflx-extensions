@@ -78,7 +78,19 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
     # dict, so this annotation is documentation only.
     _class_config: Dict[str, Any] = {}
 
+    # Stable per-call routing key, set by each subclass, e.g.:
+    #     class Logger(AbstractRuntimeComponent):
+    #         component_id = "logger"
+    # Used to match a call's output back to the component that produced it
+    # (see components/runtime.py, backends/*/[...]_backend.py) without
+    # deriving a module/qualname string on every call.
+    component_id: Optional[str] = None
+
     def __init__(self, **kwargs: Any) -> None:
+        if type(self).component_id is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} must set a class-level `component_id`"
+            )
         self._init_kwargs = {**type(self)._class_config, **kwargs}
         self.last_output: Optional[Dict[str, Any]] = None
 
@@ -134,6 +146,19 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
 
         ``function_root_dir`` is the directory the function's code package
         is extracted into, so components can read files from it.
+
+        Default implementation is a no-op.
+        """
+        pass
+
+    def on_output_received(self) -> None:
+        """
+        Called once on the caller side after each function invocation
+        returns, on the same instance returned by ``function_from_json``,
+        right after ``last_output`` has been updated for that call.
+
+        Override to react to a call's output (e.g. decode and display it)
+        without changing what the call returns to user code.
 
         Default implementation is a no-op.
         """
