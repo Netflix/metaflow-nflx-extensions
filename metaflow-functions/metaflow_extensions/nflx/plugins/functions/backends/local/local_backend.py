@@ -93,7 +93,7 @@ class LocalBackend(AbstractBackend):
             after_call_components,
         )
 
-        if not hasattr(func_instance, "_component_instances"):
+        if not func_instance._component_instances:
             func_instance._component_instances = start_components(
                 getattr(func_instance, "_runtime_components", []),
                 function=func_instance,
@@ -124,7 +124,7 @@ class LocalBackend(AbstractBackend):
 
     @classmethod
     def close(cls, func_instance, clean_dir: bool = True, **kwargs):
-        instances = getattr(func_instance, "_component_instances", None)
+        instances = func_instance._component_instances
         if instances:
             from metaflow_extensions.nflx.plugins.functions.components.runtime import (
                 stop_components,

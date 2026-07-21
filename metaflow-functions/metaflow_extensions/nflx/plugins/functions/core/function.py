@@ -63,6 +63,9 @@ if TYPE_CHECKING:
     from metaflow_extensions.nflx.plugins.functions.backends.abstract_backend import (
         AbstractBackend,
     )
+    from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
+        AbstractRuntimeComponent,
+    )
 
 
 class MetaflowFunction(ABC):
@@ -98,6 +101,7 @@ class MetaflowFunction(ABC):
         self._function_spec: Optional[FunctionSpec] = None
         self._function_root_dir: Optional[str] = None
         self._backend: Optional["AbstractBackend"] = None
+        self._component_instances: List["AbstractRuntimeComponent"] = []
 
         # Only build function spec for legacy single-function initialization
         if func is not None and task is not None:
@@ -610,6 +614,7 @@ class MetaflowFunction(ABC):
             dff._func = load_decorated_function(func_spec.function)
             dff._function_spec = func_spec
             dff._function_root_dir = function_dir
+            dff._component_instances = []
 
             # Set the back-end
             if not hasattr(dff, "_backend") or dff._backend is None:
@@ -828,6 +833,7 @@ class MetaflowFunction(ABC):
         instance._func = None
         instance.task = None
         instance._function_spec = func_spec
+        instance._component_instances = []
 
         # Set up backend
         from metaflow_extensions.nflx.plugins.functions.backends.factory import (

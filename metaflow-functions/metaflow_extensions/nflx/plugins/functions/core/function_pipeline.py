@@ -514,6 +514,7 @@ class FunctionPipeline(MetaflowFunction):
         instance._func = None
         instance.task = None
         instance._function_spec = func_spec
+        instance._component_instances = []
         if not func_spec.name:
             raise MetaflowFunctionException(
                 "Pipeline function spec is missing required 'name' field"

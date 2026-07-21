@@ -224,6 +224,7 @@ class _MockFunction:
 
     def __init__(self, component_classes):
         self._runtime_components = component_classes
+        self._component_instances = []
 
     def execute(self, data, params, **kwargs):
         return f"echo:{data}"
