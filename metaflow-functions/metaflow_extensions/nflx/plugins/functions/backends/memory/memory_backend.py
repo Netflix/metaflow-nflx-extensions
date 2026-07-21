@@ -691,7 +691,8 @@ class MemoryBackend(AbstractBackend):
         debug.functions_exec("Runtime IO buffers ready")
 
         component_instances = start_components(
-            load_component_instances(component_class_names)
+            load_component_instances(component_class_names),
+            function=func_instance,
         )
         try:
             cls._runtime_with_buffers(

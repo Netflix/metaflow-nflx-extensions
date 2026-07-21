@@ -96,6 +96,7 @@ class MetaflowFunction(ABC):
         self._func: Optional["MetaflowFunctionDecorator"] = func
         self.task: Optional["Task"] = task
         self._function_spec: Optional[FunctionSpec] = None
+        self._function_root_dir: Optional[str] = None
         self._backend: Optional["AbstractBackend"] = None
 
         # Only build function spec for legacy single-function initialization
@@ -159,6 +160,13 @@ class MetaflowFunction(ABC):
         if uuid is None:
             raise MetaflowFunctionException("Function uuid not available")
         return uuid
+
+    @property
+    def function_root_dir(self) -> str:
+        """Return the directory this function's code package was extracted into."""
+        if getattr(self, "_function_root_dir", None) is None:
+            raise MetaflowFunctionException("Function root dir is not set.")
+        return self._function_root_dir
 
     @property
     def backend(self):
@@ -601,6 +609,7 @@ class MetaflowFunction(ABC):
             # Load using consolidated function
             dff._func = load_decorated_function(func_spec.function)
             dff._function_spec = func_spec
+            dff._function_root_dir = function_dir
 
             # Set the back-end
             if not hasattr(dff, "_backend") or dff._backend is None:

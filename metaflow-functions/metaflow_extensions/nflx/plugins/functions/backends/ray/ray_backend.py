@@ -159,7 +159,14 @@ class RayBackend(AbstractBackend):
             )
 
         except ray.exceptions.RayTaskError as e:
-            # User code error - propagate as user exception
+            # Ray dynamically subclasses RayTaskError with the original
+            # exception's type, so isinstance() below recovers whether this
+            # came from a runtime component hook or user code, even though
+            # both cross the actor boundary as the same RayTaskError.
+            if isinstance(e, MetaflowFunctionRuntimeException):
+                raise MetaflowFunctionRuntimeException(
+                    f"Runtime component exception in function '{func_instance.name}': {str(e)}"
+                )
             raise MetaflowFunctionUserException(
                 f"Function '{func_instance.name}' raised an exception: {str(e)}"
             )
@@ -468,7 +475,8 @@ class FunctionActorClass:
         )
 
         self._component_instances = start_components(
-            load_component_instances(component_class_names)
+            load_component_instances(component_class_names),
+            function=self.function,
         )
 
     def shutdown(self):
@@ -507,8 +515,22 @@ class FunctionActorClass:
         # Use params from kwargs if provided, otherwise use pre-created params
         params = kwargs.pop("params", self.params)
 
-        before_call_components(self._component_instances)
+        try:
+            before_call_components(self._component_instances)
+        except Exception as e:
+            raise MetaflowFunctionRuntimeException(
+                f"Runtime component exception in function '{self.function.name}': {str(e)}"
+            )
+
+        # self.function is itself backed by LocalBackend, so this already
+        # raises MetaflowFunctionUserException for user code failures.
         result = self.function(data, params=params, **kwargs)
-        component_output = after_call_components(self._component_instances)
+
+        try:
+            component_output = after_call_components(self._component_instances)
+        except Exception as e:
+            raise MetaflowFunctionRuntimeException(
+                f"Runtime component exception in function '{self.function.name}': {str(e)}"
+            )
 
         return result, component_output

@@ -56,15 +56,19 @@ def load_component_instances(
 
 def start_components(
     instances: List["AbstractRuntimeComponent"],
+    function: Any = None,
     *args,
     **kwargs,
 ) -> List["AbstractRuntimeComponent"]:
     """Start a list of component instances.
 
     ``start()`` is called on each and ``active_instance`` is set on the class.
+    ``function`` is the ``MetaflowFunction`` instance being started, passed
+    through so components can access things like ``function.function_root_dir``
+    on the runtime side, where they have no other way to reach it.
     """
     for instance in instances:
-        instance.start(*args, **kwargs)
+        instance.start(*args, function=function, **kwargs)
         type(instance).active_instance = instance
     return instances
 

@@ -95,18 +95,32 @@ class LocalBackend(AbstractBackend):
 
         if not hasattr(func_instance, "_component_instances"):
             func_instance._component_instances = start_components(
-                getattr(func_instance, "_runtime_components", [])
+                getattr(func_instance, "_runtime_components", []),
+                function=func_instance,
             )
 
         try:
             before_call_components(func_instance._component_instances)
+        except Exception as e:
+            raise MetaflowFunctionRuntimeException(
+                f"Runtime component exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
+            )
+
+        try:
             result = func_instance.execute(data, parameters, **kwargs)
-            after_call_components(func_instance._component_instances)
-            return result
         except Exception as e:
             raise MetaflowFunctionUserException(
                 f"Exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
             )
+
+        try:
+            after_call_components(func_instance._component_instances)
+        except Exception as e:
+            raise MetaflowFunctionRuntimeException(
+                f"Runtime component exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
+            )
+
+        return result
 
     @classmethod
     def close(cls, func_instance, clean_dir: bool = True, **kwargs):

@@ -61,6 +61,83 @@ def test_ray_cluster_initialization():
         RayBackend._cluster_initialized = False
 
 
+class _FakeFuncInstance:
+    """Minimal stand-in for a MetaflowFunction, just enough for RayBackend.apply()."""
+
+    def __init__(self, uuid, name):
+        self.uuid = uuid
+        self.name = name
+        self._runtime_components = []
+
+
+def test_ray_backend_hook_failure_raises_runtime_exception():
+    """A RayTaskError wrapping a MetaflowFunctionRuntimeException (e.g. a component
+    hook failure inside the actor) must surface as MetaflowFunctionRuntimeException,
+    not get folded into MetaflowFunctionUserException."""
+    import ray
+    from metaflow_extensions.nflx.plugins.functions.backends.ray import RayBackend
+    from metaflow_extensions.nflx.plugins.functions.exceptions import (
+        MetaflowFunctionRuntimeException,
+    )
+
+    if ray.is_initialized():
+        ray.shutdown()
+
+    @ray.remote
+    class _FakeActor:
+        def execute(self, data, **kwargs):
+            raise MetaflowFunctionRuntimeException("hook failed")
+
+    try:
+        RayBackend._ensure_cluster()
+        func_instance = _FakeFuncInstance("hook-fail-uuid", "hook_fail_fn")
+        RayBackend._actor_pool[func_instance.uuid] = _FakeActor.remote()
+
+        with pytest.raises(MetaflowFunctionRuntimeException):
+            RayBackend.apply(func_instance, "data")
+
+        # A hook failure (actor still alive) must NOT evict the actor from the pool.
+        assert func_instance.uuid in RayBackend._actor_pool
+    finally:
+        RayBackend._actor_pool.clear()
+        if ray.is_initialized():
+            ray.shutdown()
+        RayBackend._cluster_initialized = False
+
+
+def test_ray_backend_user_failure_raises_user_exception():
+    """A RayTaskError wrapping a plain user exception must surface as
+    MetaflowFunctionUserException."""
+    import ray
+    from metaflow_extensions.nflx.plugins.functions.backends.ray import RayBackend
+    from metaflow_extensions.nflx.plugins.functions.exceptions import (
+        MetaflowFunctionRuntimeException,
+        MetaflowFunctionUserException,
+    )
+
+    if ray.is_initialized():
+        ray.shutdown()
+
+    @ray.remote
+    class _FakeActor:
+        def execute(self, data, **kwargs):
+            raise MetaflowFunctionUserException("user code failed")
+
+    try:
+        RayBackend._ensure_cluster()
+        func_instance = _FakeFuncInstance("user-fail-uuid", "user_fail_fn")
+        RayBackend._actor_pool[func_instance.uuid] = _FakeActor.remote()
+
+        with pytest.raises(MetaflowFunctionUserException) as exc_info:
+            RayBackend.apply(func_instance, "data")
+        assert not isinstance(exc_info.value, MetaflowFunctionRuntimeException)
+    finally:
+        RayBackend._actor_pool.clear()
+        if ray.is_initialized():
+            ray.shutdown()
+        RayBackend._cluster_initialized = False
+
+
 def test_shutdown_with_active_actors():
     """Test that shutdown doesn't kill cluster if actors are active (unless forced)."""
     import ray

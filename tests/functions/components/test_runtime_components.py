@@ -316,6 +316,66 @@ def test_local_backend_no_components():
     assert result == "echo:world"
 
 
+class FailingComponent(AbstractRuntimeComponent):
+    """Component whose before_call/after_call can be made to raise on demand."""
+
+    component_id = "failing"
+    fail_before_call = False
+    fail_after_call = False
+
+    def start(self, *args, **kwargs) -> None:
+        pass
+
+    def stop(self, *args, **kwargs) -> None:
+        pass
+
+    def before_call(self, *args, **kwargs) -> None:
+        if type(self).fail_before_call:
+            raise ValueError("before_call blew up")
+
+    def after_call(self, *args, **kwargs) -> None:
+        if type(self).fail_after_call:
+            raise ValueError("after_call blew up")
+
+
+def test_local_backend_before_call_component_failure_raises_runtime_exception():
+    """A before_call() hook failure surfaces as MetaflowFunctionRuntimeException, not a user error."""
+    from metaflow import FunctionParameters
+    from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
+        LocalBackend,
+    )
+    from metaflow_extensions.nflx.plugins.functions.exceptions import (
+        MetaflowFunctionRuntimeException,
+    )
+
+    FailingComponent.fail_before_call = True
+    try:
+        func = _MockFunction([FailingComponent()])
+        with pytest.raises(MetaflowFunctionRuntimeException):
+            LocalBackend.apply(func, "x", params=FunctionParameters())
+    finally:
+        FailingComponent.fail_before_call = False
+
+
+def test_local_backend_after_call_component_failure_raises_runtime_exception():
+    """An after_call() hook failure surfaces as MetaflowFunctionRuntimeException, not a user error."""
+    from metaflow import FunctionParameters
+    from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
+        LocalBackend,
+    )
+    from metaflow_extensions.nflx.plugins.functions.exceptions import (
+        MetaflowFunctionRuntimeException,
+    )
+
+    FailingComponent.fail_after_call = True
+    try:
+        func = _MockFunction([FailingComponent()])
+        with pytest.raises(MetaflowFunctionRuntimeException):
+            LocalBackend.apply(func, "x", params=FunctionParameters())
+    finally:
+        FailingComponent.fail_after_call = False
+
+
 # ---------------------------------------------------------------------------
 # 5. Memory backend — serialisation (no subprocess)
 # ---------------------------------------------------------------------------
@@ -670,6 +730,59 @@ def test_function_from_json_allows_distinct_component_types():
         )
 
     assert func._runtime_components == [recorder, producer]
+
+
+def test_function_from_json_runtime_metrics_component():
+    """function_from_json wires a real RuntimeMetrics through to the
+    backend; after a real call, last_output carries the expected fields."""
+    from unittest.mock import patch, MagicMock
+    from metaflow import FunctionParameters
+    from metaflow_extensions.nflx.plugins.functions.core.function import (
+        function_from_json,
+    )
+    from metaflow_extensions.nflx.plugins.functions.components.runtime_metrics import (
+        RuntimeMetrics,
+    )
+    from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
+        LocalBackend,
+    )
+
+    fake_spec = MagicMock()
+    fake_spec.serializer_configs = None
+    fake_spec.class_name = "fake.module.FakeFunction"
+
+    fake_subclass = MagicMock()
+    fake_subclass._create_proxy_from_spec.return_value = _MockFunction([])
+
+    metrics = RuntimeMetrics()
+
+    with patch(
+        "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
+        return_value=fake_spec,
+    ), patch(
+        "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
+        return_value=fake_subclass,
+    ):
+        func = function_from_json(
+            "fake-reference.json",
+            start_runtime=False,
+            runtime_components=[metrics],
+        )
+
+    try:
+        result = LocalBackend.apply(func, "hello", params=FunctionParameters())
+
+        assert result == "echo:hello"
+        assert metrics.last_output.keys() == {
+            "call_count",
+            "last_duration_s",
+            "total_duration_s",
+        }
+        assert metrics.last_output["call_count"] == 1
+        assert metrics.last_output["last_duration_s"] >= 0
+        assert metrics.last_output["total_duration_s"] >= 0
+    finally:
+        LocalBackend.close(func)
 
 
 # ---------------------------------------------------------------------------
