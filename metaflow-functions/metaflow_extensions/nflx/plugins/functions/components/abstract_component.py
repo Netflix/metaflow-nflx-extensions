@@ -50,6 +50,15 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
                 if inst is not None:
                     inst._entries.update(payload)
 
+    Constructing an instance (or calling ``configure()``) never makes a
+    component active. ``active_instance`` is only set by ``start_components()``,
+    which runs inside a backend's ``apply()``/runtime bootstrap. Code that
+    creates a component directly (e.g. in a notebook) or that imports and
+    calls a decorated function directly, bypassing ``function_from_json`` and
+    the backend machinery entirely, will never trigger ``start()`` — so
+    ``active_instance``-routed calls like ``Logger.log(...)`` are safe no-ops
+    in that case, not errors.
+
     Subclasses may also be configured from user code before the runtime
     starts them, via ``configure()``::
 
