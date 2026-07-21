@@ -112,32 +112,3 @@ Because `runtime_components` is a parameter to `function_from_json`, each
 caller decides independently which components (if any) to install for the
 runtime it starts — the reference and the function code stay unchanged
 either way.
-
-## Writing your own component
-
-Subclass `AbstractRuntimeComponent` (see `abstract_component.py` for the
-full lifecycle contract), give it a `component_id`, and implement whichever
-hooks you need:
-
-```python
-from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
-    AbstractRuntimeComponent,
-)
-
-
-class Logger(AbstractRuntimeComponent):
-    component_id = "logger"
-
-    def start(self, *args, **kwargs) -> None:
-        self._entries = []
-
-    @classmethod
-    def log(cls, payload: dict) -> None:
-        inst = cls.active_instance
-        if inst is not None:
-            inst._entries.append(payload)
-```
-
-`Logger.log(...)` is safe to call from function code regardless of whether
-a `Logger` instance was installed for the current runtime — see
-`abstract_component.py` for the no-op routing details.
