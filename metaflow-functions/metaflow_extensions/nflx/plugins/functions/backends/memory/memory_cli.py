@@ -28,7 +28,14 @@ from metaflow._vendor import click
     multiple=True,
     help="Fully-qualified class name of a runtime component to activate (repeatable)",
 )
-def main(input_map, output_map, data_watcher, reference, prefetch_artifacts, runtime_components):
+def main(
+    input_map,
+    output_map,
+    data_watcher,
+    reference,
+    prefetch_artifacts,
+    runtime_components,
+):
     """
     Memory Backend Runtime for Metaflow Functions.
 

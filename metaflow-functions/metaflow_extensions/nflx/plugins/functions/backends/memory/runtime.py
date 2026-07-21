@@ -158,6 +158,7 @@ class FunctionRuntime:
             from metaflow_extensions.nflx.plugins.functions.components.runtime import (
                 serialize_components,
             )
+
             runtime_component_specs = serialize_components(
                 getattr(function, "_runtime_components", [])
             )
