@@ -35,6 +35,9 @@ from metaflow_extensions.nflx.plugins.functions.components.runtime import (
     before_call_components,
     after_call_components,
 )
+from metaflow_extensions.nflx.plugins.functions.exceptions import (
+    MetaflowFunctionException,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -152,11 +155,64 @@ def test_stop_clears_instance_even_on_error():
     instances = start_components([BrokenStop()])
     assert BrokenStop.active_instance is not None
 
-    with pytest.raises(RuntimeError, match="boom"):
+    with pytest.raises(MetaflowFunctionException, match="boom"):
         stop_components(instances)
 
     # active_instance must be cleared regardless
     assert BrokenStop.active_instance is None
+
+
+def test_stop_components_is_best_effort_across_failures():
+    """A failing stop() must not prevent later components from stopping.
+
+    All instances should be deactivated and every stop() should run, even
+    when an earlier one raises; the errors are aggregated and re-raised once
+    all instances have been drained.
+    """
+
+    class BrokenStopFirst(AbstractRuntimeComponent):
+        component_id = "broken_stop_first"
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            raise RuntimeError("first boom")
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+    class HealthyStop(AbstractRuntimeComponent):
+        component_id = "healthy_stop"
+        stopped = False
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            type(self).stopped = True
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+    instances = start_components([BrokenStopFirst(), HealthyStop()])
+    assert BrokenStopFirst.active_instance is not None
+    assert HealthyStop.active_instance is not None
+
+    with pytest.raises(MetaflowFunctionException, match="1 runtime component"):
+        stop_components(instances)
+
+    # The later component's stop() must still have run...
+    assert HealthyStop.stopped is True
+    # ...and every instance must be deactivated, regardless of failure.
+    assert BrokenStopFirst.active_instance is None
+    assert HealthyStop.active_instance is None
 
 
 # ---------------------------------------------------------------------------

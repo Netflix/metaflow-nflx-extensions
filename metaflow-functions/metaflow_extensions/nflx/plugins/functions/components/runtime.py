@@ -3,6 +3,10 @@
 import json
 from typing import Any, Dict, List, TYPE_CHECKING, cast
 
+from metaflow_extensions.nflx.plugins.functions.exceptions import (
+    MetaflowFunctionException,
+)
+
 if TYPE_CHECKING:
     from .abstract_component import AbstractRuntimeComponent
 
@@ -32,9 +36,6 @@ def load_component_instances(
     ``"module.ClassName:json_kwargs"`` (keyword construction) formats.
     """
     from metaflow_extensions.nflx.plugins.functions.utils import load_type_from_string
-    from metaflow_extensions.nflx.plugins.functions.exceptions import (
-        MetaflowFunctionException,
-    )
 
     instances = []
     for spec in specs:
@@ -76,12 +77,25 @@ def start_components(
 def stop_components(
     instances: List["AbstractRuntimeComponent"], *args, **kwargs
 ) -> None:
-    """Call stop() on each instance and deactivate it from its class."""
+    """Call stop() on every instance and deactivate it from its class.
+
+    Best-effort cleanup: a failure in one component's stop() must not prevent
+    the remaining components from being stopped and deactivated. Any errors
+    are collected and re-raised together after all instances are drained.
+    """
+    errors = []
     for instance in instances:
         try:
             instance.stop(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001 - cleanup must not short-circuit
+            errors.append((type(instance).__name__, e))
         finally:
             type(instance).active_instance = None
+    if errors:
+        summary = ", ".join(f"{name}: {err!r}" for name, err in errors)
+        raise MetaflowFunctionException(
+            f"{len(errors)} runtime component(s) failed to stop: {summary}"
+        ) from errors[0][1]
 
 
 def before_call_components(
