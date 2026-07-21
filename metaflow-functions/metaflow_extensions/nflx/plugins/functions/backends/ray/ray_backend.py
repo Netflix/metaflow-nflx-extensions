@@ -268,6 +268,7 @@ class RayBackend(AbstractBackend):
         from metaflow_extensions.nflx.plugins.functions.components.runtime import (
             serialize_components,
         )
+
         component_class_names = serialize_components(
             getattr(func_instance, "_runtime_components", [])
         )
@@ -350,7 +351,9 @@ class RayBackend(AbstractBackend):
                 try:
                     ray.get(actor.shutdown.remote())
                 except Exception as e:
-                    debug.functions_exec(f"Error shutting down Ray actor components for uuid '{uuid}': {e}")
+                    debug.functions_exec(
+                        f"Error shutting down Ray actor components for uuid '{uuid}': {e}"
+                    )
                 try:
                     ray.kill(actor)
                     debug.functions_exec(

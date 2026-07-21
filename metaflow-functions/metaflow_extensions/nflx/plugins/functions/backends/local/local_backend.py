@@ -129,6 +129,7 @@ class LocalBackend(AbstractBackend):
             from metaflow_extensions.nflx.plugins.functions.components.runtime import (
                 stop_components,
             )
+
             stop_components(instances)
             func_instance._component_instances = []
 

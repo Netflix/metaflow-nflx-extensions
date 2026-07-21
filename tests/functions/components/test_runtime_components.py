@@ -41,6 +41,7 @@ from metaflow_extensions.nflx.plugins.functions.components.runtime import (
 # Concrete test component
 # ---------------------------------------------------------------------------
 
+
 class RecordingComponent(AbstractRuntimeComponent):
     """
     Component that appends one line per lifecycle event to a file.
@@ -82,6 +83,7 @@ class RecordingComponent(AbstractRuntimeComponent):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _read_events(path: str):
     with open(path) as fh:
         return [line.strip() for line in fh if line.strip()]
@@ -97,6 +99,7 @@ def _tmp_log():
 # ---------------------------------------------------------------------------
 # 1. Lifecycle unit tests
 # ---------------------------------------------------------------------------
+
 
 def test_component_lifecycle_order():
     """start → before_call → after_call → stop fire in the right order."""
@@ -134,10 +137,17 @@ def test_stop_clears_instance_even_on_error():
     class BrokenStop(AbstractRuntimeComponent):
         component_id = "broken_stop"
 
-        def start(self, *args, **kwargs): pass
-        def stop(self, *args, **kwargs): raise RuntimeError("boom")
-        def before_call(self, *args, **kwargs): pass
-        def after_call(self, *args, **kwargs): pass
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
 
     instances = start_components([BrokenStop()])
     assert BrokenStop.active_instance is not None
@@ -152,6 +162,7 @@ def test_stop_clears_instance_even_on_error():
 # ---------------------------------------------------------------------------
 # 2. active_instance / serialisation
 # ---------------------------------------------------------------------------
+
 
 def test_active_instance_none_before_start():
     """active_instance is None before start_components is called."""
@@ -173,10 +184,17 @@ def test_serialize_instance_with_kwargs():
     class KwargsComponent(AbstractRuntimeComponent):
         component_id = "kwargs_component"
 
-        def start(self, *args, **kwargs): pass
-        def stop(self, *args, **kwargs): pass
-        def before_call(self, *args, **kwargs): pass
-        def after_call(self, *args, **kwargs): pass
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            pass
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
 
     inst = KwargsComponent(stream="my_stream", version=3)
     specs = serialize_components([inst])
@@ -197,6 +215,7 @@ def test_load_component_instances_roundtrip():
 def test_load_component_instances_with_kwargs():
     """'ClassName:json' deserialises to an instance constructed with those kwargs."""
     import json
+
     fqn = f"{RecordingComponent.__module__}.{RecordingComponent.__qualname__}"
     spec = f"{fqn}:{json.dumps({'key': 'val'})}"
     instances = load_component_instances([spec])
@@ -209,6 +228,7 @@ def test_load_component_instances_unknown_raises():
     from metaflow_extensions.nflx.plugins.functions.exceptions import (
         MetaflowFunctionException,
     )
+
     with pytest.raises(MetaflowFunctionException):
         load_component_instances(["does.not.Exist"])
 
@@ -216,6 +236,7 @@ def test_load_component_instances_unknown_raises():
 # ---------------------------------------------------------------------------
 # 4. Local backend integration
 # ---------------------------------------------------------------------------
+
 
 class _MockFunction:
     """Minimal stand-in for a MetaflowFunction usable by LocalBackend.apply()."""
@@ -381,6 +402,7 @@ def test_local_backend_after_call_component_failure_raises_runtime_exception():
 # 5. Memory backend — serialisation (no subprocess)
 # ---------------------------------------------------------------------------
 
+
 def test_memory_backend_connection_params_includes_component_names():
     """generate_connection_params stores serialised component specs."""
     from metaflow_extensions.nflx.plugins.functions.backends.memory.memory_backend import (
@@ -415,7 +437,9 @@ def test_memory_backend_runtime_command_includes_flags():
         "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.download_to_temp",
         return_value="/fake/local/reference.json",
     ):
-        cmd = MemoryBackend.get_runtime_command(params, "/fake/reference.json", "/usr/bin/python")
+        cmd = MemoryBackend.get_runtime_command(
+            params, "/fake/reference.json", "/usr/bin/python"
+        )
     cmd_str = " ".join(cmd)
     assert "--runtime-component" in cmd_str
 
@@ -424,18 +448,33 @@ def test_memory_backend_runtime_command_includes_flags():
 # 6. configure()
 # ---------------------------------------------------------------------------
 
+
 class _ConfigA(AbstractRuntimeComponent):
-    def start(self, *args, **kwargs): pass
-    def stop(self, *args, **kwargs): pass
-    def before_call(self, *args, **kwargs): pass
-    def after_call(self, *args, **kwargs): pass
+    def start(self, *args, **kwargs):
+        pass
+
+    def stop(self, *args, **kwargs):
+        pass
+
+    def before_call(self, *args, **kwargs):
+        pass
+
+    def after_call(self, *args, **kwargs):
+        pass
 
 
 class _ConfigB(AbstractRuntimeComponent):
-    def start(self, *args, **kwargs): pass
-    def stop(self, *args, **kwargs): pass
-    def before_call(self, *args, **kwargs): pass
-    def after_call(self, *args, **kwargs): pass
+    def start(self, *args, **kwargs):
+        pass
+
+    def stop(self, *args, **kwargs):
+        pass
+
+    def before_call(self, *args, **kwargs):
+        pass
+
+    def after_call(self, *args, **kwargs):
+        pass
 
 
 class ConfiguringComponent(AbstractRuntimeComponent):
@@ -539,22 +578,38 @@ def test_configure_after_start_does_not_affect_running_instance():
 # 7. collect_output() / after_call_components output routing
 # ---------------------------------------------------------------------------
 
+
 class _NoOutputComponent(AbstractRuntimeComponent):
     component_id = "no_output_component"
 
-    def start(self, *args, **kwargs): pass
-    def stop(self, *args, **kwargs): pass
-    def before_call(self, *args, **kwargs): pass
-    def after_call(self, *args, **kwargs): pass
+    def start(self, *args, **kwargs):
+        pass
+
+    def stop(self, *args, **kwargs):
+        pass
+
+    def before_call(self, *args, **kwargs):
+        pass
+
+    def after_call(self, *args, **kwargs):
+        pass
 
 
 class _OutputComponent(AbstractRuntimeComponent):
     component_id = "output_component"
 
-    def start(self, *args, **kwargs): pass
-    def stop(self, *args, **kwargs): pass
-    def before_call(self, *args, **kwargs): pass
-    def after_call(self, *args, **kwargs): pass
+    def start(self, *args, **kwargs):
+        pass
+
+    def stop(self, *args, **kwargs):
+        pass
+
+    def before_call(self, *args, **kwargs):
+        pass
+
+    def after_call(self, *args, **kwargs):
+        pass
+
     def collect_output(self, *args, **kwargs):
         return {"count": 1}
 
@@ -605,6 +660,7 @@ def test_after_call_components_mixed_instances():
 # 8. MetaflowFunction.runtime_components / get_runtime_component
 # ---------------------------------------------------------------------------
 
+
 class _StubMetaflowFunction:
     """
     Minimal stand-in exercising only the runtime_components/get_runtime_component
@@ -619,6 +675,7 @@ class _StubMetaflowFunction:
     from metaflow_extensions.nflx.plugins.functions.core.function import (
         MetaflowFunction,
     )
+
     runtime_components = MetaflowFunction.__dict__["runtime_components"]
     get_runtime_component = MetaflowFunction.__dict__["get_runtime_component"]
 
@@ -659,13 +716,18 @@ def test_get_runtime_component_matches_subclass():
         pass
 
     func = _StubMetaflowFunction([SubRecordingComponent()])
-    assert isinstance(func.get_runtime_component(RecordingComponent), SubRecordingComponent)
-    assert isinstance(func.get_runtime_component(SubRecordingComponent), SubRecordingComponent)
+    assert isinstance(
+        func.get_runtime_component(RecordingComponent), SubRecordingComponent
+    )
+    assert isinstance(
+        func.get_runtime_component(SubRecordingComponent), SubRecordingComponent
+    )
 
 
 # ---------------------------------------------------------------------------
 # 9. function_from_json — duplicate runtime_components validation
 # ---------------------------------------------------------------------------
+
 
 def test_function_from_json_rejects_duplicate_component_types():
     """Two instances of the same component type raise MetaflowFunctionException."""
@@ -691,7 +753,9 @@ def test_function_from_json_rejects_duplicate_component_types():
         "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
         return_value=fake_subclass,
     ):
-        with pytest.raises(MetaflowFunctionException, match="Duplicate runtime component"):
+        with pytest.raises(
+            MetaflowFunctionException, match="Duplicate runtime component"
+        ):
             function_from_json(
                 "fake-reference.json",
                 start_runtime=False,
@@ -790,6 +854,7 @@ def test_function_from_json_runtime_metrics_component():
 # 10. Memory backend — component output routing
 # ---------------------------------------------------------------------------
 
+
 def test_memory_backend_route_component_output_sets_last_output():
     """_route_component_output pops the reserved key and stamps last_output by type name."""
     from metaflow_extensions.nflx.plugins.functions.backends.memory.memory_backend import (
@@ -851,7 +916,9 @@ def test_ray_backend_route_component_output_sets_last_output():
     producer = _OutputComponent()
     func = _MockFunction([producer])
 
-    RayBackend._route_component_output(func, {_OutputComponent.component_id: {"count": 7}})
+    RayBackend._route_component_output(
+        func, {_OutputComponent.component_id: {"count": 7}}
+    )
 
     assert producer.last_output == {"count": 7}
 
@@ -888,6 +955,7 @@ def test_ray_backend_route_component_output_handles_empty():
 # ---------------------------------------------------------------------------
 # 12. on_runtime_started — caller-side hook
 # ---------------------------------------------------------------------------
+
 
 def test_on_runtime_started_default_is_noop():
     """Base class default implementation does nothing and returns None."""

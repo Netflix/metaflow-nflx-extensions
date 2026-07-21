@@ -168,9 +168,10 @@ class MetaflowFunction(ABC):
     @property
     def function_root_dir(self) -> str:
         """Return the directory this function's code package was extracted into."""
-        if getattr(self, "_function_root_dir", None) is None:
+        function_root_dir = self._function_root_dir
+        if function_root_dir is None:
             raise MetaflowFunctionException("Function root dir is not set.")
-        return self._function_root_dir
+        return function_root_dir
 
     @property
     def backend(self):

@@ -1,7 +1,7 @@
 """Helpers for serializing, activating, and deactivating runtime components."""
 
 import json
-from typing import Any, Dict, List, TYPE_CHECKING
+from typing import Any, Dict, List, TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from .abstract_component import AbstractRuntimeComponent
@@ -107,5 +107,5 @@ def after_call_components(
         output = instance.collect_output(*args, **kwargs)
         if output is not None:
             instance.last_output = output
-            collected[type(instance).component_id] = output
+            collected[cast(str, type(instance).component_id)] = output
     return collected

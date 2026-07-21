@@ -782,7 +782,7 @@ class MemoryBackend(AbstractBackend):
 
                     # FunctionPayload contains the deserialized data
                     input_data = function_payload.data
-                    kwargs = {}
+                    kwargs: Dict[str, Any] = {}
 
                     # Keep reference to kwargs before function execution
                     kwargs_copy = function_payload.kwargs.copy()
@@ -796,7 +796,9 @@ class MemoryBackend(AbstractBackend):
                     try:
                         before_call_components(component_instances)
                     except Exception:
-                        debug.functions_exec("System exception in before_call_components")
+                        debug.functions_exec(
+                            "System exception in before_call_components"
+                        )
                         result = output_cls()
                         kwargs = {MFF_SYSTEM_ERROR_KEY: traceback.format_exc()}
                     else:
