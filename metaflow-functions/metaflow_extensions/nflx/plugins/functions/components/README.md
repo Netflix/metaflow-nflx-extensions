@@ -103,7 +103,7 @@ close_function(func)
 metrics = RuntimeMetrics()
 func = function_from_json(threshold_function_reference, runtime_components=[metrics])
 func(15)
-func.runtime_components[0].last_output
+func.runtime_components[0].output
 # {"call_count": 1, "last_duration_s": ..., "total_duration_s": ...}
 close_function(func)
 ```

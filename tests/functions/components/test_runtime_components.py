@@ -618,7 +618,7 @@ def test_collect_output_default_returns_none():
     """Default collect_output() is a no-op returning None."""
     inst = _NoOutputComponent()
     assert inst.collect_output() is None
-    assert inst.last_output is None
+    assert inst.output is None
 
 
 def test_after_call_components_returns_empty_dict_when_no_output():
@@ -626,16 +626,16 @@ def test_after_call_components_returns_empty_dict_when_no_output():
     inst = _NoOutputComponent()
     collected = after_call_components([inst])
     assert collected == {}
-    assert inst.last_output is None
+    assert inst.output is None
 
 
-def test_after_call_components_collects_output_and_sets_last_output():
-    """collect_output() output is both returned (keyed by component_id) and stamped onto last_output."""
+def test_after_call_components_collects_output_and_sets_output():
+    """collect_output() output is both returned (keyed by component_id) and stamped onto output."""
     inst = _OutputComponent()
     collected = after_call_components([inst])
 
     assert collected == {_OutputComponent.component_id: {"count": 1}}
-    assert inst.last_output == {"count": 1}
+    assert inst.output == {"count": 1}
 
 
 def test_after_call_components_mixed_instances():
@@ -648,8 +648,8 @@ def test_after_call_components_mixed_instances():
         collected = after_call_components([recorder, producer])
 
         assert collected == {_OutputComponent.component_id: {"count": 1}}
-        assert recorder.last_output is None
-        assert producer.last_output == {"count": 1}
+        assert recorder.output is None
+        assert producer.output == {"count": 1}
         assert _read_events(log) == ["after_call"]
     finally:
         RecordingComponent._log_path = ""
@@ -799,7 +799,7 @@ def test_function_from_json_allows_distinct_component_types():
 
 def test_function_from_json_runtime_metrics_component():
     """function_from_json wires a real RuntimeMetrics through to the
-    backend; after a real call, last_output carries the expected fields."""
+    backend; after a real call, output carries the expected fields."""
     from unittest.mock import patch, MagicMock
     from metaflow import FunctionParameters
     from metaflow_extensions.nflx.plugins.functions.core.function import (
@@ -838,14 +838,14 @@ def test_function_from_json_runtime_metrics_component():
         result = LocalBackend.apply(func, "hello", params=FunctionParameters())
 
         assert result == "echo:hello"
-        assert metrics.last_output.keys() == {
+        assert metrics.output.keys() == {
             "call_count",
             "last_duration_s",
             "total_duration_s",
         }
-        assert metrics.last_output["call_count"] == 1
-        assert metrics.last_output["last_duration_s"] >= 0
-        assert metrics.last_output["total_duration_s"] >= 0
+        assert metrics.output["call_count"] == 1
+        assert metrics.output["last_duration_s"] >= 0
+        assert metrics.output["total_duration_s"] >= 0
     finally:
         LocalBackend.close(func)
 
@@ -855,8 +855,8 @@ def test_function_from_json_runtime_metrics_component():
 # ---------------------------------------------------------------------------
 
 
-def test_memory_backend_route_component_output_sets_last_output():
-    """_route_component_output pops the reserved key and stamps last_output by type name."""
+def test_memory_backend_route_component_output_sets_output():
+    """_route_component_output pops the reserved key and stamps output by type name."""
     from metaflow_extensions.nflx.plugins.functions.backends.memory.memory_backend import (
         MemoryBackend,
         MFF_COMPONENT_OUTPUT_KEY,
@@ -872,7 +872,7 @@ def test_memory_backend_route_component_output_sets_last_output():
 
     MemoryBackend._route_component_output(func, result_kwargs)
 
-    assert producer.last_output == {"count": 5}
+    assert producer.output == {"count": 5}
     # Reserved key must never leak into user-visible kwargs.
     assert MFF_COMPONENT_OUTPUT_KEY not in result_kwargs
     assert result_kwargs == {"user_kwarg": "unchanged"}
@@ -890,7 +890,7 @@ def test_memory_backend_route_component_output_noop_when_absent():
 
     MemoryBackend._route_component_output(func, result_kwargs)
 
-    assert producer.last_output is None
+    assert producer.output is None
     assert result_kwargs == {"user_kwarg": "unchanged"}
 
 
@@ -907,8 +907,8 @@ def test_memory_backend_route_component_output_noop_when_absent():
 pytest.importorskip("ray")
 
 
-def test_ray_backend_route_component_output_sets_last_output():
-    """RayBackend._route_component_output stamps last_output by matching type name."""
+def test_ray_backend_route_component_output_sets_output():
+    """RayBackend._route_component_output stamps output by matching type name."""
     from metaflow_extensions.nflx.plugins.functions.backends.ray.ray_backend import (
         RayBackend,
     )
@@ -920,7 +920,7 @@ def test_ray_backend_route_component_output_sets_last_output():
         func, {_OutputComponent.component_id: {"count": 7}}
     )
 
-    assert producer.last_output == {"count": 7}
+    assert producer.output == {"count": 7}
 
 
 def test_ray_backend_route_component_output_ignores_unmatched_entries():
@@ -934,7 +934,7 @@ def test_ray_backend_route_component_output_ignores_unmatched_entries():
 
     RayBackend._route_component_output(func, {"some.other.Component": {"count": 1}})
 
-    assert producer.last_output is None
+    assert producer.output is None
 
 
 def test_ray_backend_route_component_output_handles_empty():
@@ -949,7 +949,7 @@ def test_ray_backend_route_component_output_handles_empty():
     RayBackend._route_component_output(func, {})
     RayBackend._route_component_output(func, None)
 
-    assert producer.last_output is None
+    assert producer.output is None
 
 
 # ---------------------------------------------------------------------------

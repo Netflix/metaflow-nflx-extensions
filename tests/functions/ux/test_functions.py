@@ -92,14 +92,14 @@ def test_functions_runtime_metrics_component():
             result = func("hello")
             assert result == "HELLO_modified", f"Unexpected result: {result}"
 
-            assert metrics.last_output.keys() == {
+            assert metrics.output.keys() == {
                 "call_count",
                 "last_duration_s",
                 "total_duration_s",
             }
-            assert metrics.last_output["call_count"] == 1
-            assert metrics.last_output["last_duration_s"] >= 0
-            assert metrics.last_output["total_duration_s"] >= 0
+            assert metrics.output["call_count"] == 1
+            assert metrics.output["last_duration_s"] >= 0
+            assert metrics.output["total_duration_s"] >= 0
         finally:
             close_function(func)
 

@@ -112,7 +112,7 @@ class MemoryBackend(AbstractBackend):
     ) -> None:
         """
         Pop the reserved component-output map out of result_kwargs (mutated
-        in-place) and stamp last_output onto the caller-side runtime component
+        in-place) and stamp output onto the caller-side runtime component
         instances it matches, by ``component_id``.
         """
         component_output = result_kwargs.pop(MFF_COMPONENT_OUTPUT_KEY, None)
@@ -121,7 +121,7 @@ class MemoryBackend(AbstractBackend):
         for component in getattr(func_instance, "_runtime_components", []):
             component_id = type(component).component_id
             if component_id in component_output:
-                component.last_output = component_output[component_id]
+                component.output = component_output[component_id]
 
     @classmethod
     def _setup_apply(cls, func_instance, data, kwargs):

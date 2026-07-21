@@ -106,6 +106,6 @@ def after_call_components(
         instance.after_call(*args, **kwargs)
         output = instance.collect_output(*args, **kwargs)
         if output is not None:
-            instance.last_output = output
+            instance.output = output
             collected[cast(str, type(instance).component_id)] = output
     return collected

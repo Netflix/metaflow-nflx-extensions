@@ -93,7 +93,7 @@ class RayBackend(AbstractBackend):
         cls, func_instance, component_output: Dict[str, Any]
     ) -> None:
         """
-        Stamp last_output onto the caller-side runtime component instances that
+        Stamp output onto the caller-side runtime component instances that
         match component_output entries, by ``component_id``.
         """
         if not component_output:
@@ -101,7 +101,7 @@ class RayBackend(AbstractBackend):
         for component in getattr(func_instance, "_runtime_components", []):
             component_id = type(component).component_id
             if component_id in component_output:
-                component.last_output = component_output[component_id]
+                component.output = component_output[component_id]
 
     @classmethod
     def _sync_serializers(cls):

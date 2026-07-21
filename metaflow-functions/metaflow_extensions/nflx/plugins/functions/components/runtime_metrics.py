@@ -12,12 +12,12 @@ class RuntimeMetrics(AbstractRuntimeComponent):
     interact with directly. It rides the ``before_call``/``after_call``
     lifecycle to time each invocation, and surfaces the accumulated stats via
     ``collect_output()``, which lands on the caller-side handle's
-    ``last_output`` after every call::
+    ``output`` after every call::
 
         metrics = RuntimeMetrics()
         func = function_from_json(ref, runtime_components=[metrics])
         func(data)
-        func.runtime_components[0].last_output
+        func.runtime_components[0].output
         # {"call_count": 1, "last_duration_s": 0.0123, "total_duration_s": 0.0123}
     """
 

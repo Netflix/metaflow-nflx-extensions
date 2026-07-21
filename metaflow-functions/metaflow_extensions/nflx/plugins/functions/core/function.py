@@ -196,7 +196,7 @@ class MetaflowFunction(ABC):
         Return the runtime component instances scheduled for this function.
 
         These are the same instances passed to ``function_from_json`` via
-        ``runtime_components=[...]``. Each instance's ``last_output``
+        ``runtime_components=[...]``. Each instance's ``output``
         attribute reflects the most recent value reported by that
         component's ``collect_output()``, once the backend has run.
 
@@ -482,7 +482,7 @@ class MetaflowFunction(ABC):
 
     def _notify_output_received(self) -> None:
         """Call ``on_output_received()`` on each runtime component, once
-        ``last_output`` has been routed onto the caller-side instances."""
+        ``output`` has been routed onto the caller-side instances."""
         for component in self.runtime_components:
             component.on_output_received()
 

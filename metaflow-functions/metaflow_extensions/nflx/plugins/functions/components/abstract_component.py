@@ -101,7 +101,7 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
                 f"{type(self).__name__} must set a class-level `component_id`"
             )
         self._init_kwargs = {**type(self)._class_config, **kwargs}
-        self.last_output: Optional[Dict[str, Any]] = None
+        self.output: Optional[Dict[str, Any]] = None
 
     @classmethod
     def configure(cls, **kwargs: Any) -> None:
@@ -139,7 +139,7 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
     def collect_output(self, *args: Any, **kwargs: Any) -> Optional[Dict[str, Any]]:
         """
         Called once after each ``after_call()``. Return a dict to surface back
-        to the caller via the component's ``last_output`` attribute on the
+        to the caller via the component's ``output`` attribute on the
         caller-side handle returned by ``function_from_json``.
 
         Default implementation returns ``None`` (nothing surfaced). Override
@@ -164,7 +164,7 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
         """
         Called once on the caller side after each function invocation
         returns, on the same instance returned by ``function_from_json``,
-        right after ``last_output`` has been updated for that call.
+        right after ``output`` has been updated for that call.
 
         Override to react to a call's output (e.g. decode and display it)
         without changing what the call returns to user code.
