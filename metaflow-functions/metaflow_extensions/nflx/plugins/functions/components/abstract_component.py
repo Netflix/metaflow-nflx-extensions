@@ -101,7 +101,7 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
                 f"{type(self).__name__} must set a class-level `component_id`"
             )
         self._init_kwargs = {**type(self)._class_config, **kwargs}
-        self.output: Optional[Dict[str, Any]] = None
+        self.output: Optional[Any] = None
 
     @classmethod
     def configure(cls, **kwargs: Any) -> None:
@@ -136,11 +136,12 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
     def after_call(self, *args: Any, **kwargs: Any) -> None:
         """Called after each function invocation."""
 
-    def collect_output(self, *args: Any, **kwargs: Any) -> Optional[Dict[str, Any]]:
+    def collect_output(self, *args: Any, **kwargs: Any) -> Optional[Any]:
         """
-        Called once after each ``after_call()``. Return a dict to surface back
-        to the caller via the component's ``output`` attribute on the
-        caller-side handle returned by ``function_from_json``.
+        Called once after each ``after_call()``. Return a value to surface
+        back to the caller via the component's ``output`` attribute on the
+        caller-side handle returned by ``function_from_json``. Any picklable
+        value works (dict, bytes, etc.) — the framework doesn't inspect it.
 
         Default implementation returns ``None`` (nothing surfaced). Override
         to report data collected during ``before_call``/``after_call``.
