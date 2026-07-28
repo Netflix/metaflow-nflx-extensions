@@ -1,10 +1,11 @@
 """Helpers for serializing, activating, and deactivating runtime components."""
 
 import json
-from typing import Any, Dict, List, TYPE_CHECKING, cast
+from typing import Any, Dict, List, Tuple, TYPE_CHECKING, cast
 
 from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionException,
+    MetaflowFunctionRuntimeException,
 )
 
 if TYPE_CHECKING:
@@ -67,11 +68,50 @@ def start_components(
     ``function`` is the ``MetaflowFunction`` instance being started, passed
     through so components can access things like ``function.function_root_dir``
     on the runtime side, where they have no other way to reach it.
+
+    If a component fails to start, the components started so far are stopped
+    (best-effort, in reverse start order) before the failure is re-raised as
+    a ``MetaflowFunctionRuntimeException``, so a partial startup never leaves
+    live, unreferenced components behind.
     """
+    started = []
     for instance in instances:
-        instance.start(*args, function=function, **kwargs)
+        try:
+            instance.start(*args, function=function, **kwargs)
+        except Exception as e:
+            _stop_components_best_effort(list(reversed(started)), *args, **kwargs)
+            raise MetaflowFunctionRuntimeException(
+                f"{type(instance).__name__} failed to start: {e!r}"
+            ) from e
         type(instance).active_instance = instance
+        started.append(instance)
     return instances
+
+
+def _stop_components_best_effort(
+    instances: List["AbstractRuntimeComponent"], *args, **kwargs
+) -> List[Tuple[str, Exception]]:
+    """Call stop() on every instance and deactivate it from its class.
+
+    Best-effort cleanup: a failure in one component's stop() must not prevent
+    the remaining components from being stopped and deactivated. Errors are
+    collected and returned (rather than raised) as ``(name, exception)``
+    pairs so callers can fold them into their own error reporting.
+
+    Returns:
+        A list of ``(component_class_name, exception)`` pairs, one per
+        instance whose ``stop()`` raised; empty if all instances stopped
+        cleanly.
+    """
+    errors: List[Tuple[str, Exception]] = []
+    for instance in instances:
+        try:
+            instance.stop(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001 - cleanup must not short-circuit
+            errors.append((type(instance).__name__, e))
+        finally:
+            type(instance).active_instance = None
+    return errors
 
 
 def stop_components(
@@ -83,14 +123,7 @@ def stop_components(
     the remaining components from being stopped and deactivated. Any errors
     are collected and re-raised together after all instances are drained.
     """
-    errors = []
-    for instance in instances:
-        try:
-            instance.stop(*args, **kwargs)
-        except Exception as e:  # noqa: BLE001 - cleanup must not short-circuit
-            errors.append((type(instance).__name__, e))
-        finally:
-            type(instance).active_instance = None
+    errors = _stop_components_best_effort(instances, *args, **kwargs)
     if errors:
         summary = ", ".join(f"{name}: {err!r}" for name, err in errors)
         raise MetaflowFunctionException(

@@ -37,6 +37,7 @@ from metaflow_extensions.nflx.plugins.functions.components.runtime import (
 )
 from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionException,
+    MetaflowFunctionRuntimeException,
 )
 
 
@@ -213,6 +214,95 @@ def test_stop_components_is_best_effort_across_failures():
     # ...and every instance must be deactivated, regardless of failure.
     assert BrokenStopFirst.active_instance is None
     assert HealthyStop.active_instance is None
+
+
+def test_start_failure_rolls_back_already_started_components():
+    """A failing start() must stop the components started before it and
+    raise a MetaflowFunctionRuntimeException (a system error), never leaving
+    a partially-started, unreferenced set of live components behind.
+    """
+
+    class HealthyStart(AbstractRuntimeComponent):
+        component_id = "healthy_start"
+        stopped = False
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            type(self).stopped = True
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+    class BrokenStart(AbstractRuntimeComponent):
+        component_id = "broken_start"
+
+        def start(self, *args, **kwargs):
+            raise RuntimeError("start boom")
+
+        def stop(self, *args, **kwargs):
+            pass
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+    with pytest.raises(MetaflowFunctionRuntimeException, match="start boom"):
+        start_components([HealthyStart(), BrokenStart()])
+
+    # The already-started component must have been rolled back (stopped and
+    # deactivated), and the one that never finished starting must also be
+    # deactivated.
+    assert HealthyStart.stopped is True
+    assert HealthyStart.active_instance is None
+    assert BrokenStart.active_instance is None
+
+
+def test_start_failure_rollback_is_best_effort():
+    """If rollback's own stop() also fails, the original start error still
+    surfaces (rollback failures must not mask the triggering failure).
+    """
+
+    class BrokenStopOnRollback(AbstractRuntimeComponent):
+        component_id = "broken_stop_on_rollback"
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            raise RuntimeError("rollback stop boom")
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+    class BrokenStart(AbstractRuntimeComponent):
+        component_id = "broken_start_2"
+
+        def start(self, *args, **kwargs):
+            raise RuntimeError("start boom")
+
+        def stop(self, *args, **kwargs):
+            pass
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+    with pytest.raises(MetaflowFunctionRuntimeException, match="start boom"):
+        start_components([BrokenStopOnRollback(), BrokenStart()])
+
+    assert BrokenStopOnRollback.active_instance is None
 
 
 # ---------------------------------------------------------------------------
