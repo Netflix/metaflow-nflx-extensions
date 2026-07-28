@@ -912,42 +912,33 @@ def test_function_from_json_runtime_metrics_component():
 
 
 def test_memory_backend_route_component_output_sets_output():
-    """_route_component_output pops the reserved key and stamps output by type name."""
+    """_route_component_output stamps output by matching component_id."""
     from metaflow_extensions.nflx.plugins.functions.backends.memory.memory_backend import (
         MemoryBackend,
-        MFF_COMPONENT_OUTPUT_KEY,
     )
 
     producer = _OutputComponent()
     func = _MockFunction([producer])
 
-    result_kwargs = {
-        "user_kwarg": "unchanged",
-        MFF_COMPONENT_OUTPUT_KEY: {_OutputComponent.component_id: {"count": 5}},
-    }
+    runtime_components = {_OutputComponent.component_id: {"count": 5}}
 
-    MemoryBackend._route_component_output(func, result_kwargs)
+    MemoryBackend._route_component_output(func, runtime_components)
 
     assert producer.output == {"count": 5}
-    # Reserved key must never leak into user-visible kwargs.
-    assert MFF_COMPONENT_OUTPUT_KEY not in result_kwargs
-    assert result_kwargs == {"user_kwarg": "unchanged"}
 
 
 def test_memory_backend_route_component_output_noop_when_absent():
-    """_route_component_output is a no-op when the reserved key isn't present."""
+    """_route_component_output is a no-op when runtime_components is None/empty."""
     from metaflow_extensions.nflx.plugins.functions.backends.memory.memory_backend import (
         MemoryBackend,
     )
 
     producer = _OutputComponent()
     func = _MockFunction([producer])
-    result_kwargs = {"user_kwarg": "unchanged"}
 
-    MemoryBackend._route_component_output(func, result_kwargs)
+    MemoryBackend._route_component_output(func, None)
 
     assert producer.output is None
-    assert result_kwargs == {"user_kwarg": "unchanged"}
 
 
 # ---------------------------------------------------------------------------

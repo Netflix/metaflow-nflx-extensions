@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, List
 
 from metaflow_extensions.nflx.plugins.functions.exceptions import (
@@ -14,16 +15,29 @@ class FunctionPayload:
     the existing serialization registry to avoid double serialization.
     """
 
-    def __init__(self, data: Any, kwargs: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        data: Any,
+        kwargs: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+        is_system_error: bool = False,
+        runtime_components: Optional[Dict[str, Any]] = None,
+    ):
         """
         Create a FunctionPayload.
 
         Args:
             data: The main payload data (will be serialized using registry)
             kwargs: JSON-serializable metadata/kwargs
+            error: Formatted traceback if function/component execution failed, else None
+            is_system_error: True if `error` came from a runtime component, False if from user code
+            runtime_components: component_id -> output for components that produced output, else None
         """
         self.data = data
         self.kwargs = kwargs or {}
+        self.error = error
+        self.is_system_error = is_system_error
+        self.runtime_components = runtime_components
 
 
 def serialize_function_payload(payload: FunctionPayload) -> Tuple[bytes, List[Any]]:
@@ -60,14 +74,20 @@ def serialize_function_payload(payload: FunctionPayload) -> Tuple[bytes, List[An
             "data": value_bytes,
         }
 
-    # Now serialize the kwargs dict structure (which contains type info + bytes)
-    kwargs_serializer = registry.get_serializer_for_type(dict)
-    if kwargs_serializer is None:
+    # Now serialize the header structure (serialized kwargs + system fields)
+    header_serializer = registry.get_serializer_for_type(dict)
+    if header_serializer is None:
         raise MetaflowFunctionException(
-            f"No serializer registered for dict type (kwargs container). "
+            f"No serializer registered for dict type (header container). "
             f"Available types: {list(registry._serializers.keys())}"
         )
-    header_bytes, _ = kwargs_serializer(serialized_kwargs)
+    header = {
+        "kwargs": serialized_kwargs,
+        "error": payload.error,
+        "is_system_error": payload.is_system_error,
+        "runtime_components": payload.runtime_components,
+    }
+    header_bytes, _ = header_serializer(header)
 
     # Serialize the data using the registry (returns bytes)
     # Special case: if data is already bytes, use it directly (no-op)
@@ -88,15 +108,26 @@ def serialize_function_payload(payload: FunctionPayload) -> Tuple[bytes, List[An
     return header_size_bytes + header_bytes + data_bytes, list()
 
 
-def _parse_function_payload_header(data) -> tuple[bytes, dict]:
+@dataclass
+class PayloadHeader:
+    """Result of parsing a serialized FunctionPayload's header + raw data bytes."""
+
+    data_bytes: bytes
+    kwargs: Dict[str, Any]
+    error: Optional[str]
+    is_system_error: bool
+    runtime_components: Optional[Dict[str, Any]]
+
+
+def _parse_function_payload_header(data) -> PayloadHeader:
     """
-    Parse FunctionPayload and extract raw data bytes and kwargs.
+    Parse FunctionPayload and extract raw data bytes, kwargs, and system fields.
 
     Args:
         data: Bytes to parse (memoryview, bytes, or bytearray)
 
     Returns:
-        tuple[bytes, dict]: Raw data bytes and kwargs dict
+        PayloadHeader: Raw data bytes, kwargs dict, error, is_system_error, runtime_components
     """
     # Convert memoryview to bytes if necessary
     if hasattr(data, "tobytes"):
@@ -118,13 +149,17 @@ def _parse_function_payload_header(data) -> tuple[bytes, dict]:
     data_start = 4 + header_size
     data_bytes = data[data_start:]
 
-    # Deserialize kwargs using the registry
+    # Deserialize the header (serialized kwargs + system fields) using the registry
     from metaflow_extensions.nflx.plugins.functions.serializers.registry import (
         get_global_registry,
     )
 
     registry = get_global_registry()
-    serialized_kwargs = registry.deserialize(header_bytes, dict)
+    header = registry.deserialize(header_bytes, dict)
+    serialized_kwargs = header["kwargs"]
+    error = header.get("error")
+    is_system_error = header.get("is_system_error", False)
+    runtime_components = header.get("runtime_components")
 
     # Reconstruct each kwargs value using stored type information
     kwargs = {}
@@ -152,7 +187,13 @@ def _parse_function_payload_header(data) -> tuple[bytes, dict]:
 
         kwargs[key] = registry.deserialize(value_bytes, value_type)
 
-    return data_bytes, kwargs
+    return PayloadHeader(
+        data_bytes=data_bytes,
+        kwargs=kwargs,
+        error=error,
+        is_system_error=is_system_error,
+        runtime_components=runtime_components,
+    )
 
 
 def parse_function_payload(data, expected_data_type=None, return_raw_data=False):
@@ -165,7 +206,7 @@ def parse_function_payload(data, expected_data_type=None, return_raw_data=False)
         return_raw_data: If True, return raw data bytes; if False, return deserialized FunctionPayload
 
     Returns:
-        - If return_raw_data=True: tuple[bytes, dict] (raw data bytes, kwargs)
+        - If return_raw_data=True: PayloadHeader (raw data bytes, kwargs, error, is_system_error, runtime_components)
         - If return_raw_data=False: FunctionPayload (deserialized object)
     """
     # Handle case where data is already a FunctionPayload object
@@ -177,10 +218,10 @@ def parse_function_payload(data, expected_data_type=None, return_raw_data=False)
         return data
 
     # Parse header and get raw data bytes
-    data_bytes, kwargs = _parse_function_payload_header(data)
+    header = _parse_function_payload_header(data)
 
     if return_raw_data:
-        return data_bytes, kwargs
+        return header
     else:
         if expected_data_type is None:
             raise MetaflowFunctionException(
@@ -190,25 +231,39 @@ def parse_function_payload(data, expected_data_type=None, return_raw_data=False)
         # Deserialize data using the expected type
         # Special case: if expected type is bytes, use data_bytes directly (no-op)
         if expected_data_type is bytes:
-            reconstructed_data = data_bytes
+            reconstructed_data = header.data_bytes
         else:
             from metaflow_extensions.nflx.plugins.functions.serializers.registry import (
                 get_global_registry,
             )
 
             registry = get_global_registry()
-            reconstructed_data = registry.deserialize(data_bytes, expected_data_type)
-        return FunctionPayload(reconstructed_data, kwargs)
+            reconstructed_data = registry.deserialize(
+                header.data_bytes, expected_data_type
+            )
+        return FunctionPayload(
+            reconstructed_data,
+            header.kwargs,
+            error=header.error,
+            is_system_error=header.is_system_error,
+            runtime_components=header.runtime_components,
+        )
 
 
 # Compatibility functions that delegate to the unified parser
 def deserialize_function_payload(data) -> FunctionPayload:
     """Deserialize FunctionPayload from binary format."""
-    data_bytes, kwargs = _parse_function_payload_header(data)
-    return FunctionPayload(data_bytes, kwargs)
+    header = _parse_function_payload_header(data)
+    return FunctionPayload(
+        header.data_bytes,
+        header.kwargs,
+        error=header.error,
+        is_system_error=header.is_system_error,
+        runtime_components=header.runtime_components,
+    )
 
 
-def extract_data_bytes_from_function_payload(data) -> tuple[bytes, dict]:
+def extract_data_bytes_from_function_payload(data) -> PayloadHeader:
     """Extract raw data bytes and kwargs without deserializing data."""
     return parse_function_payload(data, return_raw_data=True)
 
