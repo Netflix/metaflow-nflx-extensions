@@ -472,6 +472,63 @@ def test_local_backend_stop_not_called_on_exception():
         os.unlink(log)
 
 
+def test_local_backend_after_call_runs_when_execute_raises():
+    """after_call() still fires when execute() raises, so components (e.g.
+    metrics/logging) see every invocation, not just successful ones.
+    """
+    from metaflow import FunctionParameters
+    from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
+        LocalBackend,
+    )
+    from metaflow_extensions.nflx.plugins.functions.exceptions import (
+        MetaflowFunctionUserException,
+    )
+
+    log = _tmp_log()
+    RecordingComponent._log_path = log
+
+    class FailingFunction(_MockFunction):
+        def execute(self, data, params, **kwargs):
+            raise ValueError("user error")
+
+    try:
+        func = FailingFunction([RecordingComponent()])
+        with pytest.raises(MetaflowFunctionUserException):
+            LocalBackend.apply(func, "x", params=FunctionParameters())
+
+        events = _read_events(log)
+        assert events == ["start", "before_call", "after_call"]
+    finally:
+        RecordingComponent._log_path = ""
+        os.unlink(log)
+
+
+def test_local_backend_after_call_failure_does_not_mask_user_exception():
+    """If after_call() also raises while a user exception is already in
+    flight, the original user exception must win — a component failure on
+    the error path must not mask it.
+    """
+    from metaflow import FunctionParameters
+    from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
+        LocalBackend,
+    )
+    from metaflow_extensions.nflx.plugins.functions.exceptions import (
+        MetaflowFunctionUserException,
+    )
+
+    class FailingFunction(_MockFunction):
+        def execute(self, data, params, **kwargs):
+            raise ValueError("user error")
+
+    FailingComponent.fail_after_call = True
+    try:
+        func = FailingFunction([FailingComponent()])
+        with pytest.raises(MetaflowFunctionUserException, match="user error"):
+            LocalBackend.apply(func, "x", params=FunctionParameters())
+    finally:
+        FailingComponent.fail_after_call = False
+
+
 def test_local_backend_no_components():
     """LocalBackend.apply() works normally when _runtime_components is empty."""
     from metaflow import FunctionParameters

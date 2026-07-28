@@ -527,13 +527,32 @@ class FunctionActorClass:
 
         # self.function is itself backed by LocalBackend, so this already
         # raises MetaflowFunctionUserException for user code failures.
-        result = self.function(data, params=params, **kwargs)
+        try:
+            result = self.function(data, params=params, **kwargs)
+        except Exception as e:
+            user_exception = e
+            result = None
+        else:
+            user_exception = None
 
+        # after_call must run whether or not the function call itself failed,
+        # so components (e.g. metrics/logging) see every invocation.
         try:
             component_output = after_call_components(self._component_instances)
         except Exception as e:
-            raise MetaflowFunctionRuntimeException(
-                f"Runtime component exception in function '{self.function.name}': {str(e)}"
+            if user_exception is None:
+                raise MetaflowFunctionRuntimeException(
+                    f"Runtime component exception in function '{self.function.name}': {str(e)}"
+                )
+            # A user exception is already in flight; don't let a component
+            # failure on the error path mask it.
+            debug.functions_exec(
+                f"Runtime component exception in after_call for '{self.function.name}' "
+                f"while handling a prior user exception: {e!r}"
             )
+            component_output = {}
+
+        if user_exception is not None:
+            raise user_exception
 
         return result, component_output

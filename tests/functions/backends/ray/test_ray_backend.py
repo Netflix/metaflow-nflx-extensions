@@ -166,10 +166,158 @@ def test_shutdown_with_active_actors():
         RayBackend.shutdown(force=True)
         assert not ray.is_initialized(), "Cluster should be shut down with force=True"
         assert len(RayBackend._actor_pool) == 0, "Actor pool should be empty"
-
     finally:
         # Cleanup
         if ray.is_initialized():
             ray.shutdown()
         RayBackend._cluster_initialized = False
         RayBackend._actor_pool.clear()
+
+
+def _read_events(path):
+    with open(path) as fh:
+        return [line.strip() for line in fh if line.strip()]
+
+
+def _tmp_log():
+    import os
+    import tempfile
+
+    fd, path = tempfile.mkstemp(prefix="mff_ray_actor_test_", suffix=".log")
+    os.close(fd)
+    return path
+
+
+def test_ray_actor_after_call_runs_when_execute_raises():
+    """after_call() must fire even when the wrapped function raises, so
+    components (e.g. metrics/logging) see every invocation.
+
+    This runs a real FunctionActorClass through a real Ray actor and a real
+    remote call/ray.get round trip (not a mocked/in-process stand-in), so it
+    exercises the actual cross-process exception path Ray uses in production.
+    __init__ is overridden on a subclass to skip code-package loading, which
+    is irrelevant to this test and would require a real S3 function spec.
+    """
+    import os
+
+    import ray
+    from metaflow_extensions.nflx.plugins.functions.backends.ray import RayBackend
+    from metaflow_extensions.nflx.plugins.functions.backends.ray.ray_backend import (
+        FunctionActorClass,
+    )
+    from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
+        AbstractRuntimeComponent,
+    )
+    from metaflow_extensions.nflx.plugins.functions.exceptions import (
+        MetaflowFunctionUserException,
+    )
+
+    if ray.is_initialized():
+        ray.shutdown()
+
+    log = _tmp_log()
+
+    class _RecordingComponent(AbstractRuntimeComponent):
+        component_id = "recording"
+        _log_path = log
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            pass
+
+        def before_call(self, *args, **kwargs):
+            with open(type(self)._log_path, "a") as fh:
+                fh.write("before_call\n")
+
+        def after_call(self, *args, **kwargs):
+            with open(type(self)._log_path, "a") as fh:
+                fh.write("after_call\n")
+
+    class _FailingFunction:
+        name = "failing_fn"
+
+        def __call__(self, data, **kwargs):
+            raise MetaflowFunctionUserException("user error")
+
+    @ray.remote
+    class _TestActor(FunctionActorClass):
+        def __init__(self):
+            self.function = _FailingFunction()
+            self._component_instances = [_RecordingComponent()]
+            self.params = None
+
+    try:
+        RayBackend._ensure_cluster()
+        actor = _TestActor.remote()
+
+        with pytest.raises(MetaflowFunctionUserException, match="user error"):
+            ray.get(actor.execute.remote("data"))
+
+        assert _read_events(log) == ["before_call", "after_call"]
+    finally:
+        if ray.is_initialized():
+            ray.shutdown()
+        RayBackend._cluster_initialized = False
+        os.unlink(log)
+
+
+def test_ray_actor_after_call_failure_does_not_mask_user_exception():
+    """A component failure in after_call() while a user exception is already
+    in flight must not mask the original user exception, verified through a
+    real Ray actor and a real remote call/ray.get round trip.
+    """
+    import ray
+    from metaflow_extensions.nflx.plugins.functions.backends.ray import RayBackend
+    from metaflow_extensions.nflx.plugins.functions.backends.ray.ray_backend import (
+        FunctionActorClass,
+    )
+    from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
+        AbstractRuntimeComponent,
+    )
+    from metaflow_extensions.nflx.plugins.functions.exceptions import (
+        MetaflowFunctionUserException,
+    )
+
+    if ray.is_initialized():
+        ray.shutdown()
+
+    class _FailingAfterCallComponent(AbstractRuntimeComponent):
+        component_id = "failing_after_call"
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            pass
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            raise ValueError("after_call blew up")
+
+    class _FailingFunction:
+        name = "failing_fn"
+
+        def __call__(self, data, **kwargs):
+            raise MetaflowFunctionUserException("user error")
+
+    @ray.remote
+    class _TestActor(FunctionActorClass):
+        def __init__(self):
+            self.function = _FailingFunction()
+            self._component_instances = [_FailingAfterCallComponent()]
+            self.params = None
+
+    try:
+        RayBackend._ensure_cluster()
+        actor = _TestActor.remote()
+
+        with pytest.raises(MetaflowFunctionUserException, match="user error"):
+            ray.get(actor.execute.remote("data"))
+    finally:
+        if ray.is_initialized():
+            ray.shutdown()
+        RayBackend._cluster_initialized = False

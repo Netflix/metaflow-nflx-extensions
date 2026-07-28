@@ -798,18 +798,30 @@ class MemoryBackend(AbstractBackend):
                             debug.functions_exec("User exception")
                             result = output_cls()
                             error = traceback.format_exc()
-                        else:
-                            try:
-                                component_output = after_call_components(
-                                    component_instances
-                                )
-                            except Exception:
-                                debug.functions_exec(
-                                    "System exception in after_call_components"
-                                )
+
+                        # after_call must run whether or not execute() failed,
+                        # so components (e.g. metrics/logging) see every
+                        # invocation.
+                        try:
+                            component_output = after_call_components(
+                                component_instances
+                            )
+                        except Exception:
+                            debug.functions_exec(
+                                "System exception in after_call_components"
+                            )
+                            if error is None:
                                 result = output_cls()
                                 error = traceback.format_exc()
                                 is_system_error = True
+                            else:
+                                # A user exception is already in flight; don't
+                                # let a component failure on the error path
+                                # mask it.
+                                debug.functions_exec(
+                                    "after_call_components also raised while "
+                                    "handling a prior user exception; ignoring"
+                                )
 
                     # Wrap result with potentially modified kwargs (modifications happen in-place)
                     result_payload = FunctionPayload(

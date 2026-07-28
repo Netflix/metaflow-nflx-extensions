@@ -15,6 +15,7 @@ from metaflow_extensions.nflx.plugins.functions.exceptions import (
 from metaflow_extensions.nflx.plugins.functions.common.runtime_utils import (
     create_function_parameters,
 )
+from metaflow_extensions.nflx.plugins.functions.debug import debug
 import traceback
 
 
@@ -109,16 +110,31 @@ class LocalBackend(AbstractBackend):
         try:
             result = func_instance.execute(data, parameters, **kwargs)
         except Exception as e:
-            raise MetaflowFunctionUserException(
+            user_exception = MetaflowFunctionUserException(
                 f"Exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
             )
+            result = None
+        else:
+            user_exception = None
 
+        # after_call must run whether or not the function call itself failed,
+        # so components (e.g. metrics/logging) see every invocation.
         try:
             after_call_components(func_instance._component_instances)
         except Exception as e:
-            raise MetaflowFunctionRuntimeException(
-                f"Runtime component exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
+            if user_exception is None:
+                raise MetaflowFunctionRuntimeException(
+                    f"Runtime component exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
+                )
+            # A user exception is already in flight; don't let a component
+            # failure on the error path mask it.
+            debug.functions_exec(
+                f"Runtime component exception in after_call for '{func_instance.name}' "
+                f"while handling a prior user exception: {e!r}"
             )
+
+        if user_exception is not None:
+            raise user_exception
 
         return result
 

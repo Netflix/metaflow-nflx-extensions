@@ -38,7 +38,8 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
     * ``start``       — called once when the runtime initialises
     * ``stop``        — called once when the runtime shuts down
     * ``before_call`` — called before each function invocation
-    * ``after_call``  — called after each successful function invocation
+    * ``after_call``  — called after each function invocation, whether or not
+      it raised (components must not assume the call succeeded)
 
     Subclasses define their own user-facing interaction pattern.  A common
     pattern is a classmethod that routes through ``active_instance``::
