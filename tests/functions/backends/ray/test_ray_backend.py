@@ -68,6 +68,24 @@ class _FakeFuncInstance:
         self.uuid = uuid
         self.name = name
         self._runtime_components = []
+        # RayBackend._get_or_create_actor's "already attached" fast path keys
+        # directly off this, skipping _resolve_key/_extract_conda_env_from_spec
+        # entirely -- which is what lets these tests pre-seed a fake actor
+        # without also having to fake a real func_instance.spec.
+        self._runtime_id = uuid
+
+
+def _seed_fake_actor(func_instance, actor):
+    """Register `actor` in RayBackend._actor_pool under the key that
+    `func_instance._runtime_id` points at, so RayBackend.apply() resolves it
+    via the "already attached" fast path instead of trying to create a real
+    actor (which would require a real func_instance.spec)."""
+    from metaflow_extensions.nflx.plugins.functions.backends.ray import RayBackend
+    from metaflow_extensions.nflx.plugins.functions.backends.ray.ray_backend import (
+        ActorEntry,
+    )
+
+    RayBackend._actor_pool[func_instance._runtime_id] = ActorEntry(actor=actor)
 
 
 def test_ray_backend_hook_failure_raises_runtime_exception():
@@ -91,13 +109,13 @@ def test_ray_backend_hook_failure_raises_runtime_exception():
     try:
         RayBackend._ensure_cluster()
         func_instance = _FakeFuncInstance("hook-fail-uuid", "hook_fail_fn")
-        RayBackend._actor_pool[func_instance.uuid] = _FakeActor.remote()
+        _seed_fake_actor(func_instance, _FakeActor.remote())
 
         with pytest.raises(MetaflowFunctionRuntimeException):
             RayBackend.apply(func_instance, "data")
 
         # A hook failure (actor still alive) must NOT evict the actor from the pool.
-        assert func_instance.uuid in RayBackend._actor_pool
+        assert func_instance._runtime_id in RayBackend._actor_pool
     finally:
         RayBackend._actor_pool.clear()
         if ray.is_initialized():
@@ -126,7 +144,7 @@ def test_ray_backend_user_failure_raises_user_exception():
     try:
         RayBackend._ensure_cluster()
         func_instance = _FakeFuncInstance("user-fail-uuid", "user_fail_fn")
-        RayBackend._actor_pool[func_instance.uuid] = _FakeActor.remote()
+        _seed_fake_actor(func_instance, _FakeActor.remote())
 
         with pytest.raises(MetaflowFunctionUserException) as exc_info:
             RayBackend.apply(func_instance, "data")
@@ -142,18 +160,28 @@ def test_shutdown_with_active_actors():
     """Test that shutdown doesn't kill cluster if actors are active (unless forced)."""
     import ray
     from metaflow_extensions.nflx.plugins.functions.backends.ray import RayBackend
+    from metaflow_extensions.nflx.plugins.functions.backends.ray.ray_backend import (
+        ActorEntry,
+    )
 
     # Shutdown any existing Ray instance
     if ray.is_initialized():
         ray.shutdown()
+
+    @ray.remote
+    class _FakeActor:
+        def shutdown(self):
+            pass
 
     try:
         # Initialize cluster
         RayBackend._ensure_cluster()
         assert ray.is_initialized()
 
-        # Add a fake actor to the pool
-        RayBackend._actor_pool["test_uuid"] = "fake_actor"
+        # Add a fake actor to the pool. shutdown(force=True) reads entry.actor
+        # and calls actor.shutdown.remote()/ray.kill(actor), so this needs to be
+        # a real ActorEntry wrapping a real Ray actor handle, not a bare string.
+        RayBackend._actor_pool["test_uuid"] = ActorEntry(actor=_FakeActor.remote())
 
         # Try to shutdown without force - should NOT shutdown cluster
         RayBackend.shutdown(force=False)
