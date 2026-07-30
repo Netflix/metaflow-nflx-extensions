@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional
 from ..abstract_backend import AbstractBackend
 from ..backend_type import BackendType
 from metaflow_extensions.nflx.plugins.functions.serializers.registry import (
@@ -116,6 +116,7 @@ class LocalBackend(AbstractBackend):
                 f"Runtime component exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
             )
 
+        user_exception: Optional[MetaflowFunctionUserException]
         try:
             result = func_instance.execute(data, parameters, **kwargs)
         except Exception as e:
