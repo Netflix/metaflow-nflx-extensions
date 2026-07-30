@@ -4,10 +4,22 @@ from metaflow_extensions.nflx.plugins.json_function import json_function
 
 
 @avro_function
-def avro_transform_string(
+def avro_simple_string(
     data: str, params: FunctionParameters = FunctionParameters()
 ) -> str:
-    """Simple avro function that transforms a string using pydash"""
+    """Simple avro function with no external dependencies."""
+    suffix = params.suffix if hasattr(params, "suffix") else "default"
+    return data.upper().replace(" ", "") + "_" + str(suffix)
+
+
+@avro_function
+def avro_pydash_string(
+    data: str, params: FunctionParameters = FunctionParameters()
+) -> str:
+    """Avro function that explicitly depends on pydash, to exercise conda-env
+    dependency resolution for backends that isolate execution (memory, ray).
+    Not exercised for the local backend, which runs in-process using whatever
+    the calling Python process already has installed."""
     import pydash as _
 
     suffix = params.suffix if hasattr(params, "suffix") else "default"
@@ -15,30 +27,39 @@ def avro_transform_string(
 
 
 @avro_function
-def avro_process_dict(
+def avro_add_field(
     data: dict, params: FunctionParameters = FunctionParameters()
 ) -> dict:
-    """Avro function that processes a dict"""
-    multiplier = params.multiplier if hasattr(params, "multiplier") else 2
-    return {k: v * multiplier for k, v in data.items() if isinstance(v, (int, float))}
-
-
-@json_function
-def json_transform_list(
-    data: list, params: FunctionParameters = FunctionParameters()
-) -> list:
-    """JSON function that filters a list"""
-    threshold = params.threshold if hasattr(params, "threshold") else 0
-    return [x for x in data if x > threshold]
-
-
-@json_function
-def json_process_object(
-    data: dict, params: FunctionParameters = FunctionParameters()
-) -> dict:
-    """JSON function that adds a field using pydash"""
-    import pydash as _
-
+    """First stage of the avro pipeline: adds an incremented field."""
     increment = params.increment if hasattr(params, "increment") else 1
-    result = _.merge({}, data, {"processed": True, "increment": increment})
-    return result
+    return {**data, "incremented": data.get("value", 0) + increment}
+
+
+@avro_function
+def avro_double_values(
+    data: dict, params: FunctionParameters = FunctionParameters()
+) -> dict:
+    """Second stage of the avro pipeline: doubles numeric values."""
+    multiplier = params.multiplier if hasattr(params, "multiplier") else 2
+    return {
+        k: v * multiplier if isinstance(v, (int, float)) else v
+        for k, v in data.items()
+    }
+
+
+@avro_function
+def avro_raise_user_error(
+    data: str, params: FunctionParameters = FunctionParameters()
+) -> str:
+    """Always raises, to exercise user-exception propagation (wrapped as
+    MetaflowFunctionUserException) across backends."""
+    raise RuntimeError(f"intentional user error for input: {data}")
+
+
+@json_function
+def json_simple_object(
+    data: dict, params: FunctionParameters = FunctionParameters()
+) -> dict:
+    """Simple json function with no external dependencies."""
+    increment = params.increment if hasattr(params, "increment") else 1
+    return {**data, "processed": True, "increment": increment}
