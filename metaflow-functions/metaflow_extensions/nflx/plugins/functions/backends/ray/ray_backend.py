@@ -306,8 +306,10 @@ class RayBackend(AbstractBackend):
         already_attached = func_instance._runtime_id is not None
 
         with cls._lock:
-            key = func_instance._runtime_id if already_attached else cls._resolve_key(
-                func_instance
+            key = (
+                func_instance._runtime_id
+                if already_attached
+                else cls._resolve_key(func_instance)
             )
 
             entry = cls._actor_pool.get(key)

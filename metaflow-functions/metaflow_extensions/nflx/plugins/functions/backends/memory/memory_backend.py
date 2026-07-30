@@ -908,7 +908,9 @@ class MemoryBackend(AbstractBackend):
         runtime_components : List[str], default None
             Fully-qualified class names of runtime components to activate
         """
-        runtime_components = runtime_components if runtime_components is not None else []
+        runtime_components = (
+            runtime_components if runtime_components is not None else []
+        )
 
         def execute_runtime():
             # Create memory-specific execution context and delegate to memory backend

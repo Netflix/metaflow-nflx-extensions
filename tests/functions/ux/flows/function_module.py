@@ -42,8 +42,7 @@ def avro_double_values(
     """Second stage of the avro pipeline: doubles numeric values."""
     multiplier = params.multiplier if hasattr(params, "multiplier") else 2
     return {
-        k: v * multiplier if isinstance(v, (int, float)) else v
-        for k, v in data.items()
+        k: v * multiplier if isinstance(v, (int, float)) else v for k, v in data.items()
     }
 
 

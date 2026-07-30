@@ -39,9 +39,7 @@ class HelloSimpleFunction(FlowSpec):
         # the bound references directly, across backends.
         self.avro_simple_function = AvroFunction(avro_simple_string, task=start_task)
         self.avro_pydash_function = AvroFunction(avro_pydash_string, task=start_task)
-        self.avro_error_function = AvroFunction(
-            avro_raise_user_error, task=start_task
-        )
+        self.avro_error_function = AvroFunction(avro_raise_user_error, task=start_task)
         self.avro_pipeline_function = FunctionPipeline(
             functions=[
                 AvroFunction(avro_add_field, task=start_task),

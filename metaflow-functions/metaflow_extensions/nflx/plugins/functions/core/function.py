@@ -508,7 +508,9 @@ class MetaflowFunction(ABC):
 
         return self._func(data, params, **kwargs)
 
-    def _notify_output_received(self, exception: Optional[BaseException] = None) -> None:
+    def _notify_output_received(
+        self, exception: Optional[BaseException] = None
+    ) -> None:
         """Call ``on_output_received()`` on each runtime component, once
         ``output`` has been routed onto the caller-side instances (if any
         was routed). ``exception`` is the exception the call raised, or
