@@ -76,11 +76,20 @@ class LocalBackend(AbstractBackend):
             # Download S3 reference to local temp file if needed
             local_reference = FunctionSpec.download_to_temp(func_spec.reference)
 
+            # Carry the proxy's runtime_components over to the concrete function -
+            # function_from_json() below has no way to see the proxy's, and would
+            # otherwise silently default to none.
+            runtime_components = getattr(func_instance, "_runtime_components", [])
+
             # Load concrete function from reference. This handles both regular functions
             # and pipelines by delegating to the appropriate from_spec() implementation.
             # Don't start runtime - function executes directly in this process
             func_instance = function_from_json(
-                local_reference, use_proxy=False, backend="local", start_runtime=False
+                local_reference,
+                use_proxy=False,
+                backend="local",
+                start_runtime=False,
+                runtime_components=runtime_components,
             )
 
         # Use params from kwargs if provided, otherwise create new ones

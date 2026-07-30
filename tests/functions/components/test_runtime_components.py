@@ -1053,6 +1053,71 @@ def test_function_from_json_runtime_metrics_component():
         LocalBackend.close(func)
 
 
+def test_local_backend_default_use_proxy_path_keeps_runtime_components():
+    """End-to-end regression for the default use_proxy=True path: the proxy
+    returned by function_from_json() must carry its runtime_components through
+    LocalBackend.apply()'s proxy-rehydration step, not lose them.
+
+    Unlike test_function_from_json_runtime_metrics_component (which mocks
+    _create_proxy_from_spec to directly return a concrete, non-proxy
+    _MockFunction), this exercises the actual proxy object (_func is None)
+    that LocalBackend.apply() detects and rehydrates via a second
+    function_from_json(..., use_proxy=False, ...) call - the exact code path
+    that was silently dropping components.
+    """
+    from unittest.mock import patch, MagicMock
+    from metaflow import FunctionParameters
+    from metaflow_extensions.nflx.plugins.functions.core.function import (
+        function_from_json,
+    )
+    from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
+        LocalBackend,
+    )
+
+    fake_spec = MagicMock()
+    fake_spec.serializer_configs = None
+    fake_spec.class_name = "fake.module.FakeFunction"
+    fake_spec.reference = "s3://fake-bucket/fake-reference.json"
+
+    class _Proxy:
+        name = "proxy_fn"
+        _func = None
+        spec = fake_spec
+
+    fake_subclass = MagicMock()
+    fake_subclass._create_proxy_from_spec.return_value = _Proxy()
+    fake_subclass.from_spec.return_value = _MockFunction([])
+
+    log = _tmp_log()
+    RecordingComponent._log_path = log
+    try:
+        with patch(
+            "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
+            return_value=fake_spec,
+        ), patch(
+            "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
+            return_value=fake_subclass,
+        ), patch(
+            "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.download_to_temp",
+            return_value="fake-reference.json",
+        ):
+            # Default use_proxy=True - this is the caller-facing path.
+            func = function_from_json(
+                "fake-reference.json",
+                start_runtime=False,
+                runtime_components=[RecordingComponent()],
+            )
+            assert func._func is None  # sanity: we really got a proxy
+
+            result = LocalBackend.apply(func, "hello", params=FunctionParameters())
+
+        assert result == "echo:hello"
+        assert _read_events(log) == ["start", "before_call", "after_call"]
+    finally:
+        RecordingComponent._log_path = ""
+        os.unlink(log)
+
+
 # ---------------------------------------------------------------------------
 # 10. Memory backend — component output routing
 # ---------------------------------------------------------------------------
