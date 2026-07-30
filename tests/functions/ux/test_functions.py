@@ -291,3 +291,166 @@ def test_functions_json_simple(bound_functions, backend):
         assert result["name"] == "test"
     finally:
         close_function(func)
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [
+        "memory",
+        pytest.param(
+            "local",
+            marks=pytest.mark.xfail(
+                reason="PR#98 item [6]: local defers extraction past on_runtime_started, "
+                "see TODO in core/function.py::function_from_json",
+                strict=True,
+            ),
+        ),
+        pytest.param(
+            "ray",
+            marks=pytest.mark.xfail(
+                reason="PR#98 item [6]: ray extracts inside a remote actor's filesystem, "
+                "not the caller's, see TODO in core/function.py::function_from_json",
+                strict=True,
+            ),
+        ),
+    ],
+)
+def test_on_runtime_started_receives_backend_accurate_info(bound_functions, backend):
+    """on_runtime_started must receive either a real, caller-readable
+    directory or None -- never a path that merely looks valid but doesn't
+    exist on this process's filesystem. As of PR #98 feedback item [6],
+    function_from_json guesses a single generic directory identically for
+    every backend instead of asking the backend what it actually did, so
+    this currently fails on local (extraction is deferred past this point)
+    and on ray (extraction happens inside a remote actor's filesystem, not
+    this process's). Marked xfail(strict=True) for local/ray so this test
+    file stays green while that fix is deferred -- it will fail loudly (as
+    an unexpected XPASS) the moment someone fixes it, as a reminder to
+    remove the xfail mark."""
+    from metaflow_extensions.nflx.plugins.functions.core.function import (
+        close_function,
+        function_from_json,
+    )
+    from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
+        AbstractRuntimeComponent,
+    )
+
+    _skip_if_backend_unavailable(backend)
+
+    class _DirRecorder(AbstractRuntimeComponent):
+        component_id = "dir_recorder"
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.calls = []
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            pass
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+        def on_runtime_started(self, function_root_dir):
+            self.calls.append(function_root_dir)
+
+    recorder = _DirRecorder()
+    func = function_from_json(
+        bound_functions["avro_simple_function"],
+        backend=backend,
+        runtime_components=[recorder],
+    )
+    try:
+        assert (
+            len(recorder.calls) == 1
+        ), f"on_runtime_started should fire exactly once, got {recorder.calls}"
+
+        function_root_dir = recorder.calls[0]
+        if function_root_dir is not None:
+            assert os.path.isdir(function_root_dir), (
+                f"{backend} backend passed on_runtime_started a path that does "
+                f"not exist on this process's filesystem: {function_root_dir!r} "
+                "-- the caller was handed a path it can't actually read."
+            )
+    finally:
+        close_function(func)
+
+
+# local has no start() override, so there's nothing for it to leak here --
+# scoped to the two backends whose start() does real, stateful setup.
+LEAK_TEST_BACKENDS = ["memory", "ray"]
+
+
+def _active_runtime_count(backend):
+    if backend == "memory":
+        from metaflow_extensions.nflx.plugins.functions.backends.memory.supervisor.supervisor import (
+            function_supervisor,
+        )
+
+        return len(function_supervisor._process_map)
+    else:
+        from metaflow_extensions.nflx.plugins.functions.backends.ray.ray_backend import (
+            RayBackend,
+        )
+
+        return len(RayBackend._actor_pool)
+
+
+@pytest.mark.parametrize("backend", LEAK_TEST_BACKENDS)
+def test_on_runtime_started_raise_does_not_leak_backend_resource(
+    bound_functions, backend
+):
+    """If a component's on_runtime_started hook raises, function_from_json
+    currently propagates the exception without ever returning a handle to
+    the caller -- so the backend resource backend.start() already created
+    (a leased memory subprocess or an attached ray actor) has no way to get
+    closed and is leaked. See PR #98 feedback item [6]."""
+    from metaflow_extensions.nflx.plugins.functions.core.function import (
+        function_from_json,
+    )
+    from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
+        AbstractRuntimeComponent,
+    )
+
+    _skip_if_backend_unavailable(backend)
+
+    class _RaisingOnRuntimeStarted(AbstractRuntimeComponent):
+        component_id = "raising_on_runtime_started"
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            pass
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+        def on_runtime_started(self, function_root_dir):
+            raise RuntimeError("boom: intentional failure in on_runtime_started")
+
+    before = _active_runtime_count(backend)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        function_from_json(
+            bound_functions["avro_simple_function"],
+            backend=backend,
+            runtime_components=[_RaisingOnRuntimeStarted()],
+        )
+
+    after = _active_runtime_count(backend)
+
+    assert after == before, (
+        f"{backend} backend leaked a resource when on_runtime_started raised: "
+        f"{before} active runtime(s) before this call, {after} after -- the "
+        "backend that function_from_json already started was never closed "
+        "because no handle was ever returned to the caller to clean it up."
+    )

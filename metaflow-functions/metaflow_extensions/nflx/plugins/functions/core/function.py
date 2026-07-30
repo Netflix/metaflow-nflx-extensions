@@ -1013,10 +1013,19 @@ def function_from_json(
         func._prefetch_artifacts = True
         func.backend.start(func, process=process)
 
-        # Every backend extracts the function's code package to the same
-        # deterministic directory, so it can be computed here on the caller
-        # side without needing the backend to report it back (some backends,
-        # e.g. Ray, extract inside a remote process the caller can't inspect).
+        # TODO(PR#98 feedback item [6], S3): this guesses a single generic
+        # directory formula instead of asking the backend what it actually
+        # did. That happens to be correct for the memory backend today, but
+        # is wrong for local (real extraction is deferred past this point --
+        # see LocalBackend.apply()'s proxy-to-concrete conversion, which
+        # never writes the extracted dir back onto this proxy) and for ray
+        # (extraction happens inside a remote actor's filesystem, which this
+        # process can never read). Fix: have each backend report back its
+        # own accurate function_root_dir (or None when there genuinely isn't
+        # a caller-accessible one) instead of this one-size-fits-all
+        # computation. Not fixed yet -- deferred after the memory-backend
+        # leak fix below. See tests/functions/ux/test_functions.py::
+        # test_on_runtime_started_receives_backend_accurate_info.
         if not base_path:
             from metaflow_extensions.nflx.config.mfextinit_functions import (
                 FUNCTION_RUNTIME_PATH,
@@ -1026,8 +1035,19 @@ def function_from_json(
         function_root_dir = os.path.join(
             base_path, f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}{fs.uuid}"
         )
-        for component in func._runtime_components:
-            component.on_runtime_started(function_root_dir)
+        try:
+            for component in func._runtime_components:
+                component.on_runtime_started(function_root_dir)
+        except Exception:
+            # backend.start() above already created a real resource (a
+            # leased memory subprocess, an attached ray actor). Since we
+            # raise instead of returning `func` to the caller, there is no
+            # handle left for anyone to close -- close it ourselves before
+            # propagating so it isn't leaked. See PR#98 feedback item [6]
+            # and tests/functions/ux/test_functions.py::
+            # test_on_runtime_started_raise_does_not_leak_backend_resource.
+            func.backend.close(func, clean_dir=True)
+            raise
 
     return func
 
