@@ -19,9 +19,9 @@ from metaflow.metaflow_environment import MetaflowEnvironment
 from metaflow.package import DEFAULT_SUFFIXES_LIST
 from metaflow.util import to_unicode, walk_without_cycles
 
-# Avro schema files are always packaged alongside function code, since
-# functions commonly load a co-located .avsc file at runtime.
-FUNCTION_DEFAULT_SUFFIXES_LIST = DEFAULT_SUFFIXES_LIST + [".avsc"]
+# Avro schema and JSON files are always packaged alongside function code,
+# since functions commonly load a co-located .avsc/.json file at runtime.
+FUNCTION_DEFAULT_SUFFIXES_LIST = DEFAULT_SUFFIXES_LIST + [".avsc", ".json"]
 
 from metaflow_extensions.nflx.plugins.functions.core.function_spec import (
     FunctionSpec,
