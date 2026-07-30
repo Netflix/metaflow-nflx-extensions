@@ -683,10 +683,12 @@ class MemoryBackend(AbstractBackend):
                 inp, out, sem, func_instance, prefetch_artifacts, component_instances
             )
         finally:
-            stop_components(component_instances)
-            inp.close()
-            out.close()
-            sem.close()
+            try:
+                stop_components(component_instances)
+            finally:
+                inp.close()
+                out.close()
+                sem.close()
 
     @classmethod
     def _runtime_with_buffers(
@@ -869,7 +871,7 @@ class MemoryBackend(AbstractBackend):
         data_watcher_name: str,
         reference: str,
         prefetch_artifacts: bool = False,
-        runtime_components: List[str] = [],
+        runtime_components: Optional[List[str]] = None,
     ) -> None:
         """
         This function is called from a subprocess and handles memory buffer-based
@@ -887,9 +889,10 @@ class MemoryBackend(AbstractBackend):
             Path to the function specification file
         prefetch_artifacts : bool, default False
             Whether to pre-fetch all artifacts during initialization
-        runtime_components : List[str], default []
+        runtime_components : List[str], default None
             Fully-qualified class names of runtime components to activate
         """
+        runtime_components = runtime_components if runtime_components is not None else []
 
         def execute_runtime():
             # Create memory-specific execution context and delegate to memory backend
