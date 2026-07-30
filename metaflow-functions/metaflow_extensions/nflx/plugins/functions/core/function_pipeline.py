@@ -491,7 +491,9 @@ class FunctionPipeline(MetaflowFunction):
             return cls._reconstruct_functions_from_metadata(spec, use_proxy=False)
 
         functions = run_in_path(reconstruct_functions, function_dir)
-        return cls._create_from_spec(spec, functions)
+        pipeline = cls._create_from_spec(spec, functions)
+        pipeline._function_root_dir = function_dir
+        return pipeline
 
     @classmethod
     def _create_proxy_from_spec(
