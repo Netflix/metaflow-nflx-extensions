@@ -508,11 +508,13 @@ class MetaflowFunction(ABC):
 
         return self._func(data, params, **kwargs)
 
-    def _notify_output_received(self) -> None:
+    def _notify_output_received(self, exception: Optional[BaseException] = None) -> None:
         """Call ``on_output_received()`` on each runtime component, once
-        ``output`` has been routed onto the caller-side instances."""
+        ``output`` has been routed onto the caller-side instances (if any
+        was routed). ``exception`` is the exception the call raised, or
+        ``None`` on success, so components can react to a failed call too."""
         for component in self.runtime_components:
-            component.on_output_received()
+            component.on_output_received(exception=exception)
 
     def __call__(self, data: Any, **kwargs) -> Any:
         """
@@ -531,7 +533,11 @@ class MetaflowFunction(ABC):
         Any
             The result of the function call.
         """
-        result = self.backend.apply(self, data, **kwargs)
+        try:
+            result = self.backend.apply(self, data, **kwargs)
+        except Exception as e:
+            self._notify_output_received(exception=e)
+            raise
         self._notify_output_received()
         return result
 
@@ -552,7 +558,11 @@ class MetaflowFunction(ABC):
         Any
             The result of the function call.
         """
-        result = await self.backend.apply_async(self, data, **kwargs)
+        try:
+            result = await self.backend.apply_async(self, data, **kwargs)
+        except Exception as e:
+            self._notify_output_received(exception=e)
+            raise
         self._notify_output_received()
         return result
 

@@ -129,6 +129,13 @@ class LocalBackend(AbstractBackend):
 
         # after_call must run whether or not the function call itself failed,
         # so components (e.g. metrics/logging) see every invocation.
+        # TODO(local-backend exception parity): thread the raw exception
+        # through here (`after_call_components(func_instance._component_instances,
+        # exception=raw_exception)`) so after_call()/collect_output() can see
+        # the failure, matching memory_backend.py. Requires keeping a
+        # reference to the raw exception from the `except Exception as e:`
+        # block above (currently only its wrapped `MetaflowFunctionUserException`
+        # message is kept, not the exception object itself).
         try:
             after_call_components(func_instance._component_instances)
         except Exception as e:

@@ -161,6 +161,11 @@ class RayBackend(AbstractBackend):
         actor = cls._get_or_create_actor(func_instance)
 
         # Execute on actor (Ray automatically puts data in object store)
+        # TODO(ray-backend exception parity): on failure, ray.get() raises
+        # before this tuple is ever unpacked, so `_route_component_output()`
+        # never runs here and any output a component collected before the
+        # failure is lost. See the TODO in FunctionActorClass.execute() for
+        # what needs to change to fix this for parity with memory_backend.py.
         try:
             result_ref = actor.execute.remote(data, **kwargs)
             result, component_output = ray.get(result_ref)
@@ -657,6 +662,10 @@ class FunctionActorClass:
 
         # after_call must run whether or not the function call itself failed,
         # so components (e.g. metrics/logging) see every invocation.
+        # TODO(ray-backend exception parity): thread `user_exception` through
+        # here (`after_call_components(self._component_instances,
+        # exception=user_exception)`) so after_call()/collect_output() can
+        # see the failure, matching local_backend.py and memory_backend.py.
         try:
             component_output = after_call_components(self._component_instances)
         except Exception as e:
@@ -672,6 +681,17 @@ class FunctionActorClass:
             )
             component_output = {}
 
+        # TODO(ray-backend exception parity): on a user exception, this
+        # method raises `user_exception` below instead of returning
+        # `(result, component_output)`, so `component_output` never crosses
+        # the actor boundary and apply()'s `_route_component_output()` never
+        # runs on failure. Unlike memory_backend.py (which always returns a
+        # payload and lets the caller route-then-raise), fixing this needs
+        # the actor protocol to always return the tuple and carry the
+        # exception alongside it (e.g. as a third element, or reconstructed
+        # from a wrapped exception) so `RayBackend.apply()` can route
+        # collected output before raising, for parity with the memory
+        # backend fix in memory_backend.py's apply()/apply_async().
         if user_exception is not None:
             raise user_exception
 

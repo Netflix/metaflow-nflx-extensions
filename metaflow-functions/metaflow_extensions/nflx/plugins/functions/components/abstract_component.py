@@ -172,15 +172,36 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
         """Called before each function invocation."""
 
     @abstractmethod
-    def after_call(self, *args: Any, **kwargs: Any) -> None:
-        """Called after each function invocation."""
+    def after_call(
+        self,
+        *args: Any,
+        exception: Optional[BaseException] = None,
+        **kwargs: Any,
+    ) -> None:
+        """
+        Called after each function invocation, whether or not it raised.
 
-    def collect_output(self, *args: Any, **kwargs: Any) -> Optional[Any]:
+        ``exception`` is the exception the function call raised, or ``None``
+        on success. Runs on the process/actor that actually executed the
+        call (in-process for the local backend, in the subprocess for the
+        memory backend, on the remote actor for the Ray backend).
+        """
+
+    def collect_output(
+        self,
+        *args: Any,
+        exception: Optional[BaseException] = None,
+        **kwargs: Any,
+    ) -> Optional[Any]:
         """
         Called once after each ``after_call()``. Return a value to surface
         back to the caller via the component's ``output`` attribute on the
         caller-side handle returned by ``function_from_json``. Any picklable
         value works (dict, bytes, etc.) — the framework doesn't inspect it.
+
+        ``exception`` is the exception the function call raised, or ``None``
+        on success, so an override can decide whether to still surface
+        partial output collected before the failure, or suppress it.
 
         Default implementation returns ``None`` (nothing surfaced). Override
         to report data collected during ``before_call``/``after_call``.
@@ -200,14 +221,17 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
         """
         pass
 
-    def on_output_received(self) -> None:
+    def on_output_received(self, exception: Optional[BaseException] = None) -> None:
         """
         Called once on the caller side after each function invocation
-        returns, on the same instance returned by ``function_from_json``,
-        right after ``output`` has been updated for that call.
+        completes, whether or not it raised, on the same instance returned
+        by ``function_from_json``, right after ``output`` has been routed
+        for that call (if any was routed).
 
-        Override to react to a call's output (e.g. decode and display it)
-        without changing what the call returns to user code.
+        ``exception`` is the exception the call raised, or ``None`` on
+        success. Override to react to a call's output or failure (e.g.
+        decode and display output, or log a failure) without changing what
+        the call returns/raises to user code.
 
         Default implementation is a no-op.
         """

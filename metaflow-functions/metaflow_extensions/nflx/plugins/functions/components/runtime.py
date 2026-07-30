@@ -1,7 +1,7 @@
 """Helpers for serializing, activating, and deactivating runtime components."""
 
 import json
-from typing import Any, Dict, List, Tuple, TYPE_CHECKING, cast
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING, cast
 
 from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionException,
@@ -139,9 +139,17 @@ def before_call_components(
 
 
 def after_call_components(
-    instances: List["AbstractRuntimeComponent"], *args, **kwargs
+    instances: List["AbstractRuntimeComponent"],
+    *args,
+    exception: Optional[BaseException] = None,
+    **kwargs,
 ) -> Dict[str, Any]:
     """Call after_call() then collect_output() on each instance.
+
+    ``exception`` is the exception raised by the function call this
+    invocation is wrapping up after (``None`` on success), passed through to
+    both hooks so components can decide for themselves what to do with a
+    failed call (e.g. still surface partial output, or suppress it).
 
     Returns a ``{component_id: output}`` map for instances whose
     ``collect_output()`` returned non-``None``, keyed by each component's
@@ -150,8 +158,8 @@ def after_call_components(
     """
     collected: Dict[str, Any] = {}
     for instance in instances:
-        instance.after_call(*args, **kwargs)
-        output = instance.collect_output(*args, **kwargs)
+        instance.after_call(*args, exception=exception, **kwargs)
+        output = instance.collect_output(*args, exception=exception, **kwargs)
         if output is not None:
             instance.output = output
             collected[cast(str, type(instance).component_id)] = output

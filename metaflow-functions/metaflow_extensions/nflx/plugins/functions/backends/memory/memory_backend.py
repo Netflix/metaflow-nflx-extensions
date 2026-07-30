@@ -311,6 +311,14 @@ class MemoryBackend(AbstractBackend):
                 if result is not _NO_RESULT:
                     results.append(result)
 
+            # Route any component output collected before a failure onto the
+            # caller-side component instances, so the caller can inspect it
+            # (e.g. via a component's `output`) after catching the exception
+            # raised below. This must run before the error check, since the
+            # subprocess always runs after_call/collect_output regardless of
+            # whether the function call itself raised.
+            cls._route_component_output(func_instance, state.runtime_components)
+
             # Process user or runtime component errors
             if state.error:
                 if state.is_system_error:
@@ -321,9 +329,7 @@ class MemoryBackend(AbstractBackend):
                     f"Exception in function '{lease.runtime.uuid}': {state.error}"
                 )
 
-            # Route component output and update original kwargs with modified
-            # values from subprocess
-            cls._route_component_output(func_instance, state.runtime_components)
+            # Update original kwargs with modified values from subprocess
             if state.kwargs:
                 cls._update_kwargs_from_subprocess(filtered_kwargs, state.kwargs)
 
@@ -376,6 +382,14 @@ class MemoryBackend(AbstractBackend):
                 if result is not _NO_RESULT:
                     results.append(result)
 
+            # Route any component output collected before a failure onto the
+            # caller-side component instances, so the caller can inspect it
+            # (e.g. via a component's `output`) after catching the exception
+            # raised below. This must run before the error check, since the
+            # subprocess always runs after_call/collect_output regardless of
+            # whether the function call itself raised.
+            cls._route_component_output(func_instance, state.runtime_components)
+
             # Process user or runtime component errors
             if state.error:
                 if state.is_system_error:
@@ -386,9 +400,7 @@ class MemoryBackend(AbstractBackend):
                     f"Exception in function '{lease.runtime.uuid}': {state.error}"
                 )
 
-            # Route component output and update original kwargs with modified
-            # values from subprocess
-            cls._route_component_output(func_instance, state.runtime_components)
+            # Update original kwargs with modified values from subprocess
             if state.kwargs:
                 cls._update_kwargs_from_subprocess(filtered_kwargs, state.kwargs)
 
@@ -790,22 +802,26 @@ class MemoryBackend(AbstractBackend):
                         error = traceback.format_exc()
                         is_system_error = True
                     else:
+                        call_exception: Optional[Exception] = None
                         try:
                             debug.functions_exec("Call the function _execute method")
                             result = func_instance.execute(
                                 input_data, parameters, **kwargs_copy
                             )
-                        except Exception:
+                        except Exception as e:
                             debug.functions_exec("User exception")
+                            call_exception = e
                             result = output_cls()
                             error = traceback.format_exc()
 
                         # after_call must run whether or not execute() failed,
                         # so components (e.g. metrics/logging) see every
-                        # invocation.
+                        # invocation. The exception (None on success) is
+                        # passed through so components can decide for
+                        # themselves what to do with a failed call.
                         try:
                             component_output = after_call_components(
-                                component_instances
+                                component_instances, exception=call_exception
                             )
                         except Exception:
                             debug.functions_exec(
