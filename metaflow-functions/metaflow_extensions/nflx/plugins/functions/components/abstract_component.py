@@ -1,5 +1,24 @@
+import contextvars
+import weakref
 from abc import ABCMeta, abstractmethod
 from typing import Any, Dict, Optional
+
+# Keyed by component class, not stored in the class's own __dict__: component
+# classes get pickled wholesale (e.g. by Ray/cloudpickle, which walks
+# cls.__dict__ to reconstruct dynamically-defined classes on the remote side),
+# and a ContextVar isn't picklable. Keeping the vars here instead means
+# pickling a component class never touches them.
+_active_instance_vars: "weakref.WeakKeyDictionary[type, contextvars.ContextVar]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _active_instance_var(cls: type) -> "contextvars.ContextVar[Optional[Any]]":
+    var = _active_instance_vars.get(cls)
+    if var is None:
+        var = contextvars.ContextVar(f"{cls.__name__}_active_instance", default=None)
+        _active_instance_vars[cls] = var
+    return var
 
 
 class ComponentMeta(ABCMeta):
@@ -10,6 +29,16 @@ class ComponentMeta(ABCMeta):
     `start()` and clears after `stop()`.  Subclasses use it to implement their
     own no-op-when-inactive interaction patterns (e.g. a `log()` classmethod).
 
+    `active_instance` is backed by a `ContextVar` (one per subclass, see
+    `_active_instance_var()` above) rather than a plain class attribute, so
+    routing is invocation-local instead of process-global: separate threads
+    (each starts with a fresh top-level context) and separate asyncio tasks
+    (each gets a copy of the enclosing context) don't see each other's active
+    instance, so two runtimes for the same component class running
+    concurrently can't cross-route calls into each other. `Cls.active_instance`
+    read/write syntax is unchanged for callers -- the property below just
+    routes it through the ContextVar instead of `__dict__`.
+
     Also gives every subclass its own `_class_config` dict (rather than one
     shared dict inherited from the base class) so that `configure()` calls on
     one component class never leak into another's config.
@@ -18,6 +47,14 @@ class ComponentMeta(ABCMeta):
     def __init__(cls, name: str, bases: tuple, namespace: dict) -> None:
         super().__init__(name, bases, namespace)
         cls._class_config = {}
+
+    @property
+    def active_instance(cls):
+        return _active_instance_var(cls).get()
+
+    @active_instance.setter
+    def active_instance(cls, value) -> None:
+        _active_instance_var(cls).set(value)
 
 
 class AbstractRuntimeComponent(metaclass=ComponentMeta):
@@ -80,8 +117,9 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
     effect on that instance — the merge only happens at construction time.
     """
 
-    # Set by the runtime after start(); cleared after stop().
-    # Declared here so subclasses inherit it as a distinct per-class slot.
+    # Set by the runtime after start(); cleared after stop(). Backed by a
+    # per-subclass ContextVar (see ComponentMeta) rather than this attribute --
+    # this annotation is documentation only; the metaclass property shadows it.
     active_instance: Optional["AbstractRuntimeComponent"] = None
 
     # Populated by configure(). ComponentMeta gives every subclass its own
