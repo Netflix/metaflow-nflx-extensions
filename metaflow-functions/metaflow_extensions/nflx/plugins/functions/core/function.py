@@ -75,6 +75,17 @@ class MetaflowFunction(ABC):
 
     function_spec_cls: Type[FunctionSpec]
 
+    # Identity of the backend runtime this handle is attached to, set by the
+    # backend once it materializes (or reuses) a runtime for this function.
+    # None until then. Opaque to this class - only the backend that set it
+    # knows how to interpret it.
+    #
+    # Declared as a class attribute (not just set in __init__) so that
+    # instances created via cls.__new__(cls) - bypassing __init__, as some
+    # proxy/spec-loading paths do - still see a well-defined default instead
+    # of raising AttributeError.
+    _runtime_id: Optional[Any] = None
+
     def __init__(
         self,
         func: Optional["MetaflowFunctionDecorator"] = None,
@@ -206,6 +217,23 @@ class MetaflowFunction(ABC):
             The runtime component instances scheduled for this function.
         """
         return getattr(self, "_runtime_components", [])
+
+    @property
+    def runtime_id(self) -> Optional[Any]:
+        """
+        Return the identity of the backend runtime this handle is attached to.
+
+        Set by the backend once it materializes (or reuses) a runtime for
+        this function; ``None`` if no runtime has been attached yet. The
+        value is opaque here - only the backend that set it knows how to
+        interpret it.
+
+        Returns
+        -------
+        Optional[Any]
+            The backend-assigned runtime identity, or None if not attached.
+        """
+        return self._runtime_id
 
     def get_runtime_component(self, component_type: Type[Any]) -> Optional[Any]:
         """

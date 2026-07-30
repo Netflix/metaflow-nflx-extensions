@@ -461,8 +461,7 @@ class MemoryBackend(AbstractBackend):
             function_supervisor,
         )
 
-        if function_supervisor.is_loaded(func_instance):
-            function_supervisor.clear(func_instance, clean_dir)
+        function_supervisor.detach(func_instance, clean_dir)
 
     @classmethod
     def get_runtime_command(
