@@ -1044,9 +1044,7 @@ def function_from_json(
             )
 
             base_path = FUNCTION_RUNTIME_PATH
-        function_root_dir = os.path.join(
-            base_path, f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}{fs.uuid}"
-        )
+        function_root_dir = fs.resolve_function_root_dir(base_path)
         try:
             for component in func._runtime_components:
                 component.on_runtime_started(function_root_dir)

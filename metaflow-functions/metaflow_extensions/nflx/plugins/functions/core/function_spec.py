@@ -9,6 +9,7 @@ from metaflow_extensions.nflx.plugins.functions.core.function_decorator_spec imp
 )
 
 
+from metaflow_extensions.nflx.plugins.functions.config import Config
 from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionException,
 )
@@ -228,3 +229,14 @@ class FunctionSpec(ABC):
         spec.function = function_spec
 
         return spec
+
+    def resolve_function_root_dir(self, base_path: str) -> str:
+        """
+        Directory holding this spec's own runtime files (config, schemas,
+        etc). Defaults to this spec's own extraction dir; overridden by
+        specs whose own directory doesn't hold their runtime files (e.g.
+        pipelines, which delegate to a constituent function's directory).
+        """
+        return os.path.join(
+            base_path, f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}{self.uuid}"
+        )

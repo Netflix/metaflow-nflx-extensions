@@ -1277,6 +1277,14 @@ def test_function_from_json_invokes_on_runtime_started_with_computed_dir():
     fake_spec.serializer_configs = None
     fake_spec.class_name = "fake.module.FakeFunction"
     fake_spec.uuid = "abc-123"
+    expected_dir = os.path.join(
+        "/tmp/some-base", f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}abc-123"
+    )
+    # function_from_json delegates to fs.resolve_function_root_dir(base_path)
+    # (see FunctionSpec.resolve_function_root_dir); mock it to match that
+    # method's real (non-pipeline) formula rather than asserting on a
+    # MagicMock's default return value.
+    fake_spec.resolve_function_root_dir.return_value = expected_dir
 
     fake_func = MagicMock()
     fake_func._runtime_components = []
@@ -1300,9 +1308,7 @@ def test_function_from_json_invokes_on_runtime_started_with_computed_dir():
         )
 
     fake_func.backend.start.assert_called_once()
-    expected_dir = os.path.join(
-        "/tmp/some-base", f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}abc-123"
-    )
+    fake_spec.resolve_function_root_dir.assert_called_once_with("/tmp/some-base")
     assert recorder.on_runtime_started_calls == [expected_dir]
 
 
@@ -1339,3 +1345,91 @@ def test_function_from_json_skips_on_runtime_started_when_not_starting():
         )
 
     assert recorder.on_runtime_started_calls == []
+
+
+def test_function_from_json_pipeline_resolves_constituent_function_root_dir(
+    tmp_path,
+):
+    """A pipeline's own extraction directory is near-empty (see
+    FunctionPipeline._build_pipeline_spec) -- code-package files like schemas
+    actually live under a constituent function's own directory. A runtime
+    component started against a pipeline must be pointed at that constituent
+    directory, not the pipeline's own uuid-named directory, or it can't find
+    files it depends on (e.g. avro schemas for a logging component).
+
+    Regression test for FunctionSpec.resolve_function_root_dir /
+    FunctionPipelineSpec.resolve_function_root_dir.
+    """
+    from unittest.mock import patch, MagicMock
+    from metaflow_extensions.nflx.plugins.functions.core.function import (
+        function_from_json,
+    )
+    from metaflow_extensions.nflx.plugins.functions.core.function_pipeline_spec import (
+        FunctionPipelineSpec,
+    )
+    from metaflow_extensions.nflx.plugins.functions.config import Config
+
+    base_path = str(tmp_path)
+
+    # Only the constituent function's directory exists and holds the schema
+    # file -- the pipeline's own directory (metaflow-function-pipeline-uuid)
+    # is deliberately never created, matching production where it would be
+    # near-empty even if present.
+    child_dir = os.path.join(
+        base_path, f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}child-uuid"
+    )
+    os.makedirs(child_dir)
+    with open(os.path.join(child_dir, "schema.avsc"), "w") as f:
+        f.write('{"type": "record"}')
+
+    fake_spec = FunctionPipelineSpec(
+        uuid="pipeline-uuid",
+        class_name="fake.module.FakePipeline",
+        system_metadata={"functions": [{"uuid": "child-uuid"}]},
+    )
+
+    fake_func = MagicMock()
+    fake_func._runtime_components = []
+    fake_subclass = MagicMock()
+    fake_subclass._create_proxy_from_spec.return_value = fake_func
+
+    class _SchemaReadingComponent(AbstractRuntimeComponent):
+        component_id = "schema_reading_component"
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.schema_contents = None
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            pass
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+        def on_runtime_started(self, function_root_dir):
+            with open(os.path.join(function_root_dir, "schema.avsc")) as f:
+                self.schema_contents = f.read()
+
+    component = _SchemaReadingComponent()
+
+    with patch(
+        "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
+        return_value=fake_spec,
+    ), patch(
+        "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
+        return_value=fake_subclass,
+    ):
+        function_from_json(
+            "fake-reference.json",
+            base_path=base_path,
+            start_runtime=True,
+            runtime_components=[component],
+        )
+
+    assert component.schema_contents == '{"type": "record"}'

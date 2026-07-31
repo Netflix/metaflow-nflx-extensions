@@ -157,12 +157,6 @@ class FunctionPipeline(MetaflowFunction):
                 if config.extra_kwargs:
                     serializer_configs[type_str]["extra_kwargs"] = config.extra_kwargs
 
-        # Create the FunctionPipelineSpec - use same code package as first function
-        # since all functions in pipeline share the same environment
-        code_package = None
-        if self.functions and hasattr(self.functions[0], "spec"):
-            code_package = self.functions[0].spec.code_package
-
         return FunctionPipelineSpec(
             name=self._name,
             uuid=None,
@@ -170,7 +164,9 @@ class FunctionPipeline(MetaflowFunction):
             function=pipeline_decorator_spec,
             input_spec=input_spec,
             output_spec=output_spec,
-            code_package=code_package,  # Use first function's code package
+            code_package=None,  # Pipeline's own package is a placeholder; see
+            # FunctionPipeline._reconstruct_from_spec, which points
+            # function_root_dir at a constituent function's real directory.
             reference=None,  # Will be set during export
             task_pathspec=(
                 self.functions[0].spec.task_pathspec if self.functions else None
@@ -492,7 +488,18 @@ class FunctionPipeline(MetaflowFunction):
 
         functions = run_in_path(reconstruct_functions, function_dir)
         pipeline = cls._create_from_spec(spec, functions)
-        pipeline._function_root_dir = function_dir
+        # The pipeline's own extraction dir (function_dir) is near-empty by
+        # design -- each constituent function extracts and loads its own code
+        # independently. Point function_root_dir at a constituent function's
+        # real directory instead, so pipeline-level runtime components can
+        # find colocated config files (e.g. schema.avsc).
+        # TODO: this only reuses functions[0]'s directory. Fine while all
+        # constituent functions share one module, but a pipeline whose
+        # functions come from genuinely different modules would need a real
+        # decision about which function's directory to use here.
+        pipeline._function_root_dir = (
+            functions[0].function_root_dir if functions else function_dir
+        )
         return pipeline
 
     @classmethod
