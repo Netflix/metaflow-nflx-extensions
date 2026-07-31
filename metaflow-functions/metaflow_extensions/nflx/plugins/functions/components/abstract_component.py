@@ -208,14 +208,18 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
         """
         return None
 
-    def on_runtime_started(self, function_root_dir: str) -> None:
+    def on_runtime_started(self, function_package_dir: str) -> None:
         """
         Called once on the caller side, after the function's runtime has
         started, on the same instance returned by ``function_from_json``
         (not the reconstructed instance the runtime uses).
 
-        ``function_root_dir`` is the directory the function's code package
-        is extracted into, so components can read files from it.
+        ``function_package_dir`` is the directory *inside* the extracted code
+        package that holds the function's module, so components can read the
+        files the model owner colocated with their code. Note this is not the
+        extraction root: files are archived under their dotted module path,
+        so a function in ``a.b.c`` gets ``<extraction root>/a/b``. On the
+        runtime side the equivalent is ``function.function_package_dir``.
 
         Default implementation is a no-op.
         """

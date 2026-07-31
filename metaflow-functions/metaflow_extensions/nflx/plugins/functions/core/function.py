@@ -185,6 +185,29 @@ class MetaflowFunction(ABC):
         return function_root_dir
 
     @property
+    def function_package_dir(self) -> str:
+        """
+        Return the directory inside the extracted code package that holds
+        this function's module, and therefore the files the model owner
+        colocated with it (an .avsc schema, a .json config, ...).
+
+        This is the runtime-side counterpart of
+        FunctionSpec.resolve_function_package_dir: files are archived under
+        their dotted module path, so a function in "a.b.c" lives in
+        "<function_root_dir>/a/b". Only a top-level module puts them at
+        function_root_dir itself.
+        """
+        from metaflow_extensions.nflx.plugins.functions.utils import (
+            resolve_package_dir,
+        )
+
+        spec = self.spec
+        return resolve_package_dir(
+            self.function_root_dir,
+            spec.function.module if spec and spec.function else None,
+        )
+
+    @property
     def backend(self):
         """
         Get the backend for this function.
@@ -1025,29 +1048,61 @@ def function_from_json(
         func._prefetch_artifacts = True
         func.backend.start(func, process=process)
 
-        # TODO(PR#98 feedback item [6], S3): this guesses a single generic
-        # directory formula instead of asking the backend what it actually
-        # did. That happens to be correct for the memory backend today, but
-        # is wrong for local (real extraction is deferred past this point --
-        # see LocalBackend.apply()'s proxy-to-concrete conversion, which
-        # never writes the extracted dir back onto this proxy) and for ray
-        # (extraction happens inside a remote actor's filesystem, which this
-        # process can never read). Fix: have each backend report back its
-        # own accurate function_root_dir (or None when there genuinely isn't
-        # a caller-accessible one) instead of this one-size-fits-all
-        # computation. Not fixed yet -- deferred after the memory-backend
-        # leak fix below. See tests/functions/ux/test_functions.py::
-        # test_on_runtime_started_receives_backend_accurate_info.
+        # TODO(PR#98 feedback item [6], S3): this derives the directory from
+        # a spec-based formula instead of asking the backend what it actually
+        # did. The ensure_function_package_extracted() call below means the
+        # formula's answer now exists on this process's filesystem no matter
+        # which backend ran (local defers its real extraction past this
+        # point; ray extracts inside a remote actor we can never read), but
+        # that's this process making the formula true rather than the backend
+        # reporting the truth.
+        #
+        # The consequence to know about is on ray: what the caller gets is a
+        # *local copy* of the same code package, not the actor's directory.
+        # Identical bytes, so reading files the model owner shipped next to
+        # their code -- the hook's actual contract -- is correct. But it is
+        # not the directory the runtime is using, so a component that
+        # expected to observe runtime-written state there would silently read
+        # a stale/empty copy. Nothing does that today; don't add one without
+        # fixing this first.
+        #
+        # Fix: have each backend report back its own accurate directory (or
+        # None when there genuinely isn't a caller-accessible one). Not fixed
+        # yet. See tests/functions/ux/test_functions.py::
+        # test_on_runtime_started_receives_backend_accurate_info, whose
+        # local/ray params were xfail(strict=True) on this item until the
+        # pre-extraction landed.
         if not base_path:
             from metaflow_extensions.nflx.config.mfextinit_functions import (
                 FUNCTION_RUNTIME_PATH,
             )
 
             base_path = FUNCTION_RUNTIME_PATH
-        function_root_dir = fs.resolve_function_root_dir(base_path)
+
+        if func._runtime_components:
+            # Resolving the right path isn't enough on its own: for a
+            # pipeline, the constituent packages a caller-side component
+            # reads from are normally only extracted inside the runtime
+            # subprocess, so the path is correct but points at nothing in
+            # this process. Extraction is idempotent and shares the on-disk
+            # directory with the runtime, so this moves the work earlier
+            # rather than duplicating it.
+            #
+            # Best effort: a component that reads no files must not be
+            # broken by a failed fetch of a package it never needed. A
+            # component that *does* need files still reports the miss
+            # itself (e.g. ALBLogger's schema_required=True).
+            try:
+                fs.ensure_function_package_extracted(base_path)
+            except Exception as e:
+                debug.functions_exec(
+                    f"Could not pre-extract the function package for "
+                    f"caller-side runtime components: {e!r}"
+                )
+        function_package_dir = fs.resolve_function_package_dir(base_path)
         try:
             for component in func._runtime_components:
-                component.on_runtime_started(function_root_dir)
+                component.on_runtime_started(function_package_dir)
         except Exception:
             # backend.start() above already created a real resource (a
             # leased memory subprocess, an attached ray actor). Since we

@@ -17,6 +17,7 @@ from metaflow_extensions.nflx.plugins.functions.debug import debug
 from metaflow_extensions.nflx.plugins.functions.utils import (
     is_s3,
     load_class_from_string,
+    resolve_package_dir,
 )
 
 if TYPE_CHECKING:
@@ -232,11 +233,70 @@ class FunctionSpec(ABC):
 
     def resolve_function_root_dir(self, base_path: str) -> str:
         """
-        Directory holding this spec's own runtime files (config, schemas,
-        etc). Defaults to this spec's own extraction dir; overridden by
-        specs whose own directory doesn't hold their runtime files (e.g.
-        pipelines, which delegate to a constituent function's directory).
+        Directory this spec's code package is extracted into. Defaults to this
+        spec's own extraction dir; overridden by specs whose own directory
+        doesn't hold their code (e.g. pipelines, which delegate to a
+        constituent function's directory).
         """
         return os.path.join(
             base_path, f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}{self.uuid}"
+        )
+
+    def resolve_function_package_dir(self, base_path: str) -> str:
+        """
+        Directory holding this spec's function module and the runtime files
+        colocated with it (config, schemas, etc).
+
+        This is *not* the extraction root: a function's files are archived
+        under their dotted module path, so a function in "a.b.c" lives in
+        "<extraction root>/a/b", and that's where a runtime component should
+        look for a file the model owner dropped next to their code. Only a
+        top-level module puts them at the extraction root itself.
+        """
+        return resolve_package_dir(
+            self.resolve_function_root_dir(base_path),
+            self.function.module if self.function else None,
+        )
+
+    @staticmethod
+    def _extract_package_for(
+        base_path: str,
+        uuid: Optional[str],
+        code_package: Optional[str],
+        task_code_path: Optional[str],
+    ) -> None:
+        """Extract one spec's code package into its own directory under
+        base_path. Idempotent -- setup_code_packages() is marker- and
+        lock-guarded, so racing with the runtime subprocess is safe and the
+        second caller is a no-op."""
+        if not uuid or not code_package or not task_code_path:
+            return
+        from metaflow_extensions.nflx.plugins.functions.environment import (
+            extract_code_packages,
+        )
+
+        extract_code_packages(
+            code_package,
+            task_code_path,
+            os.path.join(base_path, f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}{uuid}"),
+        )
+
+    def ensure_function_package_extracted(self, base_path: str) -> None:
+        """
+        Make sure the directory returned by resolve_function_package_dir()
+        actually exists in *this* process's filesystem.
+
+        Caller-side runtime components (on_runtime_started) read files out of
+        the function's package, but nothing guarantees the caller has that
+        package on disk: the backend may extract it in a subprocess, or --
+        for a pipeline -- extract only the pipeline's own near-empty package
+        and leave the constituent functions to the subprocess. Extraction is
+        idempotent and shares the on-disk directory with the runtime, so
+        doing it here moves the work earlier rather than duplicating it.
+
+        Best effort by design: a component that doesn't read any files must
+        not be broken by a failure to fetch a package it never needed.
+        """
+        self._extract_package_for(
+            base_path, self.uuid, self.code_package, self.task_code_path
         )

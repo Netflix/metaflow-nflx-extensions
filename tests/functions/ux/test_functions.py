@@ -293,40 +293,27 @@ def test_functions_json_simple(bound_functions, backend):
         close_function(func)
 
 
-@pytest.mark.parametrize(
-    "backend",
-    [
-        "memory",
-        pytest.param(
-            "local",
-            marks=pytest.mark.xfail(
-                reason="PR#98 item [6]: local defers extraction past on_runtime_started, "
-                "see TODO in core/function.py::function_from_json",
-                strict=True,
-            ),
-        ),
-        pytest.param(
-            "ray",
-            marks=pytest.mark.xfail(
-                reason="PR#98 item [6]: ray extracts inside a remote actor's filesystem, "
-                "not the caller's, see TODO in core/function.py::function_from_json",
-                strict=True,
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("backend", ["memory", "local", "ray"])
 def test_on_runtime_started_receives_backend_accurate_info(bound_functions, backend):
     """on_runtime_started must receive either a real, caller-readable
     directory or None -- never a path that merely looks valid but doesn't
-    exist on this process's filesystem. As of PR #98 feedback item [6],
-    function_from_json guesses a single generic directory identically for
-    every backend instead of asking the backend what it actually did, so
-    this currently fails on local (extraction is deferred past this point)
-    and on ray (extraction happens inside a remote actor's filesystem, not
-    this process's). Marked xfail(strict=True) for local/ray so this test
-    file stays green while that fix is deferred -- it will fail loudly (as
-    an unexpected XPASS) the moment someone fixes it, as a reminder to
-    remove the xfail mark."""
+    exist on this process's filesystem.
+
+    local and ray were xfail(strict=True) here under PR #98 feedback item
+    [6]: function_from_json derives one generic directory for every backend
+    instead of asking the backend what it did, and neither of those backends
+    leaves that directory on the caller's filesystem (local defers its real
+    extraction past this point; ray extracts inside a remote actor). They now
+    pass because function_from_json calls
+    FunctionSpec.ensure_function_package_extracted() before invoking the
+    hook, so the directory exists locally whichever backend ran.
+
+    Note what that does and doesn't settle: the caller is no longer handed an
+    unreadable path, but only because this process makes the derived path
+    true, not because the backend reported it. The remaining half of item [6]
+    -- have each backend report its own directory, or None when there
+    genuinely isn't a caller-accessible one -- is still open; see the TODO in
+    core/function.py::function_from_json."""
     from metaflow_extensions.nflx.plugins.functions.core.function import (
         close_function,
         function_from_json,
@@ -356,8 +343,8 @@ def test_on_runtime_started_receives_backend_accurate_info(bound_functions, back
         def after_call(self, *args, **kwargs):
             pass
 
-        def on_runtime_started(self, function_root_dir):
-            self.calls.append(function_root_dir)
+        def on_runtime_started(self, function_package_dir):
+            self.calls.append(function_package_dir)
 
     recorder = _DirRecorder()
     func = function_from_json(
@@ -370,11 +357,11 @@ def test_on_runtime_started_receives_backend_accurate_info(bound_functions, back
             len(recorder.calls) == 1
         ), f"on_runtime_started should fire exactly once, got {recorder.calls}"
 
-        function_root_dir = recorder.calls[0]
-        if function_root_dir is not None:
-            assert os.path.isdir(function_root_dir), (
+        function_package_dir = recorder.calls[0]
+        if function_package_dir is not None:
+            assert os.path.isdir(function_package_dir), (
                 f"{backend} backend passed on_runtime_started a path that does "
-                f"not exist on this process's filesystem: {function_root_dir!r} "
+                f"not exist on this process's filesystem: {function_package_dir!r} "
                 "-- the caller was handed a path it can't actually read."
             )
     finally:

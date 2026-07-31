@@ -196,6 +196,31 @@ class FunctionPipeline(MetaflowFunction):
     def name(self) -> str:
         return self._name
 
+    @property
+    def function_package_dir(self) -> str:
+        """
+        Delegate to the first constituent function's package directory.
+
+        A pipeline's own `spec.function` is a PipelineFunctionDecoratorSpec
+        pointing at FunctionPipeline's own module, so the base implementation
+        would resolve to somewhere under site-packages' notion of the package
+        layout rather than to the model owner's code. Runtime components
+        attached to a pipeline want the constituent function's directory --
+        the same "first constituent" choice made in _reconstruct_from_spec
+        and FunctionPipelineSpec.resolve_function_package_dir.
+
+        TODO(pipeline first-constituent): see _reconstruct_from_spec for the
+        full list of sites that must change together.
+
+        Proxy-mode pipelines keep raising through the constituent's strict
+        function_root_dir, which is the intended behavior: they genuinely
+        have no caller-accessible extraction dir.
+        """
+        functions = getattr(self, "functions", None)
+        if functions:
+            return functions[0].function_package_dir
+        return super().function_package_dir
+
     def _compute_pipeline_input_spec(self) -> Dict[str, Any]:
         """Compute external inputs needed by the pipeline."""
         if not self.functions:
@@ -493,10 +518,18 @@ class FunctionPipeline(MetaflowFunction):
         # independently. Point function_root_dir at a constituent function's
         # real directory instead, so pipeline-level runtime components can
         # find colocated config files (e.g. schema.avsc).
-        # TODO: this only reuses functions[0]'s directory. Fine while all
-        # constituent functions share one module, but a pipeline whose
-        # functions come from genuinely different modules would need a real
-        # decision about which function's directory to use here.
+        # TODO(pipeline first-constituent): this only reuses functions[0]'s
+        # directory. Fine while all constituent functions share one module,
+        # but a pipeline whose functions come from genuinely different
+        # modules needs a real decision about which function's directory a
+        # pipeline-level runtime component should read from. Four sites make
+        # this same choice and must be changed together -- grep
+        # "TODO(pipeline first-constituent)":
+        #   - here (the reconstructed pipeline's _function_root_dir)
+        #   - FunctionPipeline.function_package_dir
+        #   - FunctionPipelineSpec.resolve_function_root_dir
+        #   - FunctionPipelineSpec.resolve_function_package_dir
+        #     (and ensure_function_package_extracted, which extracts it)
         pipeline._function_root_dir = (
             functions[0].function_root_dir if functions else function_dir
         )

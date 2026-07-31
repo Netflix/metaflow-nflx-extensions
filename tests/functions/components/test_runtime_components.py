@@ -1239,7 +1239,7 @@ def test_on_runtime_started_default_is_noop():
 
 
 class _RuntimeStartedRecorder(AbstractRuntimeComponent):
-    """Component that records every on_runtime_started(function_root_dir) call."""
+    """Component that records every on_runtime_started(function_package_dir) call."""
 
     component_id = "runtime_started_recorder"
 
@@ -1259,14 +1259,14 @@ class _RuntimeStartedRecorder(AbstractRuntimeComponent):
     def after_call(self, *args, **kwargs):
         pass
 
-    def on_runtime_started(self, function_root_dir):
-        self.on_runtime_started_calls.append(function_root_dir)
+    def on_runtime_started(self, function_package_dir):
+        self.on_runtime_started_calls.append(function_package_dir)
 
 
 def test_function_from_json_invokes_on_runtime_started_with_computed_dir():
-    """function_from_json computes function_root_dir from base_path + spec.uuid
-    and invokes on_runtime_started on every scheduled component, without the
-    backend needing to report the directory back."""
+    """function_from_json resolves the function package dir from base_path +
+    the spec and invokes on_runtime_started on every scheduled component,
+    without the backend needing to report the directory back."""
     from unittest.mock import patch, MagicMock
     from metaflow_extensions.nflx.plugins.functions.core.function import (
         function_from_json,
@@ -1280,11 +1280,11 @@ def test_function_from_json_invokes_on_runtime_started_with_computed_dir():
     expected_dir = os.path.join(
         "/tmp/some-base", f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}abc-123"
     )
-    # function_from_json delegates to fs.resolve_function_root_dir(base_path)
-    # (see FunctionSpec.resolve_function_root_dir); mock it to match that
-    # method's real (non-pipeline) formula rather than asserting on a
-    # MagicMock's default return value.
-    fake_spec.resolve_function_root_dir.return_value = expected_dir
+    # function_from_json delegates to fs.resolve_function_package_dir(base_path)
+    # (see FunctionSpec.resolve_function_package_dir); mock it to match that
+    # method's real (non-pipeline, top-level-module) result rather than
+    # asserting on a MagicMock's default return value.
+    fake_spec.resolve_function_package_dir.return_value = expected_dir
 
     fake_func = MagicMock()
     fake_func._runtime_components = []
@@ -1308,7 +1308,7 @@ def test_function_from_json_invokes_on_runtime_started_with_computed_dir():
         )
 
     fake_func.backend.start.assert_called_once()
-    fake_spec.resolve_function_root_dir.assert_called_once_with("/tmp/some-base")
+    fake_spec.resolve_function_package_dir.assert_called_once_with("/tmp/some-base")
     assert recorder.on_runtime_started_calls == [expected_dir]
 
 
@@ -1347,18 +1347,20 @@ def test_function_from_json_skips_on_runtime_started_when_not_starting():
     assert recorder.on_runtime_started_calls == []
 
 
-def test_function_from_json_pipeline_resolves_constituent_function_root_dir(
+def test_function_from_json_pipeline_resolves_constituent_function_package_dir(
     tmp_path,
 ):
     """A pipeline's own extraction directory is near-empty (see
     FunctionPipeline._build_pipeline_spec) -- code-package files like schemas
-    actually live under a constituent function's own directory. A runtime
-    component started against a pipeline must be pointed at that constituent
-    directory, not the pipeline's own uuid-named directory, or it can't find
+    actually live under a constituent function's own directory, and within
+    that directory they sit next to the function's module rather than at the
+    extraction root (MetaflowFunctionPackage archives files under their
+    dotted module path). A runtime component started against a pipeline must
+    be pointed at that constituent *package* directory or it can't find the
     files it depends on (e.g. avro schemas for a logging component).
 
-    Regression test for FunctionSpec.resolve_function_root_dir /
-    FunctionPipelineSpec.resolve_function_root_dir.
+    Regression test for FunctionSpec.resolve_function_package_dir /
+    FunctionPipelineSpec.resolve_function_package_dir.
     """
     from unittest.mock import patch, MagicMock
     from metaflow_extensions.nflx.plugins.functions.core.function import (
@@ -1371,21 +1373,32 @@ def test_function_from_json_pipeline_resolves_constituent_function_root_dir(
 
     base_path = str(tmp_path)
 
-    # Only the constituent function's directory exists and holds the schema
-    # file -- the pipeline's own directory (metaflow-function-pipeline-uuid)
-    # is deliberately never created, matching production where it would be
-    # near-empty even if present.
+    # Only the constituent function's directory exists -- the pipeline's own
+    # directory (metaflow-function-pipeline-uuid) is deliberately never
+    # created, matching production where it would be near-empty even if
+    # present. Within it, the schema sits alongside the function's module at
+    # pkg/sub/, NOT at the extraction root, which is how a real code package
+    # is laid out.
     child_dir = os.path.join(
         base_path, f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}child-uuid"
     )
-    os.makedirs(child_dir)
-    with open(os.path.join(child_dir, "schema.avsc"), "w") as f:
+    package_dir = os.path.join(child_dir, "pkg", "sub")
+    os.makedirs(package_dir)
+    with open(os.path.join(package_dir, "schema.avsc"), "w") as f:
         f.write('{"type": "record"}')
 
     fake_spec = FunctionPipelineSpec(
         uuid="pipeline-uuid",
         class_name="fake.module.FakePipeline",
-        system_metadata={"functions": [{"uuid": "child-uuid"}]},
+        system_metadata={
+            "functions": [
+                {
+                    "uuid": "child-uuid",
+                    "class_name": "fake.module.FakeFunction",
+                    "function": {"module": "pkg.sub.function_module"},
+                }
+            ]
+        },
     )
 
     fake_func = MagicMock()
@@ -1412,8 +1425,8 @@ def test_function_from_json_pipeline_resolves_constituent_function_root_dir(
         def after_call(self, *args, **kwargs):
             pass
 
-        def on_runtime_started(self, function_root_dir):
-            with open(os.path.join(function_root_dir, "schema.avsc")) as f:
+        def on_runtime_started(self, function_package_dir):
+            with open(os.path.join(function_package_dir, "schema.avsc")) as f:
                 self.schema_contents = f.read()
 
     component = _SchemaReadingComponent()
