@@ -84,8 +84,28 @@ class FunctionPipeline(MetaflowFunction):
         # Build the FunctionSpec for this pipeline
         self._function_spec = self._build_pipeline_spec()
 
+        # _build_pipeline_spec() borrows the first constituent function's code
+        # package (so the pipeline reuses code artifacts that already contain
+        # the functions' colocated files, e.g. schema.avsc). _export() below
+        # unconditionally rebuilds and overwrites code_package with a
+        # near-empty package, since the pipeline class itself (as opposed to
+        # any of its functions) has no real function module to collect. So
+        # restore the borrowed package afterwards. Note func_spec.package_uuid
+        # still reflects the near-empty package's hash; that's only used for
+        # _export()'s own upload bookkeeping and isn't re-derived from
+        # code_package downstream.
+        # TODO: rethink how pipelines package/export code. Today this borrows
+        # only the *first* function's code package and assumes it covers every
+        # function in the pipeline (true only when they share one module) --
+        # and the near-empty pipeline-only package is still uploaded, unused.
+        # Also worth reconsidering how the borrowed package directory relates
+        # to the pipeline's own extracted function_root_dir.
+        borrowed_code_package = self._function_spec.code_package
+
         # Export the pipeline to set the reference field
         self._function_spec = self._export(self._function_spec)
+        if borrowed_code_package is not None:
+            self._function_spec.code_package = borrowed_code_package
 
     def _validate_input_functions(self, functions: List[MetaflowFunction]) -> None:
         """Validate pipeline structure."""
