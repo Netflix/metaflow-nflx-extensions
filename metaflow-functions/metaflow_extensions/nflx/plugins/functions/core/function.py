@@ -185,29 +185,6 @@ class MetaflowFunction(ABC):
         return function_root_dir
 
     @property
-    def function_package_dir(self) -> str:
-        """
-        Return the directory inside the extracted code package that holds
-        this function's module, and therefore the files the model owner
-        colocated with it (an .avsc schema, a .json config, ...).
-
-        This is the runtime-side counterpart of
-        FunctionSpec.resolve_function_package_dir: files are archived under
-        their dotted module path, so a function in "a.b.c" lives in
-        "<function_root_dir>/a/b". Only a top-level module puts them at
-        function_root_dir itself.
-        """
-        from metaflow_extensions.nflx.plugins.functions.utils import (
-            resolve_package_dir,
-        )
-
-        spec = self.spec
-        return resolve_package_dir(
-            self.function_root_dir,
-            spec.function.module if spec and spec.function else None,
-        )
-
-    @property
     def backend(self):
         """
         Get the backend for this function.
@@ -278,6 +255,64 @@ class MetaflowFunction(ABC):
                 return component
         return None
 
+    def _function_module_dir(self) -> Optional[str]:
+        """Directory holding this function's source module, in this process.
+
+        Available at packaging time because building a spec requires the
+        function object, which requires its module to have been imported.
+        """
+        import sys
+
+        func = self._func
+        module_name = getattr(func, "__module__", None)
+        if module_name is None:
+            # Decorators wrap the user callable; fall back to the wrapped one.
+            wrapped = getattr(func, "__wrapped__", None) or getattr(func, "func", None)
+            module_name = getattr(wrapped, "__module__", None)
+        module = sys.modules.get(module_name) if module_name else None
+        module_file = getattr(module, "__file__", None)
+        if not module_file:
+            return None
+        return os.path.dirname(os.path.abspath(module_file))
+
+    def _collect_runtime_component_metadata(self) -> Dict[str, Any]:
+        """Ask every configured runtime component what to record in the spec.
+
+        Packaging deliberately knows nothing about specific components: it walks
+        the component registry and calls ``contribute_spec_metadata()`` on each
+        class the user configured. Whatever comes back is keyed by
+        ``component_id`` -- the same key the backends use to route component
+        output -- so the caller and every runtime can find it later.
+
+        **Every** registered component class is asked, whether or not the user
+        called ``configure()`` on it. Gating on ``_class_config`` would conflate
+        two different questions -- "did the user configure this component" and
+        "does this component need anything recorded" -- and only ALBLogger
+        happens to make the first imply the second (its ``configure()`` is where
+        the schema filename comes from). A component with no required
+        configuration, or one deriving what it records from the function itself,
+        must still get the chance to contribute. Components self-gate by
+        returning ``None``, which is the base class default.
+
+        Whatever the user *did* declare is already visible by now: the function's
+        module had to be imported for this spec to be buildable at all, and
+        ``configure()`` is a module-level call.
+        """
+        from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
+            ComponentMeta,
+        )
+
+        module_dir = self._function_module_dir()
+        collected: Dict[str, Any] = {}
+        for component_cls in ComponentMeta.registry:
+            component_id = getattr(component_cls, "component_id", None)
+            if not component_id:
+                continue
+            metadata = component_cls.contribute_spec_metadata(module_dir)
+            if metadata is not None:
+                collected[component_id] = metadata
+        return collected
+
     def _build_function_spec(self, **kwargs) -> FunctionSpec:
         """
         Builds the function specification for the Metaflow function.
@@ -298,6 +333,9 @@ class MetaflowFunction(ABC):
             for artifact in task.artifacts:
                 artifact_meta[artifact.id] = artifact._object
             return artifact_meta
+
+        # (runtime component metadata is collected further down, once
+        # system_metadata exists -- see _collect_runtime_component_metadata)
 
         if self._func is None or self.task is None:
             raise MetaflowFunctionException(
@@ -362,6 +400,10 @@ class MetaflowFunction(ABC):
                 }
             }
         )
+
+        runtime_component_metadata = self._collect_runtime_component_metadata()
+        if runtime_component_metadata:
+            func_spec.system_metadata["runtime_components"] = runtime_component_metadata
         # Set user metadata if provided
         func_spec.user_metadata = kwargs.get("user_metadata", None)
 
@@ -1048,61 +1090,18 @@ def function_from_json(
         func._prefetch_artifacts = True
         func.backend.start(func, process=process)
 
-        # TODO(PR#98 feedback item [6], S3): this derives the directory from
-        # a spec-based formula instead of asking the backend what it actually
-        # did. The ensure_function_package_extracted() call below means the
-        # formula's answer now exists on this process's filesystem no matter
-        # which backend ran (local defers its real extraction past this
-        # point; ray extracts inside a remote actor we can never read), but
-        # that's this process making the formula true rather than the backend
-        # reporting the truth.
-        #
-        # The consequence to know about is on ray: what the caller gets is a
-        # *local copy* of the same code package, not the actor's directory.
-        # Identical bytes, so reading files the model owner shipped next to
-        # their code -- the hook's actual contract -- is correct. But it is
-        # not the directory the runtime is using, so a component that
-        # expected to observe runtime-written state there would silently read
-        # a stale/empty copy. Nothing does that today; don't add one without
-        # fixing this first.
-        #
-        # Fix: have each backend report back its own accurate directory (or
-        # None when there genuinely isn't a caller-accessible one). Not fixed
-        # yet. See tests/functions/ux/test_functions.py::
-        # test_on_runtime_started_receives_backend_accurate_info, whose
-        # local/ray params were xfail(strict=True) on this item until the
-        # pre-extraction landed.
-        if not base_path:
-            from metaflow_extensions.nflx.config.mfextinit_functions import (
-                FUNCTION_RUNTIME_PATH,
-            )
-
-            base_path = FUNCTION_RUNTIME_PATH
-
-        if func._runtime_components:
-            # Resolving the right path isn't enough on its own: for a
-            # pipeline, the constituent packages a caller-side component
-            # reads from are normally only extracted inside the runtime
-            # subprocess, so the path is correct but points at nothing in
-            # this process. Extraction is idempotent and shares the on-disk
-            # directory with the runtime, so this moves the work earlier
-            # rather than duplicating it.
-            #
-            # Best effort: a component that reads no files must not be
-            # broken by a failed fetch of a package it never needed. A
-            # component that *does* need files still reports the miss
-            # itself (e.g. ALBLogger's schema_required=True).
-            try:
-                fs.ensure_function_package_extracted(base_path)
-            except Exception as e:
-                debug.functions_exec(
-                    f"Could not pre-extract the function package for "
-                    f"caller-side runtime components: {e!r}"
-                )
-        function_package_dir = fs.resolve_function_package_dir(base_path)
+        # Deploy-time component config travels in the function spec, which the
+        # caller has already loaded -- so there is nothing to resolve on disk and
+        # no path for the caller and the runtime to disagree about. A component
+        # with no entry here was not configured for this function; it is told so
+        # (None) and is expected to stay quiet, since callers install components
+        # without knowing which functions use them.
+        component_metadata = (fs.system_metadata or {}).get("runtime_components", {})
         try:
             for component in func._runtime_components:
-                component.on_runtime_started(function_package_dir)
+                component.on_runtime_started(
+                    component_metadata.get(type(component).component_id)
+                )
         except Exception:
             # backend.start() above already created a real resource (a
             # leased memory subprocess, an attached ray actor). Since we

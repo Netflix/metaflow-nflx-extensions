@@ -121,13 +121,28 @@ def test_component_lifecycle_order():
         os.unlink(log)
 
 
-def test_component_start_activates_class():
-    """After start_components the class-level active_instance is set."""
+def test_active_instance_is_scoped_to_an_invocation_not_to_start():
+    """active_instance names the instance whose call is in flight.
+
+    Deliberately *not* set by start_components: setting it at start time made
+    routing wrong in two opposite ways -- one function copy invoked from several
+    threads only logged from the thread that started it, and one copy loaded per
+    thread had each copy overwrite the others. Scoping it to before/after_call
+    means whichever instance is actually serving the call is the one that
+    receives user-facing classmethod calls.
+    """
     log = _tmp_log()
     RecordingComponent._log_path = log
     try:
         instances = start_components([RecordingComponent()])
+        assert RecordingComponent.active_instance is None  # not started-scoped
+
+        before_call_components(instances)
         assert RecordingComponent.active_instance is instances[0]
+
+        after_call_components(instances)
+        assert RecordingComponent.active_instance is None  # cleared per call
+
         stop_components(instances)
         assert RecordingComponent.active_instance is None
     finally:
@@ -154,6 +169,8 @@ def test_stop_clears_instance_even_on_error():
             pass
 
     instances = start_components([BrokenStop()])
+    # active_instance is invocation-scoped now, so simulate being mid-call.
+    before_call_components(instances)
     assert BrokenStop.active_instance is not None
 
     with pytest.raises(MetaflowFunctionException, match="boom"):
@@ -203,6 +220,8 @@ def test_stop_components_is_best_effort_across_failures():
             pass
 
     instances = start_components([BrokenStopFirst(), HealthyStop()])
+    # active_instance is invocation-scoped now, so simulate being mid-call.
+    before_call_components(instances)
     assert BrokenStopFirst.active_instance is not None
     assert HealthyStop.active_instance is not None
 
@@ -1212,7 +1231,7 @@ def test_ray_backend_route_component_output_handles_empty():
 
 
 # ---------------------------------------------------------------------------
-# 12. on_runtime_started — caller-side hook
+# 12. on_runtime_started + contribute_spec_metadata — deploy-time config
 # ---------------------------------------------------------------------------
 
 
@@ -1235,183 +1254,15 @@ def test_on_runtime_started_default_is_noop():
             pass
 
     component = _PlainComponent()
-    assert component.on_runtime_started("/some/function/dir") is None
+    assert component.on_runtime_started({"anything": 1}) is None
+    assert component.on_runtime_started(None) is None
 
 
-class _RuntimeStartedRecorder(AbstractRuntimeComponent):
-    """Component that records every on_runtime_started(function_package_dir) call."""
+def test_contribute_spec_metadata_default_is_none():
+    """A component that needs nothing recorded contributes nothing."""
 
-    component_id = "runtime_started_recorder"
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.on_runtime_started_calls = []
-
-    def start(self, *args, **kwargs):
-        pass
-
-    def stop(self, *args, **kwargs):
-        pass
-
-    def before_call(self, *args, **kwargs):
-        pass
-
-    def after_call(self, *args, **kwargs):
-        pass
-
-    def on_runtime_started(self, function_package_dir):
-        self.on_runtime_started_calls.append(function_package_dir)
-
-
-def test_function_from_json_invokes_on_runtime_started_with_computed_dir():
-    """function_from_json resolves the function package dir from base_path +
-    the spec and invokes on_runtime_started on every scheduled component,
-    without the backend needing to report the directory back."""
-    from unittest.mock import patch, MagicMock
-    from metaflow_extensions.nflx.plugins.functions.core.function import (
-        function_from_json,
-    )
-    from metaflow_extensions.nflx.plugins.functions.config import Config
-
-    fake_spec = MagicMock()
-    fake_spec.serializer_configs = None
-    fake_spec.class_name = "fake.module.FakeFunction"
-    fake_spec.uuid = "abc-123"
-    expected_dir = os.path.join(
-        "/tmp/some-base", f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}abc-123"
-    )
-    # function_from_json delegates to fs.resolve_function_package_dir(base_path)
-    # (see FunctionSpec.resolve_function_package_dir); mock it to match that
-    # method's real (non-pipeline, top-level-module) result rather than
-    # asserting on a MagicMock's default return value.
-    fake_spec.resolve_function_package_dir.return_value = expected_dir
-
-    fake_func = MagicMock()
-    fake_func._runtime_components = []
-    fake_subclass = MagicMock()
-    fake_subclass._create_proxy_from_spec.return_value = fake_func
-
-    recorder = _RuntimeStartedRecorder()
-
-    with patch(
-        "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
-        return_value=fake_spec,
-    ), patch(
-        "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
-        return_value=fake_subclass,
-    ):
-        function_from_json(
-            "fake-reference.json",
-            base_path="/tmp/some-base",
-            start_runtime=True,
-            runtime_components=[recorder],
-        )
-
-    fake_func.backend.start.assert_called_once()
-    fake_spec.resolve_function_package_dir.assert_called_once_with("/tmp/some-base")
-    assert recorder.on_runtime_started_calls == [expected_dir]
-
-
-def test_function_from_json_skips_on_runtime_started_when_not_starting():
-    """on_runtime_started is only invoked when start_runtime=True."""
-    from unittest.mock import patch, MagicMock
-    from metaflow_extensions.nflx.plugins.functions.core.function import (
-        function_from_json,
-    )
-
-    fake_spec = MagicMock()
-    fake_spec.serializer_configs = None
-    fake_spec.class_name = "fake.module.FakeFunction"
-    fake_spec.uuid = "abc-123"
-
-    fake_func = MagicMock()
-    fake_func._runtime_components = []
-    fake_subclass = MagicMock()
-    fake_subclass._create_proxy_from_spec.return_value = fake_func
-
-    recorder = _RuntimeStartedRecorder()
-
-    with patch(
-        "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
-        return_value=fake_spec,
-    ), patch(
-        "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
-        return_value=fake_subclass,
-    ):
-        function_from_json(
-            "fake-reference.json",
-            start_runtime=False,
-            runtime_components=[recorder],
-        )
-
-    assert recorder.on_runtime_started_calls == []
-
-
-def test_function_from_json_pipeline_resolves_constituent_function_package_dir(
-    tmp_path,
-):
-    """A pipeline's own extraction directory is near-empty (see
-    FunctionPipeline._build_pipeline_spec) -- code-package files like schemas
-    actually live under a constituent function's own directory, and within
-    that directory they sit next to the function's module rather than at the
-    extraction root (MetaflowFunctionPackage archives files under their
-    dotted module path). A runtime component started against a pipeline must
-    be pointed at that constituent *package* directory or it can't find the
-    files it depends on (e.g. avro schemas for a logging component).
-
-    Regression test for FunctionSpec.resolve_function_package_dir /
-    FunctionPipelineSpec.resolve_function_package_dir.
-    """
-    from unittest.mock import patch, MagicMock
-    from metaflow_extensions.nflx.plugins.functions.core.function import (
-        function_from_json,
-    )
-    from metaflow_extensions.nflx.plugins.functions.core.function_pipeline_spec import (
-        FunctionPipelineSpec,
-    )
-    from metaflow_extensions.nflx.plugins.functions.config import Config
-
-    base_path = str(tmp_path)
-
-    # Only the constituent function's directory exists -- the pipeline's own
-    # directory (metaflow-function-pipeline-uuid) is deliberately never
-    # created, matching production where it would be near-empty even if
-    # present. Within it, the schema sits alongside the function's module at
-    # pkg/sub/, NOT at the extraction root, which is how a real code package
-    # is laid out.
-    child_dir = os.path.join(
-        base_path, f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}child-uuid"
-    )
-    package_dir = os.path.join(child_dir, "pkg", "sub")
-    os.makedirs(package_dir)
-    with open(os.path.join(package_dir, "schema.avsc"), "w") as f:
-        f.write('{"type": "record"}')
-
-    fake_spec = FunctionPipelineSpec(
-        uuid="pipeline-uuid",
-        class_name="fake.module.FakePipeline",
-        system_metadata={
-            "functions": [
-                {
-                    "uuid": "child-uuid",
-                    "class_name": "fake.module.FakeFunction",
-                    "function": {"module": "pkg.sub.function_module"},
-                }
-            ]
-        },
-    )
-
-    fake_func = MagicMock()
-    fake_func._runtime_components = []
-    fake_subclass = MagicMock()
-    fake_subclass._create_proxy_from_spec.return_value = fake_func
-
-    class _SchemaReadingComponent(AbstractRuntimeComponent):
-        component_id = "schema_reading_component"
-
-        def __init__(self, **kwargs):
-            super().__init__(**kwargs)
-            self.schema_contents = None
+    class _NoMetadataComponent(AbstractRuntimeComponent):
+        component_id = "no_metadata_component"
 
         def start(self, *args, **kwargs):
             pass
@@ -1425,24 +1276,313 @@ def test_function_from_json_pipeline_resolves_constituent_function_package_dir(
         def after_call(self, *args, **kwargs):
             pass
 
-        def on_runtime_started(self, function_package_dir):
-            with open(os.path.join(function_package_dir, "schema.avsc")) as f:
-                self.schema_contents = f.read()
+    assert _NoMetadataComponent.contribute_spec_metadata("/some/module/dir") is None
 
-    component = _SchemaReadingComponent()
 
-    with patch(
-        "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
-        return_value=fake_spec,
-    ), patch(
-        "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
-        return_value=fake_subclass,
-    ):
-        function_from_json(
-            "fake-reference.json",
-            base_path=base_path,
-            start_runtime=True,
-            runtime_components=[component],
+def test_component_meta_registry_tracks_subclasses():
+    """Packaging finds components by walking the registry, so every concrete
+    component class must land in it. The abstract base must not."""
+    from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
+        ComponentMeta,
+    )
+
+    class _RegisteredComponent(AbstractRuntimeComponent):
+        component_id = "registered_component"
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            pass
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+    assert _RegisteredComponent in ComponentMeta.registry
+    assert AbstractRuntimeComponent not in ComponentMeta.registry
+
+
+class _MetadataComponent(AbstractRuntimeComponent):
+    """Component that records the module dir it was asked about, and reads its
+    deploy-time metadata back on the caller side."""
+
+    component_id = "metadata_component"
+    asked_with = []
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.received_metadata = "<never called>"
+
+    @classmethod
+    def contribute_spec_metadata(cls, function_module_dir):
+        cls.asked_with.append(function_module_dir)
+        return {"module_dir": function_module_dir, "declared": cls._class_config}
+
+    def on_runtime_started(self, metadata):
+        self.received_metadata = metadata
+
+    def start(self, *args, **kwargs):
+        pass
+
+    def stop(self, *args, **kwargs):
+        pass
+
+    def before_call(self, *args, **kwargs):
+        pass
+
+    def after_call(self, *args, **kwargs):
+        pass
+
+
+class TestSpecMetadataCollection:
+    """Packaging asks configured components what to record; the caller hands it
+    back. Neither side resolves a path inside an extracted code package, which
+    is the point -- the caller and the runtime can be on different filesystems.
+    """
+
+    def setup_method(self):
+        _MetadataComponent.asked_with.clear()
+        _MetadataComponent._class_config.clear()
+
+    def teardown_method(self):
+        _MetadataComponent.asked_with.clear()
+        _MetadataComponent._class_config.clear()
+
+    def _collect(self, module_dir="/src/my_model"):
+        """Run the collector the way _build_function_spec does.
+
+        MetaflowFunction is abstract, and the collector only needs
+        _function_module_dir(), so call it against a minimal stand-in rather
+        than constructing a real function.
+        """
+        from metaflow_extensions.nflx.plugins.functions.core.function import (
+            MetaflowFunction,
         )
 
-    assert component.schema_contents == '{"type": "record"}'
+        class _Stub:
+            def _function_module_dir(self):
+                return module_dir
+
+        return MetaflowFunction._collect_runtime_component_metadata(_Stub())
+
+    def test_every_component_is_asked_even_when_unconfigured(self):
+        """Packaging asks every registered component, configured or not.
+
+        Gating on _class_config would conflate "did the user configure this"
+        with "does this need anything recorded". Only ALBLogger makes the first
+        imply the second, because its configure() is where the schema filename
+        comes from; a component with no required configuration must still get
+        its chance to contribute.
+        """
+        assert not _MetadataComponent._class_config  # nothing configured
+        collected = self._collect(module_dir="/src/my_model")
+
+        assert _MetadataComponent.asked_with == ["/src/my_model"]
+        # It chose to contribute anyway -- it needs no user configuration.
+        assert collected[_MetadataComponent.component_id]["declared"] == {}
+
+    def test_a_component_needing_no_configuration_can_still_contribute(self):
+        """The case the _class_config gate used to break: record something
+        derived from the function rather than from user config."""
+
+        class _DerivesFromFunction(_MetadataComponent):
+            component_id = "derives_from_function"
+
+            @classmethod
+            def contribute_spec_metadata(cls, function_module_dir):
+                return {"where": function_module_dir}
+
+        collected = self._collect(module_dir="/src/other")
+        assert collected["derives_from_function"] == {"where": "/src/other"}
+
+    def test_configured_component_is_asked_and_recorded_by_component_id(self):
+        _MetadataComponent.configure(schema_config="my_config.json")
+
+        collected = self._collect(module_dir="/src/my_model")
+
+        assert _MetadataComponent.asked_with == ["/src/my_model"]
+        entry = collected[_MetadataComponent.component_id]
+        assert entry["module_dir"] == "/src/my_model"
+        assert entry["declared"]["schema_config"] == "my_config.json"
+
+    def test_component_returning_none_records_nothing(self):
+        class _DeclinesComponent(_MetadataComponent):
+            component_id = "declines_component"
+
+            @classmethod
+            def contribute_spec_metadata(cls, function_module_dir):
+                return None
+
+        _DeclinesComponent.configure(anything=True)
+        try:
+            collected = self._collect()
+            assert _DeclinesComponent.component_id not in collected
+        finally:
+            _DeclinesComponent._class_config.clear()
+
+
+class TestOnRuntimeStartedReceivesSpecMetadata:
+    def setup_method(self):
+        _MetadataComponent._class_config.clear()
+
+    def test_hook_receives_this_components_entry(self):
+        """The caller passes each component only its own entry, keyed by
+        component_id -- the same key the backends use to route output back."""
+        component = _MetadataComponent()
+        metadata = {"schema": {"a": 1}}
+        component.on_runtime_started(metadata)
+        assert component.received_metadata == metadata
+
+    def test_hook_receives_none_when_the_function_has_no_entry(self):
+        """The common platform case: a component installed for a function that
+        was not deployed with it configured. Must not be an error."""
+        component = _MetadataComponent()
+        component.on_runtime_started(None)
+        assert component.received_metadata is None
+
+
+# ---------------------------------------------------------------------------
+# 13. Nesting and concurrent-invocation guard
+# ---------------------------------------------------------------------------
+
+
+def test_nested_invocation_restores_the_outer_active_instance():
+    """before_call stashes the previous active_instance and after_call restores
+    it, so an invocation nested inside another hands routing back.
+
+    Clearing to None instead meant the outer function's *later* log() calls
+    silently no-op'd -- demonstrated with ALBLogger: a row lost every field
+    logged after the nested call returned.
+    """
+
+    class _Nestable(AbstractRuntimeComponent):
+        component_id = "nestable"
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            pass
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+    outer, inner = _Nestable(), _Nestable()
+
+    before_call_components([outer])
+    assert _Nestable.active_instance is outer
+
+    before_call_components([inner])  # nested invocation begins
+    assert _Nestable.active_instance is inner
+
+    after_call_components([inner])  # nested invocation ends
+    assert _Nestable.active_instance is outer  # handed back, not cleared
+
+    after_call_components([outer])
+    assert _Nestable.active_instance is None  # top level: no routing
+
+
+def test_concurrent_local_invocation_with_components_is_refused():
+    """Runtime components can't serve overlapping invocations: routing is
+    class-level and the per-call buffer is on the instance, so two at once
+    interleave both. Local mode is the only backend that can express this
+    (memory runs a single-threaded subprocess runloop, a Ray actor is
+    single-threaded), so the guard lives there -- and it raises rather than
+    serialising, which would silently remove the parallelism the caller asked
+    for.
+    """
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
+        LocalBackend,
+    )
+    from metaflow_extensions.nflx.plugins.functions.exceptions import (
+        MetaflowFunctionRuntimeException,
+    )
+
+    class _Slow(AbstractRuntimeComponent):
+        component_id = "slow_component"
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def stop(self, *args, **kwargs):
+            pass
+
+        def before_call(self, *args, **kwargs):
+            pass
+
+        def after_call(self, *args, **kwargs):
+            pass
+
+    class _Func:
+        name = "slow_func"
+        _component_instances = []
+        _runtime_components = [_Slow()]
+        spec = None
+
+        def execute(self, data, params, **kwargs):
+            time.sleep(0.05)
+            return data
+
+    func = _Func()
+    errors = []
+
+    def call():
+        try:
+            LocalBackend.apply(func, 1, params=object())
+        except MetaflowFunctionRuntimeException as e:
+            errors.append(str(e))
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        list(ex.map(lambda _: call(), range(2)))
+
+    assert len(errors) == 1, "exactly one of two overlapping calls must be refused"
+    assert "concurrent invocation" in errors[0]
+
+
+def test_concurrent_local_invocation_without_components_is_allowed():
+    """Nothing to interleave when there are no components, so plain concurrent
+    local invocation must keep working -- the guard is not a general lock."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
+        LocalBackend,
+    )
+
+    class _Func:
+        name = "plain_func"
+        _component_instances = []
+        _runtime_components = []
+        spec = None
+
+        def execute(self, data, params, **kwargs):
+            time.sleep(0.05)
+            return data
+
+    func = _Func()
+    errors = []
+
+    def call(v):
+        try:
+            return LocalBackend.apply(func, v, params=object())
+        except Exception as e:  # noqa: BLE001
+            errors.append(repr(e))
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        results = list(ex.map(call, [1, 2]))
+
+    assert not errors, f"component-free function was wrongly blocked: {errors}"
+    assert sorted(r for r in results if r is not None) == [1, 2]

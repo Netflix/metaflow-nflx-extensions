@@ -16,7 +16,51 @@ from metaflow_extensions.nflx.plugins.functions.common.runtime_utils import (
     create_function_parameters,
 )
 from metaflow_extensions.nflx.plugins.functions.debug import debug
+import threading
 import traceback
+from contextlib import contextmanager
+
+
+# Runtime components cannot serve two invocations at once: routing
+# (``Cls.active_instance``) is class-level state and a component's per-call
+# buffer lives on the instance, so overlapping invocations interleave both. The
+# other backends can't hit this -- the memory backend runs a single-threaded
+# subprocess runloop and a Ray actor is single-threaded -- but local mode
+# executes in the caller's thread, so a threaded caller can.
+#
+# Reentrant on purpose: acquire(blocking=False) then succeeds for the *same*
+# thread, so an invocation nested inside another one (or anything else
+# re-entering on one thread) is allowed, while a genuinely concurrent
+# invocation from a second thread is refused.
+_COMPONENT_INVOCATION_LOCK = threading.RLock()
+
+
+@contextmanager
+def _guard_component_invocation(func_instance):
+    """Refuse a concurrent invocation of a function that has runtime components.
+
+    Raises rather than serialising. Serialising would silently remove the
+    parallelism a threaded caller was asking for; raising says what the
+    constraint is. Functions with no components are unaffected -- there is
+    nothing to interleave, so concurrent local invocation stays allowed.
+    """
+    if not getattr(func_instance, "_runtime_components", None):
+        yield
+        return
+
+    if not _COMPONENT_INVOCATION_LOCK.acquire(blocking=False):
+        raise MetaflowFunctionRuntimeException(
+            f"Function '{func_instance.name}' has runtime components and is "
+            "already being invoked on another thread. Runtime components do not "
+            "support concurrent invocation: routing and per-call buffers are "
+            "shared, so overlapping calls would mix rows between invocations. "
+            "Invoke it from one thread at a time, or load a separate copy per "
+            "thread and serialise calls within each."
+        )
+    try:
+        yield
+    finally:
+        _COMPONENT_INVOCATION_LOCK.release()
 
 
 class LocalBackend(AbstractBackend):
@@ -103,55 +147,58 @@ class LocalBackend(AbstractBackend):
             after_call_components,
         )
 
-        if not func_instance._component_instances:
-            func_instance._component_instances = start_components(
-                getattr(func_instance, "_runtime_components", []),
-                function=func_instance,
-            )
+        # One invocation at a time for a function with components -- see
+        # _guard_component_invocation above.
+        with _guard_component_invocation(func_instance):
+            if not func_instance._component_instances:
+                func_instance._component_instances = start_components(
+                    getattr(func_instance, "_runtime_components", []),
+                    function=func_instance,
+                )
 
-        try:
-            before_call_components(func_instance._component_instances)
-        except Exception as e:
-            raise MetaflowFunctionRuntimeException(
-                f"Runtime component exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
-            )
-
-        user_exception: Optional[MetaflowFunctionUserException]
-        try:
-            result = func_instance.execute(data, parameters, **kwargs)
-        except Exception as e:
-            user_exception = MetaflowFunctionUserException(
-                f"Exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
-            )
-            result = None
-        else:
-            user_exception = None
-
-        # after_call must run whether or not the function call itself failed,
-        # so components (e.g. metrics/logging) see every invocation.
-        # TODO(local-backend exception parity): thread the raw exception
-        # through here (`after_call_components(func_instance._component_instances,
-        # exception=raw_exception)`) so after_call()/collect_output() can see
-        # the failure, matching memory_backend.py. Requires keeping a
-        # reference to the raw exception from the `except Exception as e:`
-        # block above (currently only its wrapped `MetaflowFunctionUserException`
-        # message is kept, not the exception object itself).
-        try:
-            after_call_components(func_instance._component_instances)
-        except Exception as e:
-            if user_exception is None:
+            try:
+                before_call_components(func_instance._component_instances)
+            except Exception as e:
                 raise MetaflowFunctionRuntimeException(
                     f"Runtime component exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
                 )
-            # A user exception is already in flight; don't let a component
-            # failure on the error path mask it.
-            debug.functions_exec(
-                f"Runtime component exception in after_call for '{func_instance.name}' "
-                f"while handling a prior user exception: {e!r}"
-            )
 
-        if user_exception is not None:
-            raise user_exception
+            user_exception: Optional[MetaflowFunctionUserException]
+            try:
+                result = func_instance.execute(data, parameters, **kwargs)
+            except Exception as e:
+                user_exception = MetaflowFunctionUserException(
+                    f"Exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
+                )
+                result = None
+            else:
+                user_exception = None
+
+            # after_call must run whether or not the function call itself failed,
+            # so components (e.g. metrics/logging) see every invocation.
+            # TODO(local-backend exception parity): thread the raw exception
+            # through here (`after_call_components(func_instance._component_instances,
+            # exception=raw_exception)`) so after_call()/collect_output() can see
+            # the failure, matching memory_backend.py. Requires keeping a
+            # reference to the raw exception from the `except Exception as e:`
+            # block above (currently only its wrapped `MetaflowFunctionUserException`
+            # message is kept, not the exception object itself).
+            try:
+                after_call_components(func_instance._component_instances)
+            except Exception as e:
+                if user_exception is None:
+                    raise MetaflowFunctionRuntimeException(
+                        f"Runtime component exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
+                    )
+                # A user exception is already in flight; don't let a component
+                # failure on the error path mask it.
+                debug.functions_exec(
+                    f"Runtime component exception in after_call for '{func_instance.name}' "
+                    f"while handling a prior user exception: {e!r}"
+                )
+
+            if user_exception is not None:
+                raise user_exception
 
         return result
 

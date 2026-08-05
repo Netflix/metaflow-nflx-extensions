@@ -270,62 +270,6 @@ def is_absolute_path(path: str) -> bool:
     return is_s3(path) or os.path.isabs(path)
 
 
-def module_package_subpath(module: Optional[str]) -> str:
-    """
-    Path, relative to an extracted code package root, of the directory that
-    holds `module`'s source file.
-
-    MetaflowFunctionPackage archives a function's files relative to the parent
-    of its top-level package (see MetaflowFunctionPackage._get_top_level_module_dir),
-    so a module "a.b.c" is stored in the package at "a/b/c.py" and its
-    directory -- along with any files colocated with it, e.g. an .avsc schema
-    or a .json config -- is "a/b". A top-level module ("c") lives at the
-    package root and yields "".
-
-    Parameters
-    ----------
-    module : Optional[str]
-        Dotted module name, e.g. "a.b.c". `None`/empty yields "".
-
-    Returns
-    -------
-    str
-        Relative directory path, or "" when the module sits at the root.
-    """
-    if not module:
-        return ""
-    parts = module.split(".")[:-1]
-    return os.path.join(*parts) if parts else ""
-
-
-def resolve_package_dir(function_root_dir: str, module: Optional[str]) -> str:
-    """
-    Resolve the directory inside an extracted code package that holds
-    `module` and the resources colocated with it.
-
-    Falls back to `function_root_dir` when the computed subdirectory isn't
-    present, which keeps flat layouts (module at the package root) and any
-    package built with different arcnames behaving exactly as before.
-
-    Parameters
-    ----------
-    function_root_dir : str
-        Directory the function's code package was extracted into.
-    module : Optional[str]
-        Dotted module name of the function.
-
-    Returns
-    -------
-    str
-        The function's package directory.
-    """
-    subpath = module_package_subpath(module)
-    if not subpath:
-        return function_root_dir
-    candidate = os.path.join(function_root_dir, subpath)
-    return candidate if os.path.isdir(candidate) else function_root_dir
-
-
 def types_are_equal(type_str1: str, type_str2: str) -> bool:
     """
     Compare two type strings by importing the actual classes and checking if they're the same.

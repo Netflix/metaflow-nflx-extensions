@@ -17,6 +17,110 @@ Because installation happens in `function_from_json`, each backend
 (local, memory, ray, ...) independently decides whether to enable or disable
 a given component for the runtime it starts.
 
+## A component's configuration is part of the model
+
+Two different decisions get made in two different places, and it's worth being
+precise about which is which:
+
+- **What a component is configured to do is part of the model.** It's declared
+  by the model owner, in the model's own code, and is resolved when the function
+  is packaged — so it travels with the function reference, exactly like the
+  function's parameters and its environment do. An ALB logging stream is a good
+  example: which stream a model logs to, and the schema of the rows it writes,
+  are properties *of that model*. They are not something a caller picks, any
+  more than a caller picks the model's weights.
+- **Whether a component runs is the caller's decision.** That's what
+  `runtime_components=[...]` is, and it stays a per-runtime choice.
+
+Concretely: a component declares its configuration by calling
+`configure()` **at module level** in the model's code, and implements
+`contribute_spec_metadata()` to say what should be recorded. At packaging time
+the framework walks the component registry, asks every configured component,
+and stores the answers in
+`spec.system_metadata["runtime_components"][component_id]`.
+
+Both the caller and every backend already load the spec, so both sides read the
+same configuration. That matters because they are frequently not the same
+filesystem — the memory backend runs a subprocess, a Ray actor can be on another
+node — so resolving anything from a path *inside* an extracted code package would
+require both sides to independently agree about that path. Resolving once, at
+deploy time, in the process that is already importing the model's module, removes
+that whole class of problem.
+
+The practical consequences:
+
+- A function deployed *without* a given component configured carries no entry for
+  it. A caller that installs the component anyway gets a component that knows it
+  has nothing to do. Components must treat this as normal and stay quiet —
+  callers install components without knowing which models use them.
+- Because the configuration is in the spec, and the spec feeds the function's
+  uuid, changing it changes the function's identity. Reconfiguring a component
+  means redeploying the model, which is the same rule that already applies to its
+  parameters and code.
+
+## Lifecycle and hooks
+
+| hook | side | when |
+|---|---|---|
+| `contribute_spec_metadata(function_module_dir)` | packaging | once, at deploy, per configured component class |
+| `start` / `stop` | runtime | once per runtime |
+| `on_runtime_started(metadata)` | caller | once, after the backend starts |
+| `before_call` / `after_call` | runtime | around every invocation |
+| `collect_output()` | runtime | after every invocation; result is routed to the caller-side instance's `output` |
+| `on_output_received(exception)` | caller | after `output` is routed |
+
+`contribute_spec_metadata` is a **classmethod**, called on the class rather than
+an instance, because at packaging time no instance exists — only the declaration
+the model's module made via `configure()`. It receives the directory holding the
+function's source module, so a component can resolve files the model owner
+colocated with their code against the source tree, where they are unambiguously
+present.
+
+`on_runtime_started` receives that same recorded metadata back (or `None` when
+the model didn't configure this component), which is how a caller-side instance
+learns the model's configuration without reading anything off disk.
+
+### Routing user-facing calls: `active_instance`
+
+A component's user-facing entry point is normally a classmethod that routes to
+whichever instance is live (`Logger.log(...)` → `cls.active_instance`). That
+attribute is set by `before_call_components()` and cleared by
+`after_call_components()`, so it names the instance whose invocation is
+**currently in flight** — not merely one that has been started.
+
+That scoping matters in both directions. A single loaded function invoked from
+more than one thread routes correctly from each, and two separately loaded copies
+of the same function don't steal each other's routing. A `log()` outside any
+invocation is a no-op rather than landing in the next call's row.
+
+**The invariant it rests on is one invocation at a time per process**, and it is
+enforced rather than merely documented. A component instance buffers per-call
+state, so it cannot serve overlapping invocations anyway. The memory backend runs
+a single-threaded subprocess runloop and a Ray actor is single-threaded, so
+neither can express the problem; local mode executes in the caller's thread, so
+`LocalBackend.apply` refuses a second concurrent invocation of a function that has
+components, with a `MetaflowFunctionRuntimeException` naming the constraint.
+
+It raises rather than serialising on purpose: a lock would silently remove the
+parallelism a threaded caller was asking for, trading one silent failure for
+another. Functions with *no* components are not guarded — there is nothing to
+interleave, so concurrent local invocation stays allowed.
+
+Two things that are explicitly fine:
+
+- **Threads the user's own function spawns.** They're inside the invocation, not
+  separate invocations, so the guard never sees them, and `log()` from one of them
+  lands in the right row (this is why `active_instance` is a plain class attribute
+  and not thread-local — thread-local would silently drop those calls).
+- **Nested invocation.** A function whose code invokes another rehydrated function
+  in-process re-enters on the same thread, which the guard permits (the lock is
+  reentrant), and routing is handed back to the outer call when the inner one
+  finishes.
+
+If in-process *concurrent* invocation ever becomes a requirement, the answer is
+per-invocation state or one component instance per worker — not a cleverer
+`active_instance`.
+
 ## Example
 
 Suppose we want a function that checks whether a value is above some
@@ -110,5 +214,12 @@ close_function(func)
 
 Because `runtime_components` is a parameter to `function_from_json`, each
 caller decides independently which components (if any) to install for the
-runtime it starts — the reference and the function code stay unchanged
-either way.
+runtime it starts.
+
+Note what does and doesn't change between those two calls. `RuntimeMetrics`
+needs no configuration, so the reference and the function code are identical
+either way — the only difference is whether the caller installs it. A component
+that *is* configured by the model (see "A component's configuration is part of
+the model" above) is different: the model's module calls `configure()`, and the
+resolved configuration is part of the reference. The caller still chooses whether
+to install it, but it no longer chooses what it does.

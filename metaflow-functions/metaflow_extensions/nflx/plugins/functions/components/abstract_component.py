@@ -1,60 +1,58 @@
-import contextvars
-import weakref
 from abc import ABCMeta, abstractmethod
-from typing import Any, Dict, Optional
-
-# Keyed by component class, not stored in the class's own __dict__: component
-# classes get pickled wholesale (e.g. by Ray/cloudpickle, which walks
-# cls.__dict__ to reconstruct dynamically-defined classes on the remote side),
-# and a ContextVar isn't picklable. Keeping the vars here instead means
-# pickling a component class never touches them.
-_active_instance_vars: "weakref.WeakKeyDictionary[type, contextvars.ContextVar]" = (
-    weakref.WeakKeyDictionary()
-)
-
-
-def _active_instance_var(cls: type) -> "contextvars.ContextVar[Optional[Any]]":
-    var = _active_instance_vars.get(cls)
-    if var is None:
-        var = contextvars.ContextVar(f"{cls.__name__}_active_instance", default=None)
-        _active_instance_vars[cls] = var
-    return var
+from typing import Any, Dict, List, Optional
 
 
 class ComponentMeta(ABCMeta):
     """
     Metaclass for runtime components.
 
-    Manages the `active_instance` class attribute that the runtime sets after
-    `start()` and clears after `stop()`.  Subclasses use it to implement their
-    own no-op-when-inactive interaction patterns (e.g. a `log()` classmethod).
+    Manages the `active_instance` class attribute that the runtime sets around
+    each invocation.  Subclasses use it to implement their own
+    no-op-when-inactive interaction patterns (e.g. a `log()` classmethod).
 
-    `active_instance` is backed by a `ContextVar` (one per subclass, see
-    `_active_instance_var()` above) rather than a plain class attribute, so
-    routing is invocation-local instead of process-global: separate threads
-    (each starts with a fresh top-level context) and separate asyncio tasks
-    (each gets a copy of the enclosing context) don't see each other's active
-    instance, so two runtimes for the same component class running
-    concurrently can't cross-route calls into each other. `Cls.active_instance`
-    read/write syntax is unchanged for callers -- the property below just
-    routes it through the ContextVar instead of `__dict__`.
+    `active_instance` is a plain per-subclass class attribute, set by
+    `before_call_components()` and cleared by `after_call_components()` -- so it
+    names the instance whose invocation is *currently in flight*, not merely one
+    that has been started.
+
+    **Invariant: one invocation at a time per process**, enforced rather than
+    assumed. A component instance buffers per-call state (see e.g. ALBLogger's row
+    buffer), so it cannot serve two overlapping invocations, and this attribute
+    cannot name two instances at once. The memory backend (single-threaded
+    subprocess runloop) and Ray (single-threaded actor) cannot express the
+    problem; local mode runs in the caller's thread, so `LocalBackend.apply`
+    refuses a concurrent second invocation of a component-bearing function.
+
+    Being a plain attribute rather than thread-local is deliberate: threads the
+    user's own function spawns are *inside* the invocation, and `log()` from one
+    of them has to land in the current row. Thread-local storage would silently
+    drop those calls. A previous version went further and used a per-subclass
+    `ContextVar`, which was worse still: thread- and task-confined, so a component
+    started on one thread was invisible on every other and logging silently did
+    nothing.
 
     Also gives every subclass its own `_class_config` dict (rather than one
     shared dict inherited from the base class) so that `configure()` calls on
     one component class never leak into another's config.
     """
 
+    # Every concrete component class, in definition order. Populated by
+    # __init__ below, which already runs once per subclass. Packaging walks
+    # this to ask each component what it wants recorded in the function spec
+    # (see contribute_spec_metadata), so core packaging code needs no
+    # knowledge of any particular component.
+    registry: List[type] = []
+
     def __init__(cls, name: str, bases: tuple, namespace: dict) -> None:
         super().__init__(name, bases, namespace)
         cls._class_config = {}
-
-    @property
-    def active_instance(cls):
-        return _active_instance_var(cls).get()
-
-    @active_instance.setter
-    def active_instance(cls, value) -> None:
-        _active_instance_var(cls).set(value)
+        # Per-subclass, so one component class's active instance is never
+        # visible as another's.
+        cls.active_instance = None
+        # Skip the base class itself: it has no component_id and never
+        # contributes anything.
+        if bases:
+            ComponentMeta.registry.append(cls)
 
 
 class AbstractRuntimeComponent(metaclass=ComponentMeta):
@@ -64,19 +62,36 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
     Runtime components plug into the function execution lifecycle.  Pass class
     instances to ``function_from_json`` via ``runtime_components=[...]``::
 
-        logger = Logger(stream_name="my_stream", app_name="my_app")
+        logger = Logger(debug=True)
         func = function_from_json(ref, runtime_components=[logger])
 
     Constructor keyword arguments are stored in ``_init_kwargs`` so instances
     can be reconstructed across subprocess boundaries.
 
-    Lifecycle (all hooks accept ``*args, **kwargs`` for forward-compatibility):
+    **A component's configuration belongs to the model, not to the caller.**
+    Whether a component runs is the caller's choice (the argument above); what
+    it is configured to do is declared by the model, at module level via
+    ``configure()``, recorded at packaging time by
+    ``contribute_spec_metadata()``, and carried in the function spec. So a
+    component's settings travel with the function reference exactly like the
+    function's parameters and environment do -- see the README in this
+    directory.
 
+    Lifecycle (runtime hooks accept ``*args, **kwargs`` for
+    forward-compatibility):
+
+    * ``contribute_spec_metadata`` — classmethod, called at *packaging* time on
+      every configured component class; what it returns is recorded in the spec
     * ``start``       — called once when the runtime initialises
     * ``stop``        — called once when the runtime shuts down
     * ``before_call`` — called before each function invocation
     * ``after_call``  — called after each function invocation, whether or not
       it raised (components must not assume the call succeeded)
+    * ``collect_output`` — called after each invocation; the result is routed to
+      the caller-side instance's ``output``
+    * ``on_runtime_started`` — caller side, once, with this component's recorded
+      spec metadata (or ``None`` if the model didn't configure it)
+    * ``on_output_received`` — caller side, after ``output`` is routed
 
     Subclasses define their own user-facing interaction pattern.  A common
     pattern is a classmethod that routes through ``active_instance``::
@@ -208,18 +223,52 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
         """
         return None
 
-    def on_runtime_started(self, function_package_dir: str) -> None:
+    @classmethod
+    def contribute_spec_metadata(
+        cls, function_module_dir: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Called at **package/deploy time** for every configured component, to
+        record whatever this component needs at runtime into the function's
+        spec. Whatever is returned lands in
+        ``spec.system_metadata["runtime_components"][component_id]`` and is
+        then readable by the caller *and* by every backend, since both already
+        load the spec.
+
+        ``function_module_dir`` is the directory holding the function's source
+        module, in the process doing the packaging -- so a component can resolve
+        a file the model owner colocated with their code (a schema, a config)
+        against the *source tree*, where it is unambiguously present. Resolving
+        such files here rather than at runtime is the point: it removes any need
+        for the caller and the runtime to independently agree on a path inside
+        an extracted code package.
+
+        Called on **every** component class, whether or not the user configured
+        it — a component with no required configuration, or one deriving what it
+        records from the function itself, still gets its chance. Components
+        self-gate: return ``None`` to record nothing, which is the default. It
+        must therefore tolerate being called when the user declared nothing.
+
+        Note this runs in the packaging process, which has necessarily already
+        imported the function's module (the decorator had to run for the
+        function to exist) -- so a module-level ``configure()`` call has already
+        taken effect by the time this is called.
+        """
+        return None
+
+    def on_runtime_started(self, metadata: Optional[Dict[str, Any]]) -> None:
         """
         Called once on the caller side, after the function's runtime has
         started, on the same instance returned by ``function_from_json``
         (not the reconstructed instance the runtime uses).
 
-        ``function_package_dir`` is the directory *inside* the extracted code
-        package that holds the function's module, so components can read the
-        files the model owner colocated with their code. Note this is not the
-        extraction root: files are archived under their dotted module path,
-        so a function in ``a.b.c`` gets ``<extraction root>/a/b``. On the
-        runtime side the equivalent is ``function.function_package_dir``.
+        ``metadata`` is whatever this component's
+        ``contribute_spec_metadata()`` recorded in the function spec at deploy
+        time, or ``None`` if it recorded nothing -- which is the signal that
+        this function was not deployed with this component configured. A
+        component must treat ``None`` as "not configured for this function" and
+        stay quiet: the caller installs components without knowing whether any
+        given function uses them.
 
         Default implementation is a no-op.
         """

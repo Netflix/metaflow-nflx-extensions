@@ -64,7 +64,13 @@ def start_components(
 ) -> List["AbstractRuntimeComponent"]:
     """Start a list of component instances.
 
-    ``start()`` is called on each and ``active_instance`` is set on the class.
+    ``start()`` is called on each. ``active_instance`` is deliberately *not*
+    set here -- it is set per invocation by ``before_call_components()``, so it
+    always names the instance whose call is in flight. Setting it at start time
+    instead made it wrong in two opposite ways: a single function copy invoked
+    from several threads only ever logged from the thread that started it, and
+    one copy loaded *per* thread had each copy overwrite the others.
+
     ``function`` is the ``MetaflowFunction`` instance being started, passed
     through so components can access things like ``function.function_root_dir``
     on the runtime side, where they have no other way to reach it.
@@ -83,7 +89,6 @@ def start_components(
             raise MetaflowFunctionRuntimeException(
                 f"{type(instance).__name__} failed to start: {e!r}"
             ) from e
-        type(instance).active_instance = instance
         started.append(instance)
     return instances
 
@@ -134,7 +139,25 @@ def stop_components(
 def before_call_components(
     instances: List["AbstractRuntimeComponent"], *args, **kwargs
 ) -> None:
+    """Mark each instance active for this invocation, then run ``before_call``.
+
+    ``active_instance`` is set here rather than at start time so it names the
+    instance actually serving the current call. That keeps user-facing
+    classmethods (``Logger.log(...)``) routing correctly whichever thread the
+    invocation runs on -- including threads the user's own function spawns,
+    which are inside the invocation -- and keeps two loaded copies of the same
+    function from stealing each other's routing.
+
+    The previous value is stashed and restored by ``after_call_components()``
+    rather than cleared, so an invocation nested inside another one (a function
+    whose code invokes a second rehydrated function in-process) hands routing
+    back to the outer call when it finishes. Clearing to ``None`` instead made
+    the outer function's later ``log()`` calls silently no-op.
+    """
     for instance in instances:
+        component_cls = type(instance)
+        instance._previous_active_instance = component_cls.active_instance
+        component_cls.active_instance = instance
         instance.before_call(*args, **kwargs)
 
 
@@ -158,9 +181,18 @@ def after_call_components(
     """
     collected: Dict[str, Any] = {}
     for instance in instances:
-        instance.after_call(*args, exception=exception, **kwargs)
-        output = instance.collect_output(*args, exception=exception, **kwargs)
-        if output is not None:
-            instance.output = output
-            collected[cast(str, type(instance).component_id)] = output
+        try:
+            instance.after_call(*args, exception=exception, **kwargs)
+            output = instance.collect_output(*args, exception=exception, **kwargs)
+            if output is not None:
+                instance.output = output
+                collected[cast(str, type(instance).component_id)] = output
+        finally:
+            # Hand routing back to whatever was active before this invocation:
+            # the enclosing call if this one was nested, otherwise None, so a
+            # stray log() between top-level invocations is still a no-op rather
+            # than landing in the next call's row.
+            type(instance).active_instance = getattr(
+                instance, "_previous_active_instance", None
+            )
     return collected
