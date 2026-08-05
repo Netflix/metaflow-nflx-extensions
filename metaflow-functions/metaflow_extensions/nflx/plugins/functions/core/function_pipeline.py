@@ -111,6 +111,43 @@ class FunctionPipeline(MetaflowFunction):
                     f"{functions[i].name} incompatible with {functions[i + 1].name}"
                 )
 
+    def _collect_constituent_component_metadata(self) -> Dict[str, Any]:
+        """Surface constituent functions' runtime-component metadata on the
+        pipeline's own spec.
+
+        A pipeline is what callers rehydrate and attach components to, so a
+        component's deploy-time config has to be readable from the *pipeline's*
+        spec. But the config is declared in the module that defines a constituent
+        handler, and only that constituent's spec gets it (pipelines don't go
+        through `_build_function_spec`, so nothing collected it here at all --
+        components silently found no config and, for ALBLogger, `log()` raised).
+
+        Merged by ``component_id``. Two constituents disagreeing about the same
+        component is a real misconfiguration: one invocation of a pipeline
+        produces one row for one stream, so its handlers cannot want different
+        schemas.
+        """
+        collected: Dict[str, Any] = {}
+        sources: Dict[str, str] = {}
+        for func in self.functions:
+            system_metadata = getattr(func.spec, "system_metadata", None) or {}
+            for component_id, metadata in (
+                system_metadata.get("runtime_components") or {}
+            ).items():
+                previous = collected.get(component_id)
+                if previous is not None and previous != metadata:
+                    raise MetaflowFunctionException(
+                        f"Pipeline '{self._name}' has constituent functions that "
+                        f"disagree about runtime component '{component_id}': "
+                        f"'{sources[component_id]}' and '{func.name}' each declare "
+                        "different configuration. All handlers in one pipeline must "
+                        "declare the same component configuration -- one invocation "
+                        "produces one row."
+                    )
+                collected[component_id] = metadata
+                sources[component_id] = func.name
+        return collected
+
     def _build_pipeline_spec(self) -> FunctionSpec:
         """Build FunctionSpec for this pipeline."""
         # Compute pipeline I/O
@@ -139,6 +176,8 @@ class FunctionPipeline(MetaflowFunction):
             environment_metadata = self.functions[0].spec.system_metadata.get(
                 "environment", {}
             )
+
+        runtime_component_metadata = self._collect_constituent_component_metadata()
 
         # Collect serializer configs for pipeline I/O
         from metaflow_extensions.nflx.plugins.functions.serializers.registry import (
@@ -188,6 +227,11 @@ class FunctionPipeline(MetaflowFunction):
             system_metadata={
                 "functions": function_specs,
                 "environment": environment_metadata,
+                **(
+                    {"runtime_components": runtime_component_metadata}
+                    if runtime_component_metadata
+                    else {}
+                ),
             },
             serializer_configs=serializer_configs,
         )

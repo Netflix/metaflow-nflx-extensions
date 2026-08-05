@@ -1317,9 +1317,12 @@ class _MetadataComponent(AbstractRuntimeComponent):
         self.received_metadata = "<never called>"
 
     @classmethod
-    def contribute_spec_metadata(cls, function_module_dir):
+    def contribute_spec_metadata(cls, function_module_dir, function_module_name=None):
         cls.asked_with.append(function_module_dir)
-        return {"module_dir": function_module_dir, "declared": cls._class_config}
+        # Real components must read per-module config, not _class_config -- see
+        # the note on contribute_spec_metadata.
+        declared = getattr(cls, "_module_configs", {}).get(function_module_name) or {}
+        return {"module_dir": function_module_dir, "declared": dict(declared)}
 
     def on_runtime_started(self, metadata):
         self.received_metadata = metadata
@@ -1346,25 +1349,27 @@ class TestSpecMetadataCollection:
     def setup_method(self):
         _MetadataComponent.asked_with.clear()
         _MetadataComponent._class_config.clear()
+        _MetadataComponent._module_configs.clear()
 
     def teardown_method(self):
         _MetadataComponent.asked_with.clear()
         _MetadataComponent._class_config.clear()
+        _MetadataComponent._module_configs.clear()
 
-    def _collect(self, module_dir="/src/my_model"):
+    def _collect(self, module_dir="/src/my_model", module_name=__name__):
         """Run the collector the way _build_function_spec does.
 
         MetaflowFunction is abstract, and the collector only needs
-        _function_module_dir(), so call it against a minimal stand-in rather
-        than constructing a real function.
+        _function_module(), so call it against a minimal stand-in rather than
+        constructing a real function.
         """
         from metaflow_extensions.nflx.plugins.functions.core.function import (
             MetaflowFunction,
         )
 
         class _Stub:
-            def _function_module_dir(self):
-                return module_dir
+            def _function_module(self):
+                return module_dir, module_name
 
         return MetaflowFunction._collect_runtime_component_metadata(_Stub())
 
@@ -1392,7 +1397,9 @@ class TestSpecMetadataCollection:
             component_id = "derives_from_function"
 
             @classmethod
-            def contribute_spec_metadata(cls, function_module_dir):
+            def contribute_spec_metadata(
+                cls, function_module_dir, function_module_name=None
+            ):
                 return {"where": function_module_dir}
 
         collected = self._collect(module_dir="/src/other")
@@ -1413,7 +1420,9 @@ class TestSpecMetadataCollection:
             component_id = "declines_component"
 
             @classmethod
-            def contribute_spec_metadata(cls, function_module_dir):
+            def contribute_spec_metadata(
+                cls, function_module_dir, function_module_name=None
+            ):
                 return None
 
         _DeclinesComponent.configure(anything=True)

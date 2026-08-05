@@ -1,3 +1,4 @@
+import sys
 from abc import ABCMeta, abstractmethod
 from typing import Any, Dict, List, Optional
 
@@ -46,6 +47,12 @@ class ComponentMeta(ABCMeta):
     def __init__(cls, name: str, bases: tuple, namespace: dict) -> None:
         super().__init__(name, bases, namespace)
         cls._class_config = {}
+        # Same values, but keyed by the module that declared them. `configure()`
+        # is a module-level call in user code, so "which module asked for this"
+        # is the natural scope for anything resolved per function -- see
+        # contribute_spec_metadata. `_class_config` stays a flat merged view,
+        # which is what runtime-side config (row defaults, flags) wants.
+        cls._module_configs = {}
         # Per-subclass, so one component class's active instance is never
         # visible as another's.
         cls.active_instance = None
@@ -158,7 +165,7 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
         self.output: Optional[Any] = None
 
     @classmethod
-    def configure(cls, **kwargs: Any) -> None:
+    def configure(cls, _declaring_module: Optional[str] = None, **kwargs: Any) -> None:
         """
         Set config for this component class from user code, before the
         runtime constructs and starts it.
@@ -171,8 +178,34 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
         Repeated calls accumulate; last write wins per key. Calling
         ``configure()`` after the component has started has no effect on the
         already-running instance.
+
+        Subclasses that override this must forward ``_declaring_module`` (see the
+        note in the body) so the *user's* module is recorded, not theirs.
+
+        The calling module is recorded alongside the values (in
+        ``_module_configs``), because ``_class_config`` alone is process-global:
+        one module configuring a component would otherwise make *every* function
+        packaged in that process look as though it had declared the same thing.
+        Anything a component resolves per function should be read from
+        ``_module_configs`` -- see ``contribute_spec_metadata``.
         """
         cls._class_config.update(kwargs)
+
+        # sys._getframe over inspect: this runs at import time for every user
+        # module that configures a component, and inspect.stack() builds full
+        # frame records for the entire stack.
+        #
+        # A subclass that overrides configure() must pass _declaring_module
+        # explicitly -- otherwise the frame one level up is the override itself
+        # and every caller would be recorded as the component's own module.
+        caller_module = _declaring_module
+        if caller_module is None:
+            try:
+                caller_module = sys._getframe(1).f_globals.get("__name__")
+            except ValueError:  # pragma: no cover - no caller frame
+                caller_module = None
+        if caller_module:
+            cls._module_configs.setdefault(caller_module, {}).update(kwargs)
 
     @abstractmethod
     def start(self, *args: Any, **kwargs: Any) -> None:
@@ -225,7 +258,9 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
 
     @classmethod
     def contribute_spec_metadata(
-        cls, function_module_dir: str
+        cls,
+        function_module_dir: Optional[str],
+        function_module_name: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Called at **package/deploy time** for every configured component, to
@@ -242,6 +277,13 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
         such files here rather than at runtime is the point: it removes any need
         for the caller and the runtime to independently agree on a path inside
         an extracted code package.
+
+        ``function_module_name`` is that module's dotted name. Use it to look up
+        ``cls._module_configs`` rather than reading ``cls._class_config``:
+        ``configure()`` is process-global, so a component that trusts
+        ``_class_config`` will claim to be configured for functions in modules
+        that never configured it -- and then fail packaging them, looking for a
+        file next to the wrong module.
 
         Called on **every** component class, whether or not the user configured
         it — a component with no required configuration, or one deriving what it

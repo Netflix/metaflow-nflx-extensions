@@ -42,7 +42,7 @@ import shutil
 from abc import ABC, abstractmethod
 from dataclasses import asdict
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, cast
 
 if TYPE_CHECKING:
     from metaflow import S3, Task
@@ -255,11 +255,13 @@ class MetaflowFunction(ABC):
                 return component
         return None
 
-    def _function_module_dir(self) -> Optional[str]:
-        """Directory holding this function's source module, in this process.
+    def _function_module(self) -> Tuple[Optional[str], Optional[str]]:
+        """``(directory, dotted name)`` of this function's source module.
 
         Available at packaging time because building a spec requires the
-        function object, which requires its module to have been imported.
+        function object, which requires its module to have been imported. The
+        name matters as much as the directory: it is how a component tells
+        whether *this* function's module is the one that configured it.
         """
         import sys
 
@@ -271,9 +273,10 @@ class MetaflowFunction(ABC):
             module_name = getattr(wrapped, "__module__", None)
         module = sys.modules.get(module_name) if module_name else None
         module_file = getattr(module, "__file__", None)
-        if not module_file:
-            return None
-        return os.path.dirname(os.path.abspath(module_file))
+        module_dir = (
+            os.path.dirname(os.path.abspath(module_file)) if module_file else None
+        )
+        return module_dir, module_name
 
     def _collect_runtime_component_metadata(self) -> Dict[str, Any]:
         """Ask every configured runtime component what to record in the spec.
@@ -302,13 +305,13 @@ class MetaflowFunction(ABC):
             ComponentMeta,
         )
 
-        module_dir = self._function_module_dir()
+        module_dir, module_name = self._function_module()
         collected: Dict[str, Any] = {}
         for component_cls in ComponentMeta.registry:
             component_id = getattr(component_cls, "component_id", None)
             if not component_id:
                 continue
-            metadata = component_cls.contribute_spec_metadata(module_dir)
+            metadata = component_cls.contribute_spec_metadata(module_dir, module_name)
             if metadata is not None:
                 collected[component_id] = metadata
         return collected
