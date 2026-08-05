@@ -1,6 +1,9 @@
 from metaflow import FunctionParameters
 from metaflow_extensions.nflx.plugins.avro_function import avro_function
 from metaflow_extensions.nflx.plugins.json_function import json_function
+from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
+    AbstractRuntimeComponent,
+)
 
 
 @avro_function
@@ -62,3 +65,36 @@ def json_simple_object(
     """Simple json function with no external dependencies."""
     increment = params.increment if hasattr(params, "increment") else 1
     return {**data, "processed": True, "increment": increment}
+
+
+class MetadataRecorder(AbstractRuntimeComponent):
+    """Records what ``on_runtime_started`` was handed, for the ux tests.
+
+    Defined here rather than in the test file because the memory backend and Ray
+    rebuild components in another process by importing them by dotted path (see
+    ``load_component_instances``). The test module is not part of a function's
+    code package -- importing it there fails with ``No module named 'functions'``
+    -- but this module is packaged with the functions it defines, so a component
+    declared here can be reconstructed on every backend.
+    """
+
+    component_id = "metadata_recorder"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.calls = []
+
+    def start(self, *args, **kwargs):
+        pass
+
+    def stop(self, *args, **kwargs):
+        pass
+
+    def before_call(self, *args, **kwargs):
+        pass
+
+    def after_call(self, *args, **kwargs):
+        pass
+
+    def on_runtime_started(self, metadata):
+        self.calls.append(metadata)

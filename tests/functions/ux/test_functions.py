@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import sys
 
 import pytest
 from metaflow import Flow, Runner
@@ -294,59 +295,48 @@ def test_functions_json_simple(bound_functions, backend):
 
 
 @pytest.mark.parametrize("backend", ["memory", "local", "ray"])
-def test_on_runtime_started_receives_backend_accurate_info(bound_functions, backend):
-    """on_runtime_started must receive either a real, caller-readable
-    directory or None -- never a path that merely looks valid but doesn't
-    exist on this process's filesystem.
+def test_on_runtime_started_receives_spec_metadata_or_none(bound_functions, backend):
+    """on_runtime_started receives this component's deploy-time spec metadata,
+    or None when the deployed function never configured it -- and None must not
+    break the invocation.
 
-    local and ray were xfail(strict=True) here under PR #98 feedback item
-    [6]: function_from_json derives one generic directory for every backend
-    instead of asking the backend what it did, and neither of those backends
-    leaves that directory on the caller's filesystem (local defers its real
-    extraction past this point; ray extracts inside a remote actor). They now
-    pass because function_from_json calls
-    FunctionSpec.ensure_function_package_extracted() before invoking the
-    hook, so the directory exists locally whichever backend ran.
+    Callers install components without knowing which functions use them (the
+    platform installs ALBLogger for every function; most don't log), so an
+    unconfigured component has to come up quiet and stay out of the way. That is
+    what this asserts, per backend.
 
-    Note what that does and doesn't settle: the caller is no longer handed an
-    unreadable path, but only because this process makes the derived path
-    true, not because the backend reported it. The remaining half of item [6]
-    -- have each backend report its own directory, or None when there
-    genuinely isn't a caller-accessible one -- is still open; see the TODO in
-    core/function.py::function_from_json."""
+    "Doesn't break the invocation" is also covered across every backend by
+    test_functions_simple_avro_with_runtime_metrics, which invokes with the
+    unconfigured RuntimeMetrics component; this one adds the hook observation.
+
+    It cannot assert the *configured* case: the metadata is written into the spec
+    at packaging time, and this fixture's function was deployed without any
+    component configured, so there is nothing to retroactively declare. That half
+    is covered in tests/functions/components/test_runtime_components.py
+    (TestSpecMetadataCollection, TestOnRuntimeStartedReceivesSpecMetadata).
+
+    Supersedes an earlier version of this test that asserted the hook received a
+    caller-readable *directory*, under PR#98 feedback item [6]. Nothing needs a
+    directory now -- the schema a component reads is resolved at packaging time
+    into the function spec -- so that item is closed by deletion rather than by
+    having each backend report its own path.
+    """
     from metaflow_extensions.nflx.plugins.functions.core.function import (
         close_function,
         function_from_json,
     )
-    from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
-        AbstractRuntimeComponent,
-    )
 
     _skip_if_backend_unavailable(backend)
 
-    class _DirRecorder(AbstractRuntimeComponent):
-        component_id = "dir_recorder"
+    # From the packaged flow module, not this file: components are rebuilt in the
+    # subprocess/actor by dotted path, and the test tree isn't in the code
+    # package. See MetadataRecorder's docstring.
+    sys.path.insert(
+        0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "flows")
+    )
+    from function_module import MetadataRecorder  # noqa: E402
 
-        def __init__(self, **kwargs):
-            super().__init__(**kwargs)
-            self.calls = []
-
-        def start(self, *args, **kwargs):
-            pass
-
-        def stop(self, *args, **kwargs):
-            pass
-
-        def before_call(self, *args, **kwargs):
-            pass
-
-        def after_call(self, *args, **kwargs):
-            pass
-
-        def on_runtime_started(self, function_package_dir):
-            self.calls.append(function_package_dir)
-
-    recorder = _DirRecorder()
+    recorder = MetadataRecorder()
     func = function_from_json(
         bound_functions["avro_simple_function"],
         backend=backend,
@@ -357,13 +347,13 @@ def test_on_runtime_started_receives_backend_accurate_info(bound_functions, back
             len(recorder.calls) == 1
         ), f"on_runtime_started should fire exactly once, got {recorder.calls}"
 
-        function_package_dir = recorder.calls[0]
-        if function_package_dir is not None:
-            assert os.path.isdir(function_package_dir), (
-                f"{backend} backend passed on_runtime_started a path that does "
-                f"not exist on this process's filesystem: {function_package_dir!r} "
-                "-- the caller was handed a path it can't actually read."
-            )
+        assert recorder.calls[0] is None, (
+            f"{backend} backend passed metadata for a component this function "
+            f"never configured: {recorder.calls[0]!r}"
+        )
+
+        # An unconfigured component must not break the call it is installed on.
+        assert func("hello") == "HELLO_modified"
     finally:
         close_function(func)
 
