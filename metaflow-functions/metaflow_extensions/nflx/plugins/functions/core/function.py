@@ -42,7 +42,7 @@ import shutil
 from abc import ABC, abstractmethod
 from dataclasses import asdict
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Any, Dict, Optional, Type, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, cast
 
 if TYPE_CHECKING:
     from metaflow import S3, Task
@@ -63,6 +63,9 @@ if TYPE_CHECKING:
     from metaflow_extensions.nflx.plugins.functions.backends.abstract_backend import (
         AbstractBackend,
     )
+    from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
+        AbstractRuntimeComponent,
+    )
 
 
 class MetaflowFunction(ABC):
@@ -71,6 +74,17 @@ class MetaflowFunction(ABC):
     """
 
     function_spec_cls: Type[FunctionSpec]
+
+    # Identity of the backend runtime this handle is attached to, set by the
+    # backend once it materializes (or reuses) a runtime for this function.
+    # None until then. Opaque to this class - only the backend that set it
+    # knows how to interpret it.
+    #
+    # Declared as a class attribute (not just set in __init__) so that
+    # instances created via cls.__new__(cls) - bypassing __init__, as some
+    # proxy/spec-loading paths do - still see a well-defined default instead
+    # of raising AttributeError.
+    _runtime_id: Optional[Any] = None
 
     def __init__(
         self,
@@ -96,7 +110,9 @@ class MetaflowFunction(ABC):
         self._func: Optional["MetaflowFunctionDecorator"] = func
         self.task: Optional["Task"] = task
         self._function_spec: Optional[FunctionSpec] = None
+        self._function_root_dir: Optional[str] = None
         self._backend: Optional["AbstractBackend"] = None
+        self._component_instances: List["AbstractRuntimeComponent"] = []
 
         # Only build function spec for legacy single-function initialization
         if func is not None and task is not None:
@@ -161,6 +177,14 @@ class MetaflowFunction(ABC):
         return uuid
 
     @property
+    def function_root_dir(self) -> str:
+        """Return the directory this function's code package was extracted into."""
+        function_root_dir = self._function_root_dir
+        if function_root_dir is None:
+            raise MetaflowFunctionException("Function root dir is not set.")
+        return function_root_dir
+
+    @property
     def backend(self):
         """
         Get the backend for this function.
@@ -176,6 +200,121 @@ class MetaflowFunction(ABC):
             "No backend has been set for this function instance. "
             "Please ensure you construct the function with a backend."
         )
+
+    @property
+    def runtime_components(self) -> List[Any]:
+        """
+        Return the runtime component instances scheduled for this function.
+
+        These are the same instances passed to ``function_from_json`` via
+        ``runtime_components=[...]``. Each instance's ``output``
+        attribute reflects the most recent value reported by that
+        component's ``collect_output()``, once the backend has run.
+
+        Returns
+        -------
+        List[Any]
+            The runtime component instances scheduled for this function.
+        """
+        return getattr(self, "_runtime_components", [])
+
+    @property
+    def runtime_id(self) -> Optional[Any]:
+        """
+        Return the identity of the backend runtime this handle is attached to.
+
+        Set by the backend once it materializes (or reuses) a runtime for
+        this function; ``None`` if no runtime has been attached yet. The
+        value is opaque here - only the backend that set it knows how to
+        interpret it.
+
+        Returns
+        -------
+        Optional[Any]
+            The backend-assigned runtime identity, or None if not attached.
+        """
+        return self._runtime_id
+
+    def get_runtime_component(self, component_type: Type[Any]) -> Optional[Any]:
+        """
+        Look up the runtime component instance of the given type.
+
+        Parameters
+        ----------
+        component_type : Type[Any]
+            The concrete component class to look up.
+
+        Returns
+        -------
+        Optional[Any]
+            The matching instance, or None if no component of that type was
+            scheduled for this function.
+        """
+        for component in self.runtime_components:
+            if isinstance(component, component_type):
+                return component
+        return None
+
+    def _function_module(self) -> Tuple[Optional[str], Optional[str]]:
+        """``(directory, dotted name)`` of this function's source module.
+
+        Available at packaging time because building a spec requires the
+        function object, which requires its module to have been imported. The
+        name matters as much as the directory: it is how a component tells
+        whether *this* function's module is the one that configured it.
+        """
+        import sys
+
+        func = self._func
+        module_name = getattr(func, "__module__", None)
+        if module_name is None:
+            # Decorators wrap the user callable; fall back to the wrapped one.
+            wrapped = getattr(func, "__wrapped__", None) or getattr(func, "func", None)
+            module_name = getattr(wrapped, "__module__", None)
+        module = sys.modules.get(module_name) if module_name else None
+        module_file = getattr(module, "__file__", None)
+        module_dir = (
+            os.path.dirname(os.path.abspath(module_file)) if module_file else None
+        )
+        return module_dir, module_name
+
+    def _collect_runtime_component_metadata(self) -> Dict[str, Any]:
+        """Ask every configured runtime component what to record in the spec.
+
+        Packaging deliberately knows nothing about specific components: it walks
+        the component registry and calls ``contribute_spec_metadata()`` on each
+        class the user configured. Whatever comes back is keyed by
+        ``component_id`` -- the same key the backends use to route component
+        output -- so the caller and every runtime can find it later.
+
+        **Every** registered component class is asked, whether or not the user
+        called ``configure()`` on it. Gating on ``_class_config`` would conflate
+        two different questions -- "did the user configure this component" and
+        "does this component need anything recorded" -- and only ALBLogger
+        happens to make the first imply the second (its ``configure()`` is where
+        the schema filename comes from). A component with no required
+        configuration, or one deriving what it records from the function itself,
+        must still get the chance to contribute. Components self-gate by
+        returning ``None``, which is the base class default.
+
+        Whatever the user *did* declare is already visible by now: the function's
+        module had to be imported for this spec to be buildable at all, and
+        ``configure()`` is a module-level call.
+        """
+        from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
+            ComponentMeta,
+        )
+
+        module_dir, module_name = self._function_module()
+        collected: Dict[str, Any] = {}
+        for component_cls in ComponentMeta.registry:
+            component_id = getattr(component_cls, "component_id", None)
+            if not component_id:
+                continue
+            metadata = component_cls.contribute_spec_metadata(module_dir, module_name)
+            if metadata is not None:
+                collected[component_id] = metadata
+        return collected
 
     def _build_function_spec(self, **kwargs) -> FunctionSpec:
         """
@@ -197,6 +336,9 @@ class MetaflowFunction(ABC):
             for artifact in task.artifacts:
                 artifact_meta[artifact.id] = artifact._object
             return artifact_meta
+
+        # (runtime component metadata is collected further down, once
+        # system_metadata exists -- see _collect_runtime_component_metadata)
 
         if self._func is None or self.task is None:
             raise MetaflowFunctionException(
@@ -261,6 +403,10 @@ class MetaflowFunction(ABC):
                 }
             }
         )
+
+        runtime_component_metadata = self._collect_runtime_component_metadata()
+        if runtime_component_metadata:
+            func_spec.system_metadata["runtime_components"] = runtime_component_metadata
         # Set user metadata if provided
         func_spec.user_metadata = kwargs.get("user_metadata", None)
 
@@ -430,6 +576,16 @@ class MetaflowFunction(ABC):
 
         return self._func(data, params, **kwargs)
 
+    def _notify_output_received(
+        self, exception: Optional[BaseException] = None
+    ) -> None:
+        """Call ``on_output_received()`` on each runtime component, once
+        ``output`` has been routed onto the caller-side instances (if any
+        was routed). ``exception`` is the exception the call raised, or
+        ``None`` on success, so components can react to a failed call too."""
+        for component in self.runtime_components:
+            component.on_output_received(exception=exception)
+
     def __call__(self, data: Any, **kwargs) -> Any:
         """
         Calls the function with the given data and keyword arguments.
@@ -447,7 +603,13 @@ class MetaflowFunction(ABC):
         Any
             The result of the function call.
         """
-        return self.backend.apply(self, data, **kwargs)
+        try:
+            result = self.backend.apply(self, data, **kwargs)
+        except Exception as e:
+            self._notify_output_received(exception=e)
+            raise
+        self._notify_output_received()
+        return result
 
     async def call_async(self, data: Any, **kwargs) -> Any:
         """
@@ -466,7 +628,13 @@ class MetaflowFunction(ABC):
         Any
             The result of the function call.
         """
-        return await self.backend.apply_async(self, data, **kwargs)
+        try:
+            result = await self.backend.apply_async(self, data, **kwargs)
+        except Exception as e:
+            self._notify_output_received(exception=e)
+            raise
+        self._notify_output_received()
+        return result
 
     @classmethod
     def from_json(
@@ -554,6 +722,8 @@ class MetaflowFunction(ABC):
             # Load using consolidated function
             dff._func = load_decorated_function(func_spec.function)
             dff._function_spec = func_spec
+            dff._function_root_dir = function_dir
+            dff._component_instances = []
 
             # Set the back-end
             if not hasattr(dff, "_backend") or dff._backend is None:
@@ -772,6 +942,7 @@ class MetaflowFunction(ABC):
         instance._func = None
         instance.task = None
         instance._function_spec = func_spec
+        instance._component_instances = []
 
         # Set up backend
         from metaflow_extensions.nflx.plugins.functions.backends.factory import (
@@ -790,6 +961,7 @@ def function_from_json(
     use_proxy: bool = True,
     backend: Optional[str] = None,
     process: int = 1,
+    runtime_components: Optional[List] = None,
 ) -> "MetaflowFunction":
     """
     Load a relocatable function from a reference JSON.
@@ -824,11 +996,22 @@ def function_from_json(
         If not provided, uses the backend from METAFLOW_FUNCTION_BACKEND config.
     process: int, default 1
         Number of process to back this function
+    runtime_components : Optional[List], default None
+        List of AbstractRuntimeComponent instances to activate in the runtime.
+        Components are reconstructed inside the subprocess and their lifecycle
+        hooks (start, stop, before_call, after_call) are called automatically.
+        At most one instance per component type is allowed.
 
     Returns
     -------
     MetaflowFunction
         A function instance configured as specified by the parameters
+
+    Raises
+    ------
+    MetaflowFunctionException
+        If ``runtime_components`` contains more than one instance of the same
+        component type.
     """
     # Load the spec from json reference
     fs = FunctionSpec.from_json(reference)
@@ -877,12 +1060,61 @@ def function_from_json(
         # Subprocess - return concrete function with full environment
         func = subclass.from_spec(fs, base_path, backend=backend)
 
+    # Store runtime_components on the function instance so the backend can
+    # forward them to the subprocess.
+    runtime_components = runtime_components or []
+    seen_types: Dict[type, Any] = {}
+    seen_component_ids: Dict[str, Any] = {}
+    for component in runtime_components:
+        component_type = type(component)
+        if component_type in seen_types:
+            raise MetaflowFunctionException(
+                f"Duplicate runtime component of type '{component_type.__name__}'. "
+                "Only one instance per component type is allowed."
+            )
+        seen_types[component_type] = component
+
+        component_id = component_type.component_id
+        if component_id in seen_component_ids:
+            other_type = type(seen_component_ids[component_id])
+            raise MetaflowFunctionException(
+                f"Runtime components '{other_type.__name__}' and "
+                f"'{component_type.__name__}' both declare component_id "
+                f"'{component_id}'. Each component class must have a unique "
+                "component_id."
+            )
+        seen_component_ids[component_id] = component
+    func._runtime_components = runtime_components
+
     # Start the runtime if requested
     if start_runtime:
         # Store prefetch_artifacts on function instance so runtime can access it
         # when constructing the subprocess command
         func._prefetch_artifacts = True
         func.backend.start(func, process=process)
+
+        # Deploy-time component config travels in the function spec, which the
+        # caller has already loaded -- so there is nothing to resolve on disk and
+        # no path for the caller and the runtime to disagree about. A component
+        # with no entry here was not configured for this function; it is told so
+        # (None) and is expected to stay quiet, since callers install components
+        # without knowing which functions use them.
+        component_metadata = (fs.system_metadata or {}).get("runtime_components", {})
+        try:
+            for component in func._runtime_components:
+                component.on_runtime_started(
+                    component_metadata.get(type(component).component_id)
+                )
+        except Exception:
+            # backend.start() above already created a real resource (a
+            # leased memory subprocess, an attached ray actor). Since we
+            # raise instead of returning `func` to the caller, there is no
+            # handle left for anyone to close -- close it ourselves before
+            # propagating so it isn't leaked. See PR#98 feedback item [6]
+            # and tests/functions/ux/test_functions.py::
+            # test_on_runtime_started_raise_does_not_leak_backend_resource.
+            func.backend.close(func, clean_dir=True)
+            raise
 
     return func
 

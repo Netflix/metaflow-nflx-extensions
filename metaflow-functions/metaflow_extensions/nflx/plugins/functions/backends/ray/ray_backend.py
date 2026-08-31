@@ -5,7 +5,9 @@ Provides local Ray cluster execution with automatic resource allocation
 from @resources decorator metadata.
 """
 
-from typing import Any, Dict
+import threading
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 import ray
 
@@ -33,6 +35,19 @@ from metaflow_extensions.nflx.plugins.functions.serializers.ray_sync import (
 )
 
 
+# Identifies an actor: the function's content-hash uuid and the serialized
+# runtime component specs it was created with. Two handles only share an
+# actor if both match (Ray has no process-count knob, unlike the memory
+# backend, so the key is narrower than RuntimeKey there).
+RayActorKey = Tuple[str, Tuple[str, ...]]
+
+
+@dataclass
+class ActorEntry:
+    actor: Any
+    attached: int = 0  # number of handles currently attached to this actor
+
+
 class RayBackend(AbstractBackend):
     """
     Local Ray cluster backend for Metaflow Functions.
@@ -49,7 +64,8 @@ class RayBackend(AbstractBackend):
     """
 
     _cluster_initialized = False
-    _actor_pool: Dict[str, Any] = {}  # uuid -> ray.ActorHandle
+    _actor_pool: Dict[RayActorKey, ActorEntry] = {}
+    _lock = threading.Lock()
 
     @property
     def backend_type(self) -> BackendType:
@@ -87,6 +103,21 @@ class RayBackend(AbstractBackend):
             )
 
         cls._cluster_initialized = True
+
+    @classmethod
+    def _route_component_output(
+        cls, func_instance, component_output: Dict[str, Any]
+    ) -> None:
+        """
+        Stamp output onto the caller-side runtime component instances that
+        match component_output entries, by ``component_id``.
+        """
+        if not component_output:
+            return
+        for component in getattr(func_instance, "_runtime_components", []):
+            component_id = type(component).component_id
+            if component_id in component_output:
+                component.output = component_output[component_id]
 
     @classmethod
     def _sync_serializers(cls):
@@ -130,20 +161,37 @@ class RayBackend(AbstractBackend):
         actor = cls._get_or_create_actor(func_instance)
 
         # Execute on actor (Ray automatically puts data in object store)
+        # TODO(ray-backend exception parity): on failure, ray.get() raises
+        # before this tuple is ever unpacked, so `_route_component_output()`
+        # never runs here and any output a component collected before the
+        # failure is lost. See the TODO in FunctionActorClass.execute() for
+        # what needs to change to fix this for parity with memory_backend.py.
         try:
             result_ref = actor.execute.remote(data, **kwargs)
-            result = ray.get(result_ref)
+            result, component_output = ray.get(result_ref)
+            cls._route_component_output(func_instance, component_output)
             return result
 
         except ray.exceptions.RayActorError as e:
             # Actor crashed - remove from pool so it gets recreated
-            cls._actor_pool.pop(func_instance.uuid, None)
+            key = func_instance._runtime_id
+            if key is not None:
+                with cls._lock:
+                    cls._actor_pool.pop(key, None)
+                func_instance._runtime_id = None
             raise MetaflowFunctionRuntimeException(
                 f"Ray actor crashed while executing function '{func_instance.name}': {str(e)}"
             )
 
         except ray.exceptions.RayTaskError as e:
-            # User code error - propagate as user exception
+            # Ray dynamically subclasses RayTaskError with the original
+            # exception's type, so isinstance() below recovers whether this
+            # came from a runtime component hook or user code, even though
+            # both cross the actor boundary as the same RayTaskError.
+            if isinstance(e, MetaflowFunctionRuntimeException):
+                raise MetaflowFunctionRuntimeException(
+                    f"Runtime component exception in function '{func_instance.name}': {str(e)}"
+                )
             raise MetaflowFunctionUserException(
                 f"Function '{func_instance.name}' raised an exception: {str(e)}"
             )
@@ -183,6 +231,15 @@ class RayBackend(AbstractBackend):
 
         Uses the simple resolve_conda_environment utility.
 
+        # TODO(ray-conda-isolation): This resolves a real conda environment and
+        # returns a path to that environment's `python` binary (see
+        # `resolve_conda_environment` in `metaflow_extensions/nflx/plugins/functions/environment.py`),
+        # but that path is NOT currently wired up to actually put the Ray actor
+        # inside that environment. See the TODO on `_get_or_create_actor` below
+        # for the full explanation and fix options. Known-broken as of 2026-07-30;
+        # `test_functions_pydash_avro[ray]` / `test_functions_pydash_avro_with_runtime_metrics[ray]`
+        # are disabled in tests/functions/ux/test_functions.py until this is fixed.
+
         Parameters
         ----------
         func_instance : MetaflowFunction
@@ -212,9 +269,27 @@ class RayBackend(AbstractBackend):
         return python_path
 
     @classmethod
+    def _resolve_key(cls, func_instance) -> RayActorKey:
+        """Identity of the actor a handle would attach to."""
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            serialize_components,
+        )
+
+        component_specs = tuple(
+            serialize_components(getattr(func_instance, "_runtime_components", []))
+        )
+        return (func_instance.uuid, component_specs)
+
+    @classmethod
     def _get_or_create_actor(cls, func_instance):
         """
         Get existing actor or create new one with resource requirements.
+
+        The first successful attach for a given handle attaches that handle
+        to the resolved actor (tracked via ``func_instance._runtime_id``);
+        the actor is only torn down once every attached handle has closed
+        (see ``close``), so closing one handle cannot kill an actor still in
+        use by another handle sharing the same (uuid, components) identity.
 
         Parameters
         ----------
@@ -226,29 +301,95 @@ class RayBackend(AbstractBackend):
         ray.actor.ActorHandle
             Ray actor handle
         """
-        uuid = func_instance.uuid
+        # Once a handle has attached, reuse its resolved key rather than
+        # recomputing it (which hashes runtime component specs) on every call.
+        already_attached = func_instance._runtime_id is not None
 
-        # Return existing actor if available
-        if uuid in cls._actor_pool:
-            return cls._actor_pool[uuid]
+        with cls._lock:
+            key = (
+                func_instance._runtime_id
+                if already_attached
+                else cls._resolve_key(func_instance)
+            )
 
-        # Extract conda environment for runtime_env
-        python_path = cls._extract_conda_env_from_spec(func_instance)
-        runtime_env = {"python": python_path}
-        debug.functions_exec(f"Using conda environment: {python_path}")
+            entry = cls._actor_pool.get(key)
+            if entry is None:
+                # TODO(ray-conda-isolation): BROKEN. `runtime_env={"python": python_path}`
+                # does NOT do what the surrounding comments/docstrings in this file
+                # claim ("Ray actor is already running in the correct conda
+                # environment thanks to the runtime_env passed to ray.remote()",
+                # see FunctionActorClass docstring below).
+                #
+                # Root cause: `"python"` is not a key recognized by Ray's
+                # RuntimeEnv schema. Ray's documented runtime_env keys are things
+                # like `working_dir`, `py_modules`, `pip`, `conda`, `env_vars`,
+                # `container`, `excludes`, `uv` -- there is no supported way to
+                # point Ray at an arbitrary interpreter *binary path* the way
+                # `subprocess.Popen([python_path, ...])` does. Ray silently
+                # ignores the unrecognized `"python"` key (no validation error is
+                # raised at actor-creation time), so the actor process just runs
+                # inside whatever Python environment the Ray worker already has
+                # (the ambient/cluster env), not the resolved conda env returned
+                # by `_extract_conda_env_from_spec`.
+                #
+                # Contrast with the memory backend (see
+                # `backends/memory/memory_backend.py`), which resolves the same
+                # kind of conda alias and then genuinely execs a subprocess using
+                # the resolved python binary -- that's a real interpreter swap,
+                # so packages declared via `@conda(libraries=...)` (e.g. pydash)
+                # are actually importable there. The ray backend has no
+                # equivalent mechanism today.
+                #
+                # Symptom: any function whose body imports a package that's only
+                # present in the resolved conda env (not in the ambient Ray
+                # worker env) raises `ModuleNotFoundError` when executed via the
+                # ray backend. Confirmed via
+                # `tests/functions/ux/test_functions.py::test_functions_pydash_avro[ray]`
+                # and `test_functions_pydash_avro_with_runtime_metrics[ray]`,
+                # which are currently excluded from `PYDASH_BACKENDS` in that
+                # file specifically because of this bug.
+                #
+                # Fix options (not yet implemented -- out of scope for that test
+                # change):
+                #   1. Use Ray's actual `conda` runtime_env key, e.g.
+                #      `runtime_env = {"conda": <env name/path or inline spec>}`,
+                #      pointing at the resolved conda environment rather than a
+                #      bare python binary path. Requires the Ray cluster nodes
+                #      to be able to resolve/activate that conda env.
+                #   2. Use `runtime_env = {"pip": [...]}` with the resolved
+                #      package list, if conda env activation isn't feasible in
+                #      the Ray cluster's setup.
+                #   3. Heavier fallback: mirror the memory backend and have
+                #      `FunctionActorClass` invoke the function in a subprocess
+                #      using the resolved `python_path`, instead of relying on
+                #      Ray's `runtime_env` to swap the actor's own interpreter.
+                #
+                # Extract conda environment for runtime_env
+                python_path = cls._extract_conda_env_from_spec(func_instance)
+                runtime_env = {"python": python_path}
+                debug.functions_exec(f"Using conda environment: {python_path}")
 
-        # Create Ray actor with conda runtime_env
-        # Ray will use all available resources by default
-        FunctionActor = ray.remote(runtime_env=runtime_env)(FunctionActorClass)
+                # Create Ray actor with conda runtime_env
+                # Ray will use all available resources by default
+                FunctionActor = ray.remote(runtime_env=runtime_env)(FunctionActorClass)
 
-        # Instantiate actor with function reference
-        cls._actor_pool[uuid] = FunctionActor.remote(func_instance.spec.reference)
+                # Instantiate actor with function reference and component class names
+                _, component_class_names = key
+                actor = FunctionActor.remote(
+                    func_instance.spec.reference, list(component_class_names)
+                )
+                entry = ActorEntry(actor=actor)
+                cls._actor_pool[key] = entry
 
-        debug.functions_exec(
-            f"Created Ray actor for function '{func_instance.name}' with runtime_env: {runtime_env}"
-        )
+                debug.functions_exec(
+                    f"Created Ray actor for function '{func_instance.name}' with runtime_env: {runtime_env}"
+                )
 
-        return cls._actor_pool[uuid]
+            if not already_attached:
+                func_instance._runtime_id = key
+                entry.attached += 1
+
+            return entry.actor
 
     @classmethod
     def start(cls, func_instance, **kwargs):
@@ -275,10 +416,25 @@ class RayBackend(AbstractBackend):
         clean_dir : bool
             Whether to clean up directories (unused for Ray)
         """
-        uuid = func_instance.uuid
-        actor = cls._actor_pool.pop(uuid, None)
+        key = func_instance._runtime_id
+        if key is None:
+            return
+        func_instance._runtime_id = None
+
+        actor = None
+        with cls._lock:
+            entry = cls._actor_pool.get(key)
+            if entry is not None:
+                entry.attached -= 1
+                if entry.attached <= 0:
+                    actor = entry.actor
+                    del cls._actor_pool[key]
 
         if actor:
+            try:
+                ray.get(actor.shutdown.remote())
+            except Exception as e:
+                debug.functions_exec(f"Error shutting down Ray actor components: {e}")
             try:
                 ray.kill(actor)
                 debug.functions_exec(
@@ -308,13 +464,18 @@ class RayBackend(AbstractBackend):
         cleanup or application shutdown.
         """
         if force:
-            # Kill all remaining actors
-            for uuid, actor in list(cls._actor_pool.items()):
+            # Gracefully stop components then kill all remaining actors
+            for key, entry in list(cls._actor_pool.items()):
+                actor = entry.actor
+                try:
+                    ray.get(actor.shutdown.remote())
+                except Exception as e:
+                    debug.functions_exec(
+                        f"Error shutting down Ray actor components for key '{key}': {e}"
+                    )
                 try:
                     ray.kill(actor)
-                    debug.functions_exec(
-                        f"Terminated Ray actor for function uuid '{uuid}'"
-                    )
+                    debug.functions_exec(f"Terminated Ray actor for key '{key}'")
                 except Exception as e:
                     debug.functions_exec(f"Error terminating Ray actor: {e}")
 
@@ -346,9 +507,21 @@ class FunctionActorClass:
     This is decorated with @ray.remote in _get_or_create_actor() with
     resource requirements from the @resources decorator and runtime_env
     for the conda environment.
+
+    TODO(ray-conda-isolation): point (3) and the "runtime_env for the conda
+    environment" claim above are currently FALSE. See the detailed TODO in
+    `_get_or_create_actor` in this module -- `runtime_env={"python": ...}` is
+    not a real Ray RuntimeEnv mechanism, so this actor actually runs in
+    whatever ambient Python environment the Ray worker started with, not a
+    conda-isolated one. Dependencies declared only via `@conda(libraries=...)`
+    on the flow (e.g. pydash) are NOT guaranteed to be importable here.
     """
 
-    def __init__(self, function_reference: str):
+    def __init__(
+        self,
+        function_reference: str,
+        component_class_names: Optional[List[str]] = None,
+    ):
         """
         Initialize actor by extracting code and loading concrete function.
 
@@ -356,8 +529,16 @@ class FunctionActorClass:
         ----------
         function_reference : str
             S3 path to function specification JSON
+        component_class_names : Optional[List[str]]
+            Fully-qualified class names of runtime components to activate
         """
-        import tempfile
+        component_class_names = component_class_names or []
+        import os
+
+        from metaflow_extensions.nflx.config.mfextinit_functions import (
+            FUNCTION_RUNTIME_PATH,
+        )
+        from metaflow_extensions.nflx.plugins.functions.config import Config
         from metaflow_extensions.nflx.plugins.functions.core.function_spec import (
             FunctionSpec,
         )
@@ -380,11 +561,18 @@ class FunctionActorClass:
                 "Function spec missing task_code_path"
             )
 
-        # Extract code packages immediately to a working directory
+        # Extract code to the same deterministic directory the other backends
+        # use (FUNCTION_RUNTIME_PATH/metaflow-function-<uuid>) so caller-side
+        # code can compute this function's root dir without needing the
+        # backend to report it back (e.g. for on_runtime_started()).
+        function_dir = os.path.join(
+            FUNCTION_RUNTIME_PATH,
+            f"{Config.RUNTIME_FUNCTION_DIR_PREFIX}{func_spec.uuid}",
+        )
         code_dir = extract_code_packages(
             func_spec.code_package,
             func_spec.task_code_path,
-            tempfile.mkdtemp(prefix="mf_ray_actor_"),
+            function_dir,
         )
 
         debug.functions_exec(f"Code extracted to: {code_dir}")
@@ -394,6 +582,8 @@ class FunctionActorClass:
 
         # Load the concrete function (not proxy) with use_proxy=False
         # This loads the actual function with all dependencies in this process
+        # TODO(ray-conda-isolation): the comment below is aspirational, not
+        # actual, as of 2026-07-30 -- see the TODO on _get_or_create_actor.
         # The Ray actor is already running in the correct conda environment
         # thanks to the runtime_env passed to ray.remote()
 
@@ -407,6 +597,25 @@ class FunctionActorClass:
 
         # Store the code directory for cleanup
         self.code_dir = code_dir
+
+        # Load and start runtime components inside the actor process
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            load_component_instances,
+            start_components,
+        )
+
+        self._component_instances = start_components(
+            load_component_instances(component_class_names),
+            function=self.function,
+        )
+
+    def shutdown(self):
+        """Stop runtime components. Called before the actor is killed."""
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            stop_components,
+        )
+
+        stop_components(self._component_instances)
 
     def execute(self, data, **kwargs):
         """
@@ -428,13 +637,64 @@ class FunctionActorClass:
         Any
             Result from function execution
         """
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            before_call_components,
+            after_call_components,
+        )
+
         # Use params from kwargs if provided, otherwise use pre-created params
         params = kwargs.pop("params", self.params)
 
-        # Call the concrete function directly
-        # Since we used use_proxy=False with backend="local", this goes through:
-        # __call__ -> local_backend.apply() -> execute(data, params)
-        # So we pass params separately, not in kwargs
-        result = self.function(data, params=params, **kwargs)
+        try:
+            before_call_components(self._component_instances)
+        except Exception as e:
+            raise MetaflowFunctionRuntimeException(
+                f"Runtime component exception in function '{self.function.name}': {str(e)}"
+            )
 
-        return result
+        # self.function is itself backed by LocalBackend, so this already
+        # raises MetaflowFunctionUserException for user code failures.
+        try:
+            result = self.function(data, params=params, **kwargs)
+        except Exception as e:
+            user_exception = e
+            result = None
+        else:
+            user_exception = None
+
+        # after_call must run whether or not the function call itself failed,
+        # so components (e.g. metrics/logging) see every invocation.
+        # TODO(ray-backend exception parity): thread `user_exception` through
+        # here (`after_call_components(self._component_instances,
+        # exception=user_exception)`) so after_call()/collect_output() can
+        # see the failure, matching local_backend.py and memory_backend.py.
+        try:
+            component_output = after_call_components(self._component_instances)
+        except Exception as e:
+            if user_exception is None:
+                raise MetaflowFunctionRuntimeException(
+                    f"Runtime component exception in function '{self.function.name}': {str(e)}"
+                )
+            # A user exception is already in flight; don't let a component
+            # failure on the error path mask it.
+            debug.functions_exec(
+                f"Runtime component exception in after_call for '{self.function.name}' "
+                f"while handling a prior user exception: {e!r}"
+            )
+            component_output = {}
+
+        # TODO(ray-backend exception parity): on a user exception, this
+        # method raises `user_exception` below instead of returning
+        # `(result, component_output)`, so `component_output` never crosses
+        # the actor boundary and apply()'s `_route_component_output()` never
+        # runs on failure. Unlike memory_backend.py (which always returns a
+        # payload and lets the caller route-then-raise), fixing this needs
+        # the actor protocol to always return the tuple and carry the
+        # exception alongside it (e.g. as a third element, or reconstructed
+        # from a wrapped exception) so `RayBackend.apply()` can route
+        # collected output before raising, for parity with the memory
+        # backend fix in memory_backend.py's apply()/apply_async().
+        if user_exception is not None:
+            raise user_exception
+
+        return result, component_output
