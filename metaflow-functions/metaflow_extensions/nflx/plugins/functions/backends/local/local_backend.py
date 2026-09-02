@@ -4,9 +4,6 @@ from ..backend_type import BackendType
 from metaflow_extensions.nflx.plugins.functions.serializers.registry import (
     get_global_registry,
 )
-from metaflow_extensions.nflx.plugins.functions.core.function_payload import (
-    FunctionPayload,
-)
 from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionRuntimeException,
     MetaflowFunctionException,
@@ -325,22 +322,28 @@ class LocalBackend(AbstractBackend):
             Serialized result
         """
         registry = get_global_registry()
-        input_types = func_instance.__class__.get_input_types(func_instance.spec)
+        # input_types is a property on MetaflowFunction/FunctionPipeline, not a
+        # classmethod taking a spec.
+        input_types = func_instance.input_types
         expected_input_type = cls._map_type_info_to_python_type(
             input_types, type(func_instance), func_instance.spec
         )
         deserialized_data = registry.deserialize(data, expected_input_type)
-        payload_data = FunctionPayload(deserialized_data, kwargs)
 
-        result_payload = cls.apply(func_instance, payload_data, **kwargs)
+        # apply() takes the user's own input type and returns the user's own
+        # output type -- same contract as the memory backend. Wrapping the input
+        # in a FunctionPayload here handed the user's function the wrapper
+        # instead of its declared input; unwrapping `.data` from the result did
+        # the mirror of that on the way out.
+        result = cls.apply(func_instance, deserialized_data, **kwargs)
 
-        serializer = registry.get_serializer_for_type(type(result_payload.data))
+        serializer = registry.get_serializer_for_type(type(result))
         if serializer is None:
             raise MetaflowFunctionException(
-                f"No serializer registered for type {type(result_payload.data)}"
+                f"No serializer registered for type {type(result)}"
             )
 
-        serialized_data, _ = serializer(result_payload.data)
+        serialized_data, _ = serializer(result)
         return serialized_data
 
     @classmethod
