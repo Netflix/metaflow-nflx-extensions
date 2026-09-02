@@ -16,6 +16,7 @@ from metaflow_extensions.nflx.plugins.functions.common.runtime_utils import (
     create_function_parameters,
 )
 from metaflow_extensions.nflx.plugins.functions.debug import debug
+import sys
 import threading
 import traceback
 from contextlib import contextmanager
@@ -78,6 +79,109 @@ class LocalBackend(AbstractBackend):
     def backend_type(self) -> BackendType:
         return BackendType.LOCAL
 
+    @staticmethod
+    def _is_proxy(func_instance) -> bool:
+        """True when this handle still needs its code package hydrated."""
+        return hasattr(func_instance, "_func") and func_instance._func is None
+
+    @classmethod
+    def _hydrate(cls, func_instance):
+        """Materialize a proxy handle into a concrete, executable function.
+
+        Downloads and extracts the code package, then loads the decorated
+        function out of it. Expensive -- start() calls this once so apply()
+        does not have to.
+        """
+        from metaflow_extensions.nflx.plugins.functions.core.function import (
+            function_from_json,
+        )
+        from metaflow_extensions.nflx.plugins.functions.core.function_spec import (
+            FunctionSpec,
+        )
+
+        func_spec = func_instance.spec
+
+        if not func_spec.reference:
+            raise MetaflowFunctionRuntimeException(
+                "Function spec missing reference path"
+            )
+
+        # Download S3 reference to local temp file if needed
+        local_reference = FunctionSpec.download_to_temp(func_spec.reference)
+
+        # Carry the proxy's runtime_components over to the concrete function -
+        # function_from_json() below has no way to see the proxy's, and would
+        # otherwise silently default to none.
+        runtime_components = getattr(func_instance, "_runtime_components", [])
+
+        # Load concrete function from reference. This handles both regular functions
+        # and pipelines by delegating to the appropriate from_spec() implementation.
+        # Don't start runtime - function executes directly in this process
+        return function_from_json(
+            local_reference,
+            use_proxy=False,
+            backend="local",
+            start_runtime=False,
+            runtime_components=runtime_components,
+        )
+
+    @classmethod
+    def start(cls, func_instance, **kwargs):
+        """
+        Warm up in-process execution so the first call is not the slow one.
+
+        The local backend has no runtime to launch, but it does have per-call
+        work that only needs doing once. Without this, ``apply()`` re-hydrates
+        the code package on every invocation of a proxy handle and rebuilds the
+        function parameters each time -- fine for a script, wrong for a server
+        that loads a function once and then calls it under latency SLOs.
+
+        Three things are set up here:
+
+        * the hydrated concrete function, cached on the handle as
+          ``_local_concrete``;
+        * its ``FunctionParameters``, cached as ``_local_params`` and honouring
+          the ``_prefetch_artifacts`` flag that ``function_from_json`` sets when
+          called with ``start_runtime=True``, so artifacts are resolved now
+          rather than on the first call;
+        * the function's root directory on ``sys.path``, *persistently*.
+          ``from_spec()`` only adds it for the duration of the load (see
+          ``run_in_path``, which restores ``sys.path`` in a ``finally``), so any
+          import the user's code defers to call time -- generated protobuf
+          stubs are the common case -- fails after the load window closes.
+
+        Parameters
+        ----------
+        func_instance : MetaflowFunction
+            Function instance to prepare
+        """
+        concrete = (
+            cls._hydrate(func_instance)
+            if cls._is_proxy(func_instance)
+            else func_instance
+        )
+
+        try:
+            root_dir = concrete.function_root_dir
+        except Exception:
+            root_dir = None
+        if root_dir and root_dir not in sys.path:
+            sys.path.insert(0, root_dir)
+
+        prefetch = getattr(func_instance, "_prefetch_artifacts", False)
+        params = create_function_parameters(concrete.spec, prefetch_artifacts=prefetch)
+
+        # Cache on both handles: the caller keeps hold of the proxy, while
+        # apply() may be handed either one.
+        for handle in (func_instance, concrete):
+            handle._local_concrete = concrete
+            handle._local_params = params
+
+        debug.functions_exec(
+            "LocalBackend.start: warmed '%s' (prefetch_artifacts=%s, sys.path+=%s)"
+            % (concrete.name, prefetch, root_dir)
+        )
+
     @classmethod
     async def apply_async(cls, func_instance, data: Any, **kwargs) -> Any:
         return cls.apply(func_instance, data, **kwargs)
@@ -101,43 +205,20 @@ class LocalBackend(AbstractBackend):
         Any
             Result from function execution
         """
-        # If func_instance is a proxy (i.e., _func is None), convert to concrete function
-        if hasattr(func_instance, "_func") and func_instance._func is None:
-            from metaflow_extensions.nflx.plugins.functions.core.function import (
-                function_from_json,
-            )
-            from metaflow_extensions.nflx.plugins.functions.core.function_spec import (
-                FunctionSpec,
-            )
-
-            func_spec = func_instance.spec
-
-            if not func_spec.reference:
-                raise MetaflowFunctionRuntimeException(
-                    "Function spec missing reference path"
-                )
-
-            # Download S3 reference to local temp file if needed
-            local_reference = FunctionSpec.download_to_temp(func_spec.reference)
-
-            # Carry the proxy's runtime_components over to the concrete function -
-            # function_from_json() below has no way to see the proxy's, and would
-            # otherwise silently default to none.
-            runtime_components = getattr(func_instance, "_runtime_components", [])
-
-            # Load concrete function from reference. This handles both regular functions
-            # and pipelines by delegating to the appropriate from_spec() implementation.
-            # Don't start runtime - function executes directly in this process
-            func_instance = function_from_json(
-                local_reference,
-                use_proxy=False,
-                backend="local",
-                start_runtime=False,
-                runtime_components=runtime_components,
+        # If func_instance is a proxy (i.e., _func is None), convert to concrete
+        # function. start() does this once up front; without it, every call pays
+        # for it.
+        if cls._is_proxy(func_instance):
+            cached = getattr(func_instance, "_local_concrete", None)
+            func_instance = (
+                cached if cached is not None else cls._hydrate(func_instance)
             )
 
-        # Use params from kwargs if provided, otherwise create new ones
+        # Use params from kwargs if provided, then whatever start() prepared,
+        # otherwise create new ones.
         parameters = kwargs.pop("params", None)
+        if parameters is None:
+            parameters = getattr(func_instance, "_local_params", None)
         if parameters is None:
             parameters = create_function_parameters(func_instance.spec)
 
@@ -204,14 +285,25 @@ class LocalBackend(AbstractBackend):
 
     @classmethod
     def close(cls, func_instance, clean_dir: bool = True, **kwargs):
-        instances = func_instance._component_instances
+        # Components were started on whatever handle apply() ran, which is the
+        # concrete function start() cached -- not necessarily the proxy the
+        # caller is closing.
+        target = getattr(func_instance, "_local_concrete", None) or func_instance
+
+        instances = target._component_instances
         if instances:
             from metaflow_extensions.nflx.plugins.functions.components.runtime import (
                 stop_components,
             )
 
             stop_components(instances)
-            func_instance._component_instances = []
+            target._component_instances = []
+
+        # Drop what start() warmed up, so a re-start() re-hydrates rather than
+        # handing back a function whose components have been stopped.
+        for handle in (func_instance, target):
+            handle._local_concrete = None
+            handle._local_params = None
 
     @classmethod
     def apply_binary(cls, func_instance, data: bytes, **kwargs) -> bytes:
