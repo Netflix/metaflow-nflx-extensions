@@ -359,8 +359,49 @@ class FunctionPipeline(MetaflowFunction):
 
         result = data
         for func, func_params in zip(self.functions, self._scoped_params):
-            result = func.execute(result, func_params, **kwargs)
+            result = self._execute_constituent(func, result, func_params, **kwargs)
         return result
+
+    def _execute_constituent(
+        self,
+        func: MetaflowFunction,
+        data: Any,
+        func_params: "FunctionParameters",
+        **kwargs: Any,
+    ) -> Any:
+        """Run one constituent's execute(), timed/logged by its own copy of
+        this pipeline's runtime_components.
+
+        Without this, a component only sees the whole pipeline as a single
+        call, not each step. We use fresh copies (not
+        self._component_instances) because each component instance is only
+        meant to handle one call at a time. The pipeline-level
+        before/after_call around the whole execute() call is unchanged.
+        """
+        if not self._runtime_components:
+            return func.execute(data, func_params, **kwargs)
+
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            start_components,
+            stop_components,
+            before_call_components,
+            after_call_components,
+        )
+
+        instances = start_components(
+            [type(c)(**c._init_kwargs) for c in self._runtime_components],
+            function=func,
+        )
+        before_call_components(instances)
+        exception: Optional[BaseException] = None
+        try:
+            return func.execute(data, func_params, **kwargs)
+        except Exception as e:
+            exception = e
+            raise
+        finally:
+            after_call_components(instances, exception=exception)
+            stop_components(instances)
 
     def is_compatible_with(self, other: MetaflowFunction) -> bool:
         """Check if pipeline output is compatible with other function input."""
