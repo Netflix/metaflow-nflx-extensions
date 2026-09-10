@@ -10,7 +10,11 @@ import sys
 import pytest
 
 from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
+    _SYS_PATH_REFCOUNTS,
     LocalBackend,
+)
+from metaflow_extensions.nflx.plugins.functions.exceptions import (
+    MetaflowFunctionException,
 )
 
 pytestmark = pytest.mark.local_only
@@ -32,12 +36,14 @@ class _StubSpec:
 class _StubFunction:
     """Minimal MetaflowFunction stand-in.
 
-    ``_func is None`` makes it look like a proxy handle, which is what
-    LocalBackend._is_proxy() keys off.
+    ``_is_proxy_handle`` is the marker LocalBackend._is_proxy() keys off --
+    ``_func`` alone cannot say, since a concrete pipeline also has none.
     """
 
-    def __init__(self, root_dir=None, concrete=False):
+    def __init__(self, root_dir=None, concrete=False, functions=()):
         self._func = object() if concrete else None
+        self._is_proxy_handle = not concrete
+        self.functions = list(functions)
         self._function_spec = _StubSpec()
         self._function_root_dir = root_dir
         self._component_instances = []
@@ -55,7 +61,7 @@ class _StubFunction:
     @property
     def function_root_dir(self):
         if self._function_root_dir is None:
-            raise RuntimeError("Function root dir is not set.")
+            raise MetaflowFunctionException("Function root dir is not set.")
         return self._function_root_dir
 
     def execute(self, data, parameters, **kwargs):
@@ -88,6 +94,7 @@ def restore_sys_path():
     original = sys.path.copy()
     yield
     sys.path[:] = original
+    _SYS_PATH_REFCOUNTS.clear()
 
 
 def test_start_caches_concrete_and_params(proxy, concrete):
@@ -204,3 +211,127 @@ def test_close_stops_components_on_the_concrete_handle(proxy, concrete):
 
     assert len(stopped) == 1
     assert concrete._component_instances == []
+
+
+def test_close_takes_the_root_dir_back_off_sys_path(proxy, concrete):
+    root = concrete.function_root_dir
+
+    LocalBackend.start(proxy)
+    assert root in sys.path
+
+    LocalBackend.close(proxy)
+
+    # A server that loads and unloads functions must not leave dead entries at
+    # the front of every import search.
+    assert root not in sys.path
+    assert proxy._local_sys_path is None
+
+
+def test_a_shared_root_dir_survives_closing_one_of_its_functions(
+    monkeypatch, tmp_path
+):
+    """Two functions out of one code package share a directory.
+
+    Closing the first must not break the second's deferred imports, which is
+    why the path entries are refcounted rather than simply removed.
+    """
+    root = str(tmp_path)
+    first_concrete = _StubFunction(root_dir=root, concrete=True)
+    second_concrete = _StubFunction(root_dir=root, concrete=True)
+
+    LocalBackend.start(first_concrete)
+    LocalBackend.start(second_concrete)
+    assert sys.path.count(root) == 1
+
+    LocalBackend.close(first_concrete)
+    assert root in sys.path
+
+    LocalBackend.close(second_concrete)
+    assert root not in sys.path
+
+
+def test_second_start_does_not_replace_the_warm_function(proxy, concrete):
+    """start() is idempotent in hydration, not just in sys.path.
+
+    Components start lazily on whichever handle apply() ran and close() stops
+    only the cached one, so replacing the cache would strand the first
+    concrete's components with nothing left holding them.
+    """
+    LocalBackend.start(proxy)
+    first = proxy._local_concrete
+    concrete._component_instances = ["live-component"]
+
+    LocalBackend.start(proxy)
+
+    assert len(proxy.hydrations) == 1
+    assert proxy._local_concrete is first
+    assert concrete._component_instances == ["live-component"]
+
+
+def test_start_does_not_hydrate_a_concrete_pipeline(monkeypatch, tmp_path):
+    """A concrete pipeline has _func None but owns its code already.
+
+    Hydrating it would download and extract every constituent's package a
+    second time and leave a second live pipeline behind.
+    """
+    hydrations = []
+    monkeypatch.setattr(
+        LocalBackend,
+        "_hydrate",
+        staticmethod(lambda handle: hydrations.append(handle)),
+    )
+
+    pipeline = _StubFunction(root_dir=str(tmp_path), concrete=True)
+    pipeline._func = None  # exactly what FunctionPipeline._create_from_spec leaves
+
+    LocalBackend.start(pipeline)
+
+    assert hydrations == []
+    assert pipeline._local_concrete is pipeline
+
+
+def test_start_puts_every_constituent_dir_on_sys_path(monkeypatch, tmp_path):
+    """A pipeline reports only its first constituent's root dir.
+
+    A deferred import in constituent #2 -- generated protobuf stubs, the case
+    start() exists for -- has to resolve too.
+    """
+    first = _StubFunction(root_dir=str(tmp_path / "fn1"), concrete=True)
+    second = _StubFunction(root_dir=str(tmp_path / "fn2"), concrete=True)
+    pipeline = _StubFunction(
+        root_dir=str(first.function_root_dir), concrete=True, functions=[first, second]
+    )
+
+    LocalBackend.start(pipeline)
+
+    assert str(tmp_path / "fn1") in sys.path
+    assert str(tmp_path / "fn2") in sys.path
+
+    LocalBackend.close(pipeline)
+
+    assert str(tmp_path / "fn1") not in sys.path
+    assert str(tmp_path / "fn2") not in sys.path
+
+
+def test_close_clears_state_even_when_a_component_fails_to_stop(proxy, concrete):
+    """stop_components() raises by design when a component's stop() fails.
+
+    A component that failed to stop is not one to keep calling, and the dead
+    function must not stay cached behind it.
+    """
+
+    class _Component:
+        def stop(self, *args, **kwargs):
+            raise RuntimeError("flush timed out")
+
+    LocalBackend.start(proxy)
+    root = concrete.function_root_dir
+    concrete._component_instances = [_Component()]
+
+    with pytest.raises(Exception):
+        LocalBackend.close(proxy)
+
+    assert concrete._component_instances == []
+    assert proxy._local_concrete is None
+    assert concrete._local_concrete is None
+    assert root not in sys.path

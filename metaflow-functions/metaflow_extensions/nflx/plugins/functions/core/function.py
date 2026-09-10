@@ -108,6 +108,10 @@ class MetaflowFunction(ABC):
             Additional keyword arguments
         """
         self._func: Optional["MetaflowFunctionDecorator"] = func
+        # A handle built here owns its code already. Only
+        # _create_proxy_from_spec sets this, and only the local backend reads
+        # it, to decide whether a handle still needs hydrating.
+        self._is_proxy_handle: bool = False
         self.task: Optional["Task"] = task
         self._function_spec: Optional[FunctionSpec] = None
         self._function_root_dir: Optional[str] = None
@@ -945,6 +949,7 @@ class MetaflowFunction(ABC):
 
         # Initialize proxy function attributes
         instance._func = None
+        instance._is_proxy_handle = True
         instance.task = None
         instance._function_spec = func_spec
         instance._component_instances = []

@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 from ..abstract_backend import AbstractBackend
 from ..backend_type import BackendType
 from metaflow_extensions.nflx.plugins.functions.serializers.registry import (
@@ -31,6 +31,15 @@ from contextlib import contextmanager
 # re-entering on one thread) is allowed, while a genuinely concurrent
 # invocation from a second thread is refused.
 _COMPONENT_INVOCATION_LOCK = threading.RLock()
+
+# Directories start() has put on sys.path, and how many warmed functions still
+# want each one there. Refcounted rather than a plain set because two functions
+# from the same code package share a root directory: closing one must not break
+# the other's deferred imports. close() drops the last reference and the entry
+# leaves sys.path with it, so a server that loads and unloads N functions does
+# not accumulate N dead entries at the front of every import search.
+_SYS_PATH_LOCK = threading.Lock()
+_SYS_PATH_REFCOUNTS: Dict[str, int] = {}
 
 
 @contextmanager
@@ -78,8 +87,71 @@ class LocalBackend(AbstractBackend):
 
     @staticmethod
     def _is_proxy(func_instance) -> bool:
-        """True when this handle still needs its code package hydrated."""
-        return hasattr(func_instance, "_func") and func_instance._func is None
+        """True when this handle still needs its code package hydrated.
+
+        Reads the marker ``_create_proxy_from_spec`` sets rather than inferring
+        it from ``_func``: a *concrete* FunctionPipeline is also built with
+        ``func=None`` (``FunctionPipeline._create_from_spec``), so the
+        ``_func is None`` test read one as a proxy and hydrated a second copy
+        of every constituent's code package.
+        """
+        return bool(getattr(func_instance, "_is_proxy_handle", False))
+
+    @staticmethod
+    def _root_dirs(concrete) -> List[str]:
+        """Extraction directories whose contents the function may import.
+
+        A pipeline's own directory is near-empty -- each constituent extracts
+        its own package -- and ``function_root_dir`` reports only the first
+        constituent's, so a deferred import in constituent #2 would not
+        resolve. Every constituent's directory goes on the path.
+        """
+        dirs = []
+        for handle in [concrete] + list(getattr(concrete, "functions", []) or []):
+            try:
+                root_dir = handle.function_root_dir
+            except MetaflowFunctionException as e:
+                # Only raised as "Function root dir is not set", which is the
+                # normal state for a handle that owns no extracted code. Left
+                # visible: a function whose extraction half-failed shows up
+                # here rather than as an opaque ModuleNotFoundError later.
+                debug.functions_exec(
+                    "LocalBackend: no root dir for '%s' (%s)"
+                    % (getattr(handle, "name", handle), e)
+                )
+                continue
+            if root_dir and root_dir not in dirs:
+                dirs.append(root_dir)
+        return dirs
+
+    @staticmethod
+    def _acquire_sys_path(dirs: List[str]) -> None:
+        """Put each directory on sys.path, once, and record the reference.
+
+        Front-inserted to match ``run_in_path``, which is what was on the path
+        while the function's own modules were imported at load time; a deferred
+        import must resolve to the same module the load-time import would have.
+        """
+        with _SYS_PATH_LOCK:
+            for root_dir in dirs:
+                _SYS_PATH_REFCOUNTS[root_dir] = (
+                    _SYS_PATH_REFCOUNTS.get(root_dir, 0) + 1
+                )
+                if root_dir not in sys.path:
+                    sys.path.insert(0, root_dir)
+
+    @staticmethod
+    def _release_sys_path(dirs: List[str]) -> None:
+        """Drop references, removing a directory once nothing wants it."""
+        with _SYS_PATH_LOCK:
+            for root_dir in dirs:
+                remaining = _SYS_PATH_REFCOUNTS.get(root_dir, 0) - 1
+                if remaining > 0:
+                    _SYS_PATH_REFCOUNTS[root_dir] = remaining
+                    continue
+                _SYS_PATH_REFCOUNTS.pop(root_dir, None)
+                while root_dir in sys.path:
+                    sys.path.remove(root_dir)
 
     @classmethod
     def _hydrate(cls, func_instance):
@@ -152,31 +224,42 @@ class LocalBackend(AbstractBackend):
         func_instance : MetaflowFunction
             Function instance to prepare
         """
+        # Idempotent: a second start() without an intervening close() must not
+        # replace the warmed function. Components start lazily on whichever
+        # handle apply() ran, and close() only stops the currently cached one,
+        # so overwriting the cache would leave the first concrete's emitters
+        # and threads running with nothing left holding them.
+        already_warm = getattr(func_instance, "_local_concrete", None)
+        if already_warm is not None:
+            debug.functions_exec(
+                "LocalBackend.start: '%s' is already warm, nothing to do"
+                % already_warm.name
+            )
+            return
+
         concrete = (
             cls._hydrate(func_instance)
             if cls._is_proxy(func_instance)
             else func_instance
         )
 
-        try:
-            root_dir = concrete.function_root_dir
-        except Exception:
-            root_dir = None
-        if root_dir and root_dir not in sys.path:
-            sys.path.insert(0, root_dir)
+        root_dirs = cls._root_dirs(concrete)
+        cls._acquire_sys_path(root_dirs)
 
         prefetch = getattr(func_instance, "_prefetch_artifacts", False)
         params = create_function_parameters(concrete.spec, prefetch_artifacts=prefetch)
 
         # Cache on both handles: the caller keeps hold of the proxy, while
-        # apply() may be handed either one.
+        # apply() may be handed either one. The path list rides along so close()
+        # can give back exactly what this start() took.
         for handle in (func_instance, concrete):
             handle._local_concrete = concrete
             handle._local_params = params
+            handle._local_sys_path = root_dirs
 
         debug.functions_exec(
             "LocalBackend.start: warmed '%s' (prefetch_artifacts=%s, sys.path+=%s)"
-            % (concrete.name, prefetch, root_dir)
+            % (concrete.name, prefetch, root_dirs)
         )
 
     @classmethod
@@ -202,9 +285,8 @@ class LocalBackend(AbstractBackend):
         Any
             Result from function execution
         """
-        # If func_instance is a proxy (i.e., _func is None), convert to concrete
-        # function. start() does this once up front; without it, every call pays
-        # for it.
+        # If func_instance is still a proxy, convert to a concrete function.
+        # start() does this once up front; without it, every call pays for it.
         if cls._is_proxy(func_instance):
             cached = getattr(func_instance, "_local_concrete", None)
             func_instance = (
@@ -288,19 +370,28 @@ class LocalBackend(AbstractBackend):
         target = getattr(func_instance, "_local_concrete", None) or func_instance
 
         instances = target._component_instances
-        if instances:
-            from metaflow_extensions.nflx.plugins.functions.components.runtime import (
-                stop_components,
-            )
+        try:
+            if instances:
+                from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+                    stop_components,
+                )
 
-            stop_components(instances)
+                stop_components(instances)
+        finally:
+            # stop_components() raises when any component's stop() fails, and a
+            # component that failed to stop is not a component to keep calling.
+            # Clearing in a finally is what stops the next apply() from running
+            # before_call/after_call against stopped components, and stops
+            # _local_concrete from outliving the function it names.
             target._component_instances = []
-
-        # Drop what start() warmed up, so a re-start() re-hydrates rather than
-        # handing back a function whose components have been stopped.
-        for handle in (func_instance, target):
-            handle._local_concrete = None
-            handle._local_params = None
+            released = None
+            for handle in (func_instance, target):
+                released = getattr(handle, "_local_sys_path", None) or released
+                handle._local_concrete = None
+                handle._local_params = None
+                handle._local_sys_path = None
+            if released:
+                cls._release_sys_path(released)
 
     @classmethod
     def apply_binary(cls, func_instance, data: bytes, **kwargs) -> bytes:

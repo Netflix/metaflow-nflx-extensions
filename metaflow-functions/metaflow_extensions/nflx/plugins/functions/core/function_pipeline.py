@@ -578,6 +578,7 @@ class FunctionPipeline(MetaflowFunction):
 
         # Initialize pipeline proxy attributes
         instance._func = None
+        instance._is_proxy_handle = True
         instance.task = None
         instance._function_spec = func_spec
         instance._component_instances = []
@@ -640,7 +641,9 @@ class FunctionPipeline(MetaflowFunction):
         """Create pipeline from existing spec, bypassing validation and spec generation."""
         pipeline = cls.__new__(cls)
 
-        # Initialize base class properly
+        # Initialize base class properly. func=None here is not a proxy: this
+        # pipeline's constituents are concrete, and __init__ leaves
+        # _is_proxy_handle False accordingly.
         super(FunctionPipeline, pipeline).__init__(func=None, task=None)
 
         # Set function spec FIRST - other attributes may depend on it
