@@ -27,6 +27,22 @@ from metaflow_extensions.nflx.plugins.functions.serializers.import_interceptor i
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+def _concrete_signature_types(param_type: Any) -> List[Any]:
+    """Expand a signature annotation into the concrete types a value for it can have.
+
+    A union has no usable canonical type string, so ``ctx: Optional[SomeProto] = None``
+    registers nothing while a bare ``SomeProto`` annotation works. Unwrap both spellings
+    (``Optional[X]`` / ``Union[X, Y]`` and PEP 604 ``X | Y``), dropping ``NoneType``;
+    anything else passes through. Covers implicit Optional, dropped in Python 3.11.
+    """
+    import types
+    from typing import Union, get_args, get_origin
+
+    if get_origin(param_type) in (Union, types.UnionType):
+        return [arg for arg in get_args(param_type) if arg is not type(None)]
+    return [param_type]
+
+
 @dataclass
 class FunctionTypeConfig:
     """Configuration for a function type."""
@@ -243,7 +259,8 @@ def create_function_type(
             type_hints = get_type_hints(self.func)
 
             for param_name, param_type in type_hints.items():
-                self._register_serializer_for_type(param_type)
+                for concrete_type in _concrete_signature_types(param_type):
+                    self._register_serializer_for_type(concrete_type)
 
         def _register_serializer_for_type(self, param_type):
             """Register appropriate serializer for a specific type."""
