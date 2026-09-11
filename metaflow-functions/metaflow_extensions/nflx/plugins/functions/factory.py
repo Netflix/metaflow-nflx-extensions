@@ -30,16 +30,10 @@ F = TypeVar("F", bound=Callable[..., Any])
 def _concrete_signature_types(param_type: Any) -> List[Any]:
     """Expand a signature annotation into the concrete types a value for it can have.
 
-    Registering a serializer against a union is useless: the canonical type string derived from
-    ``Union[X, None]`` is not the one a runtime ``X`` value serializes under. So unwrap unions and
-    return their members with ``NoneType`` dropped. Without this, a handler declaring
-    ``ctx: Optional[SomeProto] = None`` never self-registers a serializer for ``SomeProto``, while
-    the same handler written with a bare ``SomeProto`` annotation does.
-
-    Both spellings of a union are handled: ``Optional[X]`` / ``Union[X, Y]`` and PEP 604 ``X | Y``.
-    Anything else passes through unchanged. Note that on Python 3.10 this also covers a parameter
-    annotated ``X`` with a ``None`` default, because ``get_type_hints`` there still applies implicit
-    Optional and hands back ``Union[X, None]``; Python 3.11 dropped that rewrite.
+    A union has no usable canonical type string, so ``ctx: Optional[SomeProto] = None``
+    registers nothing while a bare ``SomeProto`` annotation works. Unwrap both spellings
+    (``Optional[X]`` / ``Union[X, Y]`` and PEP 604 ``X | Y``), dropping ``NoneType``;
+    anything else passes through. Covers implicit Optional, dropped in Python 3.11.
     """
     import types
     from typing import Union, get_args, get_origin
