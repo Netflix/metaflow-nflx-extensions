@@ -41,6 +41,15 @@ _COMPONENT_INVOCATION_LOCK = threading.RLock()
 _SYS_PATH_LOCK = threading.Lock()
 _SYS_PATH_REFCOUNTS: Dict[str, int] = {}
 
+# Warm-up and teardown are both check-then-act on the same handle: read
+# _local_concrete, hydrate, take the sys.path references, cache -- or the
+# reverse. Two threads doing that to one handle concurrently would both pass
+# the "already warm?" test, both hydrate, and double-count the refcount, so
+# the directory could never be released and one of the two concretes (with
+# whatever components it started) would be orphaned. Held per handle rather
+# than globally so loading two different functions still overlaps.
+_WARMUP_LOCK_REGISTRY_LOCK = threading.Lock()
+
 
 @contextmanager
 def _guard_component_invocation(func_instance):
@@ -123,6 +132,16 @@ class LocalBackend(AbstractBackend):
             if root_dir and root_dir not in dirs:
                 dirs.append(root_dir)
         return dirs
+
+    @staticmethod
+    def _warmup_lock(func_instance) -> threading.Lock:
+        """The per-handle lock serializing start()/close() on that handle."""
+        with _WARMUP_LOCK_REGISTRY_LOCK:
+            lock = getattr(func_instance, "_local_warmup_lock", None)
+            if lock is None:
+                lock = threading.Lock()
+                func_instance._local_warmup_lock = lock
+            return lock
 
     @staticmethod
     def _acquire_sys_path(dirs: List[str]) -> None:
@@ -224,43 +243,48 @@ class LocalBackend(AbstractBackend):
         func_instance : MetaflowFunction
             Function instance to prepare
         """
-        # Idempotent: a second start() without an intervening close() must not
-        # replace the warmed function. Components start lazily on whichever
-        # handle apply() ran, and close() only stops the currently cached one,
-        # so overwriting the cache would leave the first concrete's emitters
-        # and threads running with nothing left holding them.
-        already_warm = getattr(func_instance, "_local_concrete", None)
-        if already_warm is not None:
-            debug.functions_exec(
-                "LocalBackend.start: '%s' is already warm, nothing to do"
-                % already_warm.name
+        with cls._warmup_lock(func_instance):
+            # Idempotent: a second start() without an intervening close() must
+            # not replace the warmed function. Components start lazily on
+            # whichever handle apply() ran, and close() only stops the
+            # currently cached one, so overwriting the cache would leave the
+            # first concrete's emitters and threads running with nothing left
+            # holding them. Under the lock so the check cannot be overtaken by
+            # a concurrent start() on the same handle.
+            already_warm = getattr(func_instance, "_local_concrete", None)
+            if already_warm is not None:
+                debug.functions_exec(
+                    "LocalBackend.start: '%s' is already warm, nothing to do"
+                    % already_warm.name
+                )
+                return
+
+            concrete = (
+                cls._hydrate(func_instance)
+                if cls._is_proxy(func_instance)
+                else func_instance
             )
-            return
 
-        concrete = (
-            cls._hydrate(func_instance)
-            if cls._is_proxy(func_instance)
-            else func_instance
-        )
+            root_dirs = cls._root_dirs(concrete)
+            cls._acquire_sys_path(root_dirs)
 
-        root_dirs = cls._root_dirs(concrete)
-        cls._acquire_sys_path(root_dirs)
+            prefetch = getattr(func_instance, "_prefetch_artifacts", False)
+            params = create_function_parameters(
+                concrete.spec, prefetch_artifacts=prefetch
+            )
 
-        prefetch = getattr(func_instance, "_prefetch_artifacts", False)
-        params = create_function_parameters(concrete.spec, prefetch_artifacts=prefetch)
+            # Cache on both handles: the caller keeps hold of the proxy, while
+            # apply() may be handed either one. The path list rides along so
+            # close() can give back exactly what this start() took.
+            for handle in (func_instance, concrete):
+                handle._local_concrete = concrete
+                handle._local_params = params
+                handle._local_sys_path = root_dirs
 
-        # Cache on both handles: the caller keeps hold of the proxy, while
-        # apply() may be handed either one. The path list rides along so close()
-        # can give back exactly what this start() took.
-        for handle in (func_instance, concrete):
-            handle._local_concrete = concrete
-            handle._local_params = params
-            handle._local_sys_path = root_dirs
-
-        debug.functions_exec(
-            "LocalBackend.start: warmed '%s' (prefetch_artifacts=%s, sys.path+=%s)"
-            % (concrete.name, prefetch, root_dirs)
-        )
+            debug.functions_exec(
+                "LocalBackend.start: warmed '%s' (prefetch_artifacts=%s, sys.path+=%s)"
+                % (concrete.name, prefetch, root_dirs)
+            )
 
     @classmethod
     async def apply_async(cls, func_instance, data: Any, **kwargs) -> Any:
@@ -364,6 +388,14 @@ class LocalBackend(AbstractBackend):
 
     @classmethod
     def close(cls, func_instance, clean_dir: bool = True, **kwargs):
+        # Same handle lock start() holds: teardown reads the cache it wrote and
+        # gives back the sys.path references it took, so the two must not
+        # interleave.
+        with cls._warmup_lock(func_instance):
+            cls._close_locked(func_instance)
+
+    @classmethod
+    def _close_locked(cls, func_instance):
         # Components were started on whatever handle apply() ran, which is the
         # concrete function start() cached -- not necessarily the proxy the
         # caller is closing.

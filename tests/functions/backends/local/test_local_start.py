@@ -6,6 +6,7 @@ the three, not code-package extraction.
 """
 
 import sys
+import threading
 
 import pytest
 
@@ -335,3 +336,64 @@ def test_close_clears_state_even_when_a_component_fails_to_stop(proxy, concrete)
     assert proxy._local_concrete is None
     assert concrete._local_concrete is None
     assert root not in sys.path
+
+
+def test_concurrent_start_on_one_handle_hydrates_once(monkeypatch, tmp_path):
+    """start() is check-then-act, so it holds the handle's lock.
+
+    Two threads passing the "already warm?" test would both hydrate and both
+    take a sys.path reference, leaving the directory stuck on the path forever
+    and one hydrated concrete orphaned with any components it started.
+    """
+    root = str(tmp_path)
+    concrete = _StubFunction(root_dir=root, concrete=True)
+    hydrations = []
+    ready = threading.Barrier(2)
+
+    def slow_hydrate(func_instance):
+        hydrations.append(func_instance)
+        return concrete
+
+    monkeypatch.setattr(LocalBackend, "_hydrate", staticmethod(slow_hydrate))
+    handle = _StubFunction(root_dir=root)
+
+    def warm():
+        ready.wait()
+        LocalBackend.start(handle)
+
+    threads = [threading.Thread(target=warm) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(hydrations) == 1
+    assert _SYS_PATH_REFCOUNTS[root] == 1
+
+    LocalBackend.close(handle)
+
+    assert root not in sys.path
+
+
+def test_run_in_path_leaves_a_concurrently_added_entry_alone(tmp_path):
+    """run_in_path removes what it added, not a snapshot of the whole list.
+
+    A snapshot restore deletes every sys.path change made while the load was
+    open -- including a persistent entry start() added on another thread, which
+    would then vanish while its refcount still claimed it was there.
+    """
+    from metaflow_extensions.nflx.plugins.functions.environment import run_in_path
+
+    load_dir = str(tmp_path / "loading")
+    other_dir = str(tmp_path / "warmed-elsewhere")
+    (tmp_path / "loading").mkdir()
+
+    def loader():
+        # Stands in for another thread's start() landing mid-load.
+        sys.path.insert(0, other_dir)
+        return "loaded"
+
+    assert run_in_path(loader, load_dir) == "loaded"
+
+    assert other_dir in sys.path
+    assert load_dir not in sys.path
