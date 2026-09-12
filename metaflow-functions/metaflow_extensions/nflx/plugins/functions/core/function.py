@@ -108,6 +108,10 @@ class MetaflowFunction(ABC):
             Additional keyword arguments
         """
         self._func: Optional["MetaflowFunctionDecorator"] = func
+        # A handle built here owns its code already. Only
+        # _create_proxy_from_spec sets this, and only the local backend reads
+        # it, to decide whether a handle still needs hydrating.
+        self._is_proxy_handle: bool = False
         self.task: Optional["Task"] = task
         self._function_spec: Optional[FunctionSpec] = None
         self._function_root_dir: Optional[str] = None
@@ -547,8 +551,13 @@ class MetaflowFunction(ABC):
                         [(blob_path, blob_path_temp), (json_path, json_path_temp)]
                     )
             else:
-                os.makedirs(root_path, exist_ok=True)
+                # blob_path/json_path each live under a two-hex-char shard
+                # directory (package/<xx>/, metadata/<xx>/) that shutil.move
+                # will not create; creating root_path alone leaves the move
+                # raising FileNotFoundError on a fresh local datastore.
                 files = [(blob_path_temp, blob_path), (json_path_temp, json_path)]
+                for _, dst in files:
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
                 for f in files:
                     shutil.move(*f)
         return func_spec
@@ -940,6 +949,7 @@ class MetaflowFunction(ABC):
 
         # Initialize proxy function attributes
         instance._func = None
+        instance._is_proxy_handle = True
         instance.task = None
         instance._function_spec = func_spec
         instance._component_instances = []
