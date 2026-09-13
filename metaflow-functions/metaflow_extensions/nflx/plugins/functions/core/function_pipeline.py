@@ -420,7 +420,10 @@ class FunctionPipeline(MetaflowFunction):
 
     @classmethod
     def _reconstruct_functions_from_metadata(
-        cls, func_spec: FunctionSpec, use_proxy: bool = False
+        cls,
+        func_spec: FunctionSpec,
+        use_proxy: bool = False,
+        backend: Optional[str] = None,
     ) -> List[MetaflowFunction]:
         """
         Reconstruct constituent functions from function specs.
@@ -429,6 +432,11 @@ class FunctionPipeline(MetaflowFunction):
         ----------
         func_spec : FunctionSpec
             The function spec containing function specs
+        use_proxy : bool
+            Whether the constituent functions should be proxies
+        backend : Optional[str]
+            Backend name the constituent functions should use. If not
+            provided, they fall back to the backend from config.
 
         Returns
         -------
@@ -458,7 +466,10 @@ class FunctionPipeline(MetaflowFunction):
             # Child functions run in-process within pipeline subprocess,
             # so don't start their own subprocesses
             func = function_from_json(
-                local_reference, use_proxy=use_proxy, start_runtime=False
+                local_reference,
+                use_proxy=use_proxy,
+                start_runtime=False,
+                backend=backend,
             )
             functions.append(func)
 
@@ -480,6 +491,8 @@ class FunctionPipeline(MetaflowFunction):
             The function specification
         base_path : Optional[str]
             Base path for function reconstruction
+        backend : Optional[str]
+            Backend name to use. If not provided, uses the backend from config.
 
         Returns
         -------
@@ -487,11 +500,14 @@ class FunctionPipeline(MetaflowFunction):
             The concrete pipeline with concrete constituent functions
         """
         # Create concrete pipeline with concrete constituent functions
-        return cls._reconstruct_from_spec(func_spec, base_path)
+        return cls._reconstruct_from_spec(func_spec, base_path, backend=backend)
 
     @classmethod
     def _reconstruct_from_spec(
-        cls, spec: FunctionSpec, base_path: Optional[str] = None
+        cls,
+        spec: FunctionSpec,
+        base_path: Optional[str] = None,
+        backend: Optional[str] = None,
     ) -> "FunctionPipeline":
         """Reconstruct pipeline from spec without loading decorated functions."""
         if not spec.class_name or "FunctionPipeline" not in spec.class_name:
@@ -528,10 +544,12 @@ class FunctionPipeline(MetaflowFunction):
         generate_trampolines_for_directory(code_dir)
 
         def reconstruct_functions():
-            return cls._reconstruct_functions_from_metadata(spec, use_proxy=False)
+            return cls._reconstruct_functions_from_metadata(
+                spec, use_proxy=False, backend=backend
+            )
 
         functions = run_in_path(reconstruct_functions, function_dir)
-        pipeline = cls._create_from_spec(spec, functions)
+        pipeline = cls._create_from_spec(spec, functions, backend=backend)
         # The pipeline's own extraction dir (function_dir) is near-empty by
         # design -- each constituent function extracts and loads its own code
         # independently. Point function_root_dir at a constituent function's
@@ -560,6 +578,7 @@ class FunctionPipeline(MetaflowFunction):
 
         # Initialize pipeline proxy attributes
         instance._func = None
+        instance._is_proxy_handle = True
         instance.task = None
         instance._function_spec = func_spec
         instance._component_instances = []
@@ -576,7 +595,7 @@ class FunctionPipeline(MetaflowFunction):
 
         # Load constituent functions
         instance.functions = cls._reconstruct_functions_from_metadata(
-            func_spec, use_proxy=True
+            func_spec, use_proxy=True, backend=backend
         )
 
         # Set up backend
@@ -584,13 +603,16 @@ class FunctionPipeline(MetaflowFunction):
             get_backend,
         )
 
-        instance._backend = get_backend()
+        instance._backend = get_backend(backend)
 
         return instance
 
     @classmethod
     def from_json(
-        cls, reference: str, base_path: Optional[str] = None
+        cls,
+        reference: str,
+        base_path: Optional[str] = None,
+        backend: Optional[str] = None,
     ) -> "FunctionPipeline":
         """Create fully populated pipeline from FunctionSpec."""
         if not base_path:
@@ -607,16 +629,21 @@ class FunctionPipeline(MetaflowFunction):
         spec = FunctionSpec.from_json(local_reference)
 
         # Use the common reconstruction logic
-        return cls._reconstruct_from_spec(spec, base_path)
+        return cls._reconstruct_from_spec(spec, base_path, backend=backend)
 
     @classmethod
     def _create_from_spec(
-        cls, spec: FunctionSpec, functions: List[MetaflowFunction]
+        cls,
+        spec: FunctionSpec,
+        functions: List[MetaflowFunction],
+        backend: Optional[str] = None,
     ) -> "FunctionPipeline":
         """Create pipeline from existing spec, bypassing validation and spec generation."""
         pipeline = cls.__new__(cls)
 
-        # Initialize base class properly
+        # Initialize base class properly. func=None here is not a proxy: this
+        # pipeline's constituents are concrete, and __init__ leaves
+        # _is_proxy_handle False accordingly.
         super(FunctionPipeline, pipeline).__init__(func=None, task=None)
 
         # Set function spec FIRST - other attributes may depend on it
@@ -635,7 +662,7 @@ class FunctionPipeline(MetaflowFunction):
         # Pipeline creates its own backend instance
         from metaflow_extensions.nflx.plugins.functions.backends import get_backend
 
-        pipeline._backend = get_backend()
+        pipeline._backend = get_backend(backend)
 
         return pipeline
 

@@ -1101,6 +1101,10 @@ def test_local_backend_default_use_proxy_path_keeps_runtime_components():
     class _Proxy:
         name = "proxy_fn"
         _func = None
+        # What _create_proxy_from_spec sets, and what LocalBackend._is_proxy
+        # reads; this test stands in for that constructor via a mocked subclass,
+        # so it has to carry the marker itself.
+        _is_proxy_handle = True
         spec = fake_spec
 
     fake_subclass = MagicMock()
@@ -1126,7 +1130,7 @@ def test_local_backend_default_use_proxy_path_keeps_runtime_components():
                 start_runtime=False,
                 runtime_components=[RecordingComponent()],
             )
-            assert func._func is None  # sanity: we really got a proxy
+            assert func._is_proxy_handle  # sanity: we really got a proxy
 
             result = LocalBackend.apply(func, "hello", params=FunctionParameters())
 
