@@ -61,6 +61,11 @@ def serialize_function_payload(payload: FunctionPayload) -> Tuple[bytes, List[An
     # Serialize each kwargs value individually using the registry
     serialized_kwargs = {}
     for key, value in payload.kwargs.items():
+        # A None value carries no type to serialize under -- builtins.NoneType is not
+        # registered and cannot be reloaded on the other side -- so omit the key and let
+        # the receiving function's own default supply it.
+        if value is None:
+            continue
         value_serializer = registry.get_serializer_for_type(type(value))
         if value_serializer is None:
             raise MetaflowFunctionException(

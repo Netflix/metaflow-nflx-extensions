@@ -5,7 +5,9 @@ A decorated function self-registers serializers for the types in its signature, 
 canonical type string of the annotation. A union annotation has no useful canonical type -- the
 value handed to the function at runtime is one of its members -- so an optional parameter such as
 ``ctx: Optional[SomeProto] = None`` only self-registers if the union is unwrapped first. These
-tests pin the unwrapping helper and the end-to-end registration behaviour.
+tests pin the unwrapping helper, the end-to-end registration behaviour, and the payload round
+trip for all three call shapes an optional parameter allows: ``f(data)``, ``f(data, None)`` and
+``f(data, ctx)``.
 """
 
 import sys
@@ -15,10 +17,19 @@ import pytest
 
 pytestmark = pytest.mark.no_backend_parametrization
 
+from metaflow_extensions.nflx.plugins.functions.core.function_payload import (
+    FunctionPayload,
+    parse_function_payload,
+    serialize_function_payload,
+)
 from metaflow_extensions.nflx.plugins.functions.factory import (
     FunctionTypeConfig,
     _concrete_signature_types,
     create_function_type,
+)
+from metaflow_extensions.nflx.plugins.functions.serializers.base import BaseSerializer
+from metaflow_extensions.nflx.plugins.functions.serializers.config import (
+    SerializerConfig,
 )
 from metaflow_extensions.nflx.plugins.functions.serializers.registry import (
     get_global_registry,
@@ -152,3 +163,99 @@ class TestSignatureRegistration:
     def test_unreferenced_type_is_not_registered(self):
         # Guards against the expansion over-registering: only types actually in a signature.
         assert not _is_registered(UnreferencedContext)
+
+
+class RoundTripContext:
+    """Payload round-trip probe: carries one string so the trip can be verified."""
+
+    def __init__(self, country: str):
+        self.country = country
+
+    def __eq__(self, other):
+        return isinstance(other, RoundTripContext) and other.country == self.country
+
+
+class RoundTripContextSerializer(BaseSerializer):
+    """Minimal serializer for RoundTripContext.
+
+    AvroSerializer is fine for the registration tests above, which never serialize anything, but
+    it maps an unknown class to the ``string`` schema, so it cannot round-trip an arbitrary probe
+    type. Hand-rolling the encoding keeps these tests about the payload, not about Avro.
+    """
+
+    @property
+    def supported_type(self):
+        return RoundTripContext
+
+    def serialize(self, obj):
+        return obj.country.encode("utf-8"), list()
+
+    def deserialize(self, data):
+        return RoundTripContext(bytes(data).decode("utf-8"))
+
+
+def _round_trip_kwargs(kwargs):
+    """Serialize kwargs through the real payload path and return what the other side receives."""
+    get_global_registry().register_serializer_config(
+        SerializerConfig(
+            canonical_type=_canonical(RoundTripContext),
+            serializer=f"{__name__}.RoundTripContextSerializer",
+        )
+    )
+    payload_bytes, _ = serialize_function_payload(FunctionPayload(b"data", kwargs))
+    received = parse_function_payload(payload_bytes, expected_data_type=bytes)
+    return received.data, received.kwargs
+
+
+class TestOptionalKwargRoundTrip:
+    """The three call shapes an ``Optional[X] = None`` parameter allows, end to end.
+
+    Registration is only half the story: the value still has to survive serialization in the
+    caller and deserialization in the function process, where dispatch is on the runtime type of
+    the value rather than on the annotation.
+    """
+
+    def test_argument_omitted(self):
+        # f(data): no kwarg at all -- the function's default applies.
+        data, kwargs = _round_trip_kwargs({})
+
+        assert data == b"data"
+        assert kwargs == {}
+
+    def test_explicit_none_is_omitted(self):
+        # f(data, None): NoneType has no registered serializer and 'builtins.NoneType' cannot be
+        # reloaded on the other side, so the key is dropped and the default applies instead.
+        data, kwargs = _round_trip_kwargs({"ctx": None})
+
+        assert data == b"data"
+        assert kwargs == {}
+
+    def test_value_round_trips(self):
+        # f(data, ctx): the real value survives the trip.
+        data, kwargs = _round_trip_kwargs({"ctx": RoundTripContext("US")})
+
+        assert data == b"data"
+        assert kwargs == {"ctx": RoundTripContext("US")}
+
+    def test_none_does_not_drop_other_kwargs(self):
+        data, kwargs = _round_trip_kwargs(
+            {"ctx": None, "other": RoundTripContext("CA")}
+        )
+
+        assert data == b"data"
+        assert kwargs == {"other": RoundTripContext("CA")}
+
+    def test_dropped_kwarg_falls_back_to_the_declared_default(self):
+        # What the drop actually means for a decorated function: the parameter is bound to its
+        # own default, which is exactly the None the caller passed.
+        @probe_function
+        def handler(data: bytes, ctx: Optional[RoundTripContext] = None) -> bytes:
+            seen.append(ctx)
+            return data
+
+        seen = []
+        for sent in ({}, {"ctx": None}, {"ctx": RoundTripContext("US")}):
+            _, kwargs = _round_trip_kwargs(sent)
+            handler.__wrapped__(b"data", **kwargs)
+
+        assert seen == [None, None, RoundTripContext("US")]
