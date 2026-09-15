@@ -158,6 +158,9 @@ def create_function_type(
         "builtins.int",
         "builtins.float",
         "builtins.bool",
+        # An omitted optional argument is never serialized, but an explicitly passed
+        # None is, and it dispatches on type(None) rather than on the annotation.
+        "builtins.NoneType",
     ]
 
     primitive_configs = _create_serializer_configs_for_types(
