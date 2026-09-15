@@ -23,6 +23,7 @@ class HelloSimpleFunction(FlowSpec):
         from function_module import (
             avro_simple_string,
             avro_pydash_string,
+            avro_optional_context,
             avro_add_field,
             avro_double_values,
             avro_raise_user_error,
@@ -40,6 +41,9 @@ class HelloSimpleFunction(FlowSpec):
         self.avro_simple_function = AvroFunction(avro_simple_string, task=start_task)
         self.avro_pydash_function = AvroFunction(avro_pydash_string, task=start_task)
         self.avro_error_function = AvroFunction(avro_raise_user_error, task=start_task)
+        self.avro_optional_context_function = AvroFunction(
+            avro_optional_context, task=start_task
+        )
         self.avro_pipeline_function = FunctionPipeline(
             functions=[
                 AvroFunction(avro_add_field, task=start_task),

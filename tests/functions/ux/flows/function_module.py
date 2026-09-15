@@ -1,3 +1,5 @@
+from typing import Optional
+
 from metaflow import FunctionParameters
 from metaflow_extensions.nflx.plugins.avro_function import avro_function
 from metaflow_extensions.nflx.plugins.json_function import json_function
@@ -47,6 +49,17 @@ def avro_double_values(
     return {
         k: v * multiplier if isinstance(v, (int, float)) else v for k, v in data.items()
     }
+
+
+@avro_function
+def avro_optional_context(
+    data: str,
+    params: FunctionParameters = FunctionParameters(),
+    context: Optional[str] = None,
+) -> str:
+    """Avro function with an optional argument, to exercise all three call shapes:
+    omitted, explicit None, and a real value."""
+    return data if context is None else f"{data}+{context}"
 
 
 @avro_function
