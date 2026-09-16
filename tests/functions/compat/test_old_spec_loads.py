@@ -1,10 +1,7 @@
 """Today's code must still load reference JSONs written by older versions.
 
-Every fixture under `fixtures/` is a reference JSON from a past schema era; see
-`fixtures/README.md` for how they are made and what they can and cannot test.
-Nothing here touches S3: `use_proxy=True, start_runtime=False` stops after
-importing the function class, so the `s3://` paths in a fixture are never
-dereferenced.
+One fixture per era under `fixtures/` (see its README). Nothing here touches S3:
+`start_runtime=False` stops after importing the function class.
 """
 
 import pytest
@@ -14,11 +11,10 @@ from metaflow_extensions.nflx.plugins.functions.core.function_spec import Functi
 
 pytestmark = pytest.mark.no_backend_parametrization
 
-# The field set of FunctionSpec at each era's cutoff commit. A fixture that
-# drifts from this is no longer evidence about the version it claims to be.
+# FunctionSpec's field set at each era's cutoff commit. A fixture that drifts from
+# this is no longer evidence about the version it claims to be.
 ERA_TOP_LEVEL_KEYS = {
-    # f072249 -- #98, which introduced runtime components. Anything older than this
-    # is explicitly out of support; see the PR description.
+    # f072249 = #98; older shapes are out of support.
     "post-runtime-components": {
         "name",
         "uuid",
@@ -70,7 +66,7 @@ def test_old_reference_keeps_its_nested_function(old_reference, old_reference_da
 
 
 def test_old_reference_registers_its_serializers(old_reference, old_reference_data):
-    """The spec carries serializer configs by import path; they must still resolve."""
+    """Serializer configs are import paths, so they must still resolve."""
     from metaflow_extensions.nflx.plugins.functions.serializers.registry import (
         get_global_registry,
     )

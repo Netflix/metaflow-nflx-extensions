@@ -14,13 +14,13 @@ def fixture_path(era: str) -> str:
 
 @pytest.fixture(params=FIXTURE_ERAS)
 def old_reference(request):
-    """Path to one committed reference JSON, once per schema era."""
+    """One committed reference JSON, once per schema era."""
     return fixture_path(request.param)
 
 
 @pytest.fixture
 def avro_spec():
-    """A loaded spec to re-emit, so the schema guard tests the real writer path."""
+    """A loaded spec to re-emit, so the guard tests the real writer path."""
     from metaflow_extensions.nflx.plugins.functions.core.function_spec import (
         FunctionSpec,
     )

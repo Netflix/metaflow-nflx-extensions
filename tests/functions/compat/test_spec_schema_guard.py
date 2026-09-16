@@ -1,17 +1,9 @@
-"""Guards on the reference-JSON schema, for the benefit of readers we can no longer update.
+"""Guards on the reference-JSON schema, for readers we can no longer update.
 
-A bound function's reference JSON is written by `Function._export` as
-`json.dump(asdict(func_spec))`, so the JSON's top-level keys *are* the spec
-dataclass's field names. Every loader then ends in `cls(**filtered_desc)` on a
-`@dataclass(kw_only=True)`: `FunctionSpec._from_json_impl_from_data`,
-`FunctionPipelineSpec._from_json_impl_from_data`, and the generated one in
-`factory.py`. A key that is not a field is therefore a `TypeError` in every
-reader already deployed, which no amount of fixing here can reach.
-
-So: adding a name to either baseline below is a breaking change for readers in
-the field. Additive data belongs inside `system_metadata`, which is a free-form
-dict -- that is what PR #98 did for `runtime_components`, and why pre-#98
-readers can still load specs written after it.
+The JSON is `json.dump(asdict(spec))` and every loader ends in `cls(**desc)` on a
+`kw_only` dataclass, so a key that is not a field is a `TypeError` in already-deployed
+readers. Adding a name to either baseline below is a breaking change for them;
+additive data goes inside `system_metadata`, as #98 did for `runtime_components`.
 """
 
 import json
@@ -86,7 +78,6 @@ def _schema_drift(actual, expected):
 
 @pytest.mark.parametrize("spec_cls", SPEC_CLASSES)
 def test_spec_top_level_fields_are_frozen(spec_cls):
-    """Every concrete spec emits exactly the agreed top-level key set."""
     actual = {f.name for f in fields(spec_cls)}
 
     assert actual == SPEC_FIELDS, _schema_drift(actual, SPEC_FIELDS)
@@ -104,7 +95,7 @@ def test_decorator_spec_fields_are_frozen(deco_cls):
     "function_cls", [AvroFunction, JsonFunction], ids=lambda c: c.__name__
 )
 def test_generated_decorator_spec_fields_are_frozen(function_cls):
-    """factory.py redeclares the schema fields on its generated classes; it must not add any."""
+    """factory.py redeclares these fields on its generated classes; it must not add any."""
     deco_spec = function_cls.function_spec_cls._build_deco_spec(
         {"name": "f", "module": "m"}
     )
@@ -115,7 +106,7 @@ def test_generated_decorator_spec_fields_are_frozen(function_cls):
 
 
 def test_emitted_json_keys_match_the_frozen_fields(avro_spec):
-    """What `Function._export` actually writes, not just what the class declares."""
+    """What `_export` actually writes, not just what the class declares."""
     emitted = json.loads(json.dumps(asdict(avro_spec), sort_keys=True))
 
     assert set(emitted) == SPEC_FIELDS, _schema_drift(set(emitted), SPEC_FIELDS)
@@ -125,11 +116,7 @@ def test_emitted_json_keys_match_the_frozen_fields(avro_spec):
 
 
 def test_unknown_top_level_key_is_currently_fatal(tmp_path, avro_spec):
-    """Documents the constraint above: a reader cannot skip a key it doesn't know.
-
-    If the loaders are ever made lenient, this test should be inverted rather
-    than deleted -- it is the only place that states the cost of a new field.
-    """
+    """If the loaders are ever made lenient, invert this rather than delete it."""
     desc = asdict(avro_spec)
     desc["some_future_field"] = "value"
     reference = tmp_path / "reference.json"
@@ -140,7 +127,7 @@ def test_unknown_top_level_key_is_currently_fatal(tmp_path, avro_spec):
 
 
 def test_unknown_system_metadata_key_is_tolerated(tmp_path, avro_spec):
-    """The supported way to add data: a new key inside `system_metadata`."""
+    """The supported way to add data."""
     desc = asdict(avro_spec)
     desc["system_metadata"] = {
         **(desc["system_metadata"] or {}),
