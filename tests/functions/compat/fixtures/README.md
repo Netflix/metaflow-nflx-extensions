@@ -47,4 +47,4 @@ python tests/functions/ux/flows/hellosimplefunction.py --environment=conda run
 
 Copy down `Flow("HelloSimpleFunction").latest_run["bind_functions"].task.data`
 `.avro_simple_function.reference` and the two objects it names, then add the version to
-`VERSION_TOP_LEVEL_KEYS` and `FIXTURE_VERSIONS`.
+`FIXTURE_VERSIONS`.

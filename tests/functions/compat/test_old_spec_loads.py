@@ -12,36 +12,6 @@ from metaflow_extensions.nflx.plugins.functions.core.function_spec import Functi
 
 pytestmark = pytest.mark.no_backend_parametrization
 
-# FunctionSpec's field set in each pinned version. A fixture that drifts from this is
-# no longer evidence about the version it claims to be.
-VERSION_TOP_LEVEL_KEYS = {
-    "v0.2.7": {
-        "name",
-        "uuid",
-        "class_name",
-        "user",
-        "timestamp_utc",
-        "reference",
-        "function",
-        "input_spec",
-        "output_spec",
-        "code_package",
-        "task_pathspec",
-        "task_code_path",
-        "package_uuid",
-        "system_metadata",
-        "user_metadata",
-        "artifacts",
-        "serializer_configs",
-    },
-}
-
-
-def test_fixture_matches_its_version(old_reference, old_reference_data):
-    version = old_reference.split("/")[-2]
-
-    assert set(old_reference_data) == VERSION_TOP_LEVEL_KEYS[version]
-
 
 def test_old_reference_parses(old_reference, old_reference_data):
     spec = FunctionSpec.from_json(old_reference)

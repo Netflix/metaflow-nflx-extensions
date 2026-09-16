@@ -2,8 +2,9 @@
 
 The JSON is `json.dump(asdict(spec))` and every loader ends in `cls(**desc)` on a
 `kw_only` dataclass, so a key that is not a field is a `TypeError` in already-deployed
-readers. Adding a name to either baseline below is a breaking change for them;
-additive data goes inside `system_metadata`, which is free-form.
+readers. The committed old reference is the baseline: gaining or losing a field
+relative to it is a breaking change for them, while additive data inside
+`system_metadata` is free.
 """
 
 import json
@@ -24,37 +25,6 @@ from metaflow_extensions.nflx.plugins.json_function import JsonFunction
 
 pytestmark = pytest.mark.no_backend_parametrization
 
-SPEC_FIELDS = {
-    "name",
-    "uuid",
-    "class_name",
-    "user",
-    "timestamp_utc",
-    "reference",
-    "function",
-    "input_spec",
-    "output_spec",
-    "code_package",
-    "task_pathspec",
-    "task_code_path",
-    "package_uuid",
-    "system_metadata",
-    "user_metadata",
-    "artifacts",
-    "serializer_configs",
-}
-
-DECORATOR_SPEC_FIELDS = {
-    "name",
-    "module",
-    "file_name",
-    "doc",
-    "type",
-    "input_schema",
-    "parameter_schema",
-    "return_schema",
-}
-
 SPEC_CLASSES = [
     pytest.param(FunctionSpec, id="FunctionSpec"),
     pytest.param(FunctionPipeline.function_spec_cls, id="FunctionPipelineSpec"),
@@ -68,50 +38,56 @@ DECORATOR_SPEC_CLASSES = [
 ]
 
 
-def _schema_drift(actual, expected):
+def _drift(actual, expected):
     return (
-        f"reference-JSON schema changed: added {sorted(actual - expected)}, "
-        f"removed {sorted(expected - actual)}. Read this module's docstring before "
-        "updating the baseline."
+        "schema drifted from the committed old reference: "
+        f"added {sorted(actual - expected)}, removed {sorted(expected - actual)}. "
+        "Read this module's docstring before changing either side."
     )
 
 
 @pytest.mark.parametrize("spec_cls", SPEC_CLASSES)
-def test_spec_top_level_fields_are_frozen(spec_cls):
+def test_spec_top_level_fields_match_the_old_reference(spec_cls, old_reference_data):
     actual = {f.name for f in fields(spec_cls)}
+    expected = set(old_reference_data)
 
-    assert actual == SPEC_FIELDS, _schema_drift(actual, SPEC_FIELDS)
+    assert actual == expected, _drift(actual, expected)
 
 
 @pytest.mark.parametrize("deco_cls", DECORATOR_SPEC_CLASSES)
-def test_decorator_spec_fields_are_frozen(deco_cls):
+def test_decorator_spec_fields_match_the_old_reference(deco_cls, old_reference_data):
     """Same contract for the nested `function` object."""
     actual = {f.name for f in fields(deco_cls)}
+    expected = set(old_reference_data["function"])
 
-    assert actual == DECORATOR_SPEC_FIELDS, _schema_drift(actual, DECORATOR_SPEC_FIELDS)
+    assert actual == expected, _drift(actual, expected)
 
 
 @pytest.mark.parametrize(
     "function_cls", [AvroFunction, JsonFunction], ids=lambda c: c.__name__
 )
-def test_generated_decorator_spec_fields_are_frozen(function_cls):
+def test_generated_decorator_spec_fields_match_the_old_reference(
+    function_cls, old_reference_data
+):
     """factory.py redeclares these fields on its generated classes; it must not add any."""
     deco_spec = function_cls.function_spec_cls._build_deco_spec(
         {"name": "f", "module": "m"}
     )
-
     actual = {f.name for f in fields(deco_spec)}
+    expected = set(old_reference_data["function"])
 
-    assert actual == DECORATOR_SPEC_FIELDS, _schema_drift(actual, DECORATOR_SPEC_FIELDS)
+    assert actual == expected, _drift(actual, expected)
 
 
-def test_emitted_json_keys_match_the_frozen_fields(avro_spec):
+def test_emitted_json_keys_match_the_old_reference(avro_spec, old_reference_data):
     """What `_export` actually writes, not just what the class declares."""
     emitted = json.loads(json.dumps(asdict(avro_spec), sort_keys=True))
 
-    assert set(emitted) == SPEC_FIELDS, _schema_drift(set(emitted), SPEC_FIELDS)
-    assert set(emitted["function"]) == DECORATOR_SPEC_FIELDS, _schema_drift(
-        set(emitted["function"]), DECORATOR_SPEC_FIELDS
+    assert set(emitted) == set(old_reference_data), _drift(
+        set(emitted), set(old_reference_data)
+    )
+    assert set(emitted["function"]) == set(old_reference_data["function"]), _drift(
+        set(emitted["function"]), set(old_reference_data["function"])
     )
 
 
