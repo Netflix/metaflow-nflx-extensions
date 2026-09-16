@@ -33,13 +33,23 @@ Note `system_metadata.runtime_components` is absent here. That section is writte
 when a function is bound with components configured, so its absence is representative
 of this era rather than older than it.
 
-## What these fixtures cannot test
+## Replaying, and what a fixture cannot carry
 
-The loader only, which never dereferences the `s3://` paths -- not *running* an old
-function. A replay test (load an old reference and call it, which is what would have
-caught #98) needs the referenced artifacts to resolve, because the old runtime code
-arrives in the code package (`.mf_code/` on the subprocess's `PYTHONPATH` via
-`update_packaging_env_vars`). The local S3 endpoint above is ephemeral, so a replay
-fixture has to carry its own copies: `download_s3_packages` passes non-S3 paths
-through untouched, so `code_package` and `task_code_path` can point at committed
-files. For this era that is 10 KB + 1.9 MB.
+`function_package.zip` (10 KB) and `task_package.tar` (1.9 MB) are committed beside
+the reference. The tar is the one that matters for compat: it holds
+`.mf_code/metaflow` and `.mf_code/metaflow_extensions`, the era's own runtime code,
+which `update_packaging_env_vars` puts on the runtime subprocess's `PYTHONPATH`. The
+zip holds the function's own module and schemas. `setup_code_packages` extracts the
+tar and then the zip over it, so both are needed.
+
+`test_replay_old_function.py` rewrites three path fields to point at them --
+`code_package`, `task_code_path`, and `reference`, the last because both backends
+re-read and download it themselves. Two things cannot be carried in the repo:
+
+- the conda env behind `system_metadata.environment.alias`, skipped with
+  `METAFLOW_FUNCTIONS_TEST_MODE=1`; the old code still comes from the package;
+- the `artifacts` map, whose entries are metaflow datastore objects addressed by sha
+  (`location: ":root:s3://..."`) rather than paths, so there is nothing to redirect.
+  The replay clears it and the function falls back to its parameter defaults.
+
+With those, replay needs no S3 at all and runs anywhere the unit tier runs.
