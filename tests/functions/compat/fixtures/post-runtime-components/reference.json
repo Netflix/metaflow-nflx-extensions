@@ -1,66 +1,159 @@
 {
-    "artifacts": {},
-    "class_name": "metaflow_extensions.nflx.plugins.avro_function.AvroFunction",
-    "code_package": "s3://metaflow-test/functions/prod/HelloSimpleFunction/simple_function/2f0c9d4b1e7a4c65/function_package.zip",
-    "function": {
-        "doc": "Uppercase the input and tag it.",
-        "file_name": "function_module.py",
-        "input_schema": {
-            "fields": [
-                {
-                    "name": "data",
-                    "type": "string"
-                }
+    "artifacts": {
+        "increment": {
+            "attempt_id": 0,
+            "content_type": "pickle-v4",
+            "ds_type": "s3",
+            "flow_id": "HelloSimpleFunction",
+            "location": ":root:s3://metaflow-test",
+            "name": "increment",
+            "run_number": "1789595615588251",
+            "sha": "680dfddf6636e87d2e75e6f66903e4c7dc435aec",
+            "step_name": "start",
+            "system_tags": [
+                "python_version:3.10.12",
+                "metaflow_version:2.19.39+functions(1.13.16.post1-gitf072249);netflix-ext(1.13.16.post1-gitf072249)",
+                "runtime:dev",
+                "user:dberg"
             ],
-            "name": "simple_function_input",
-            "type": "record"
+            "tags": [],
+            "task_id": "1",
+            "ts_epoch": 1789595617950,
+            "type": "metaflow.artifact",
+            "user_name": "dberg"
+        },
+        "multiplier": {
+            "attempt_id": 0,
+            "content_type": "pickle-v4",
+            "ds_type": "s3",
+            "flow_id": "HelloSimpleFunction",
+            "location": ":root:s3://metaflow-test",
+            "name": "multiplier",
+            "run_number": "1789595615588251",
+            "sha": "f985b91548a08fb73bb3a8c382a3e8e021f7fcfc",
+            "step_name": "start",
+            "system_tags": [
+                "python_version:3.10.12",
+                "metaflow_version:2.19.39+functions(1.13.16.post1-gitf072249);netflix-ext(1.13.16.post1-gitf072249)",
+                "runtime:dev",
+                "user:dberg"
+            ],
+            "tags": [],
+            "task_id": "1",
+            "ts_epoch": 1789595617950,
+            "type": "metaflow.artifact",
+            "user_name": "dberg"
+        },
+        "name": {
+            "attempt_id": 0,
+            "content_type": "pickle-v4",
+            "ds_type": "s3",
+            "flow_id": "HelloSimpleFunction",
+            "location": ":root:s3://metaflow-test",
+            "name": "name",
+            "run_number": "1789595615588251",
+            "sha": "58b5c389b7d74ab0f19582a0573c80b969d5b370",
+            "step_name": "start",
+            "system_tags": [
+                "python_version:3.10.12",
+                "metaflow_version:2.19.39+functions(1.13.16.post1-gitf072249);netflix-ext(1.13.16.post1-gitf072249)",
+                "runtime:dev",
+                "user:dberg"
+            ],
+            "tags": [],
+            "task_id": "1",
+            "ts_epoch": 1789595617950,
+            "type": "metaflow.artifact",
+            "user_name": "dberg"
+        },
+        "suffix": {
+            "attempt_id": 0,
+            "content_type": "pickle-v4",
+            "ds_type": "s3",
+            "flow_id": "HelloSimpleFunction",
+            "location": ":root:s3://metaflow-test",
+            "name": "suffix",
+            "run_number": "1789595615588251",
+            "sha": "da7cdd713031532ecc4a89551a733ca0d8fdc355",
+            "step_name": "start",
+            "system_tags": [
+                "python_version:3.10.12",
+                "metaflow_version:2.19.39+functions(1.13.16.post1-gitf072249);netflix-ext(1.13.16.post1-gitf072249)",
+                "runtime:dev",
+                "user:dberg"
+            ],
+            "tags": [],
+            "task_id": "1",
+            "ts_epoch": 1789595617950,
+            "type": "metaflow.artifact",
+            "user_name": "dberg"
+        },
+        "threshold": {
+            "attempt_id": 0,
+            "content_type": "pickle-v4",
+            "ds_type": "s3",
+            "flow_id": "HelloSimpleFunction",
+            "location": ":root:s3://metaflow-test",
+            "name": "threshold",
+            "run_number": "1789595615588251",
+            "sha": "194108c8f41294e0338aaf3e15c9ec9614b94fad",
+            "step_name": "start",
+            "system_tags": [
+                "python_version:3.10.12",
+                "metaflow_version:2.19.39+functions(1.13.16.post1-gitf072249);netflix-ext(1.13.16.post1-gitf072249)",
+                "runtime:dev",
+                "user:dberg"
+            ],
+            "tags": [],
+            "task_id": "1",
+            "ts_epoch": 1789595617950,
+            "type": "metaflow.artifact",
+            "user_name": "dberg"
+        }
+    },
+    "class_name": "metaflow_extensions.nflx.plugins.avro_function.AvroFunction",
+    "code_package": "s3://metaflow-test/functions/prod/v2/package/1f/1f08a6e44cbc7c0e289138ea8ca927af.zip",
+    "function": {
+        "doc": "Simple avro function with no external dependencies.",
+        "file_name": "function_module",
+        "input_schema": {
+            "type": "str"
         },
         "module": "function_module",
-        "name": "simple_function",
+        "name": "avro_simple_string",
         "parameter_schema": {
-            "fields": [],
-            "name": "simple_function_parameters",
-            "type": "record"
+            "type": "metaflow_extensions.nflx.plugins.functions.core.function_parameters.FunctionParameters"
         },
         "return_schema": {
-            "name": "simple_function_output",
-            "type": "string"
+            "type": "str"
         },
         "type": "avro_function"
     },
-    "input_spec": null,
-    "name": "simple_function",
-    "output_spec": null,
-    "package_uuid": "2f0c9d4b1e7a4c65",
-    "reference": "s3://metaflow-test/functions/prod/HelloSimpleFunction/simple_function/2f0c9d4b1e7a4c65/reference.json",
-    "serializer_configs": {
-        "builtins.str": {
-            "extra_kwargs": {},
-            "serializer": "metaflow_extensions.nflx.plugins.avro_function.serializers.AvroSerializer",
-            "supports_chunking": false
-        }
+    "input_spec": {
+        "type": "str"
     },
+    "name": "avro_simple_string",
+    "output_spec": {
+        "type": "str"
+    },
+    "package_uuid": "1f08a6e44cbc7c0e289138ea8ca927af",
+    "reference": "s3://metaflow-test/functions/prod/v2/metadata/1a/1abfa00594d52721f88574b8cf5f4b07.json",
+    "serializer_configs": {},
     "system_metadata": {
         "environment": {
-            "alias": "mfenv_hellosimplefunction:1",
+            "alias": "1f669c0dc4fc4ca95f1b67ec3c3116b6779bcd30:a3844723d9115685b01070d550591369116ddfde",
             "arch": "linux-64",
             "env_id": [
-                "mfenv_hellosimplefunction",
-                "1",
+                "1f669c0dc4fc4ca95f1b67ec3c3116b6779bcd30",
+                "a3844723d9115685b01070d550591369116ddfde",
                 "linux-64"
             ]
-        },
-        "runtime_components": {
-            "runtime_metrics": {
-                "enabled": true,
-                "flush_interval_s": 30
-            }
         }
     },
-    "task_code_path": "s3://metaflow-test/HelloSimpleFunction/data/2f/2f0c9d4b1e7a4c65a1b2c3d4e5f60718",
-    "task_pathspec": "HelloSimpleFunction/1757900000000000/bind_functions/1",
-    "timestamp_utc": 1757900000,
+    "task_code_path": "s3://metaflow-test/HelloSimpleFunction/data/bb/bbf71cb70602afce3f18ffa640ac899ae05ea4c8",
+    "task_pathspec": "HelloSimpleFunction/1789595615588251/start/1",
+    "timestamp_utc": 1789595622,
     "user": "dberg",
-    "user_metadata": {},
-    "uuid": "9c1f7e5a3b2d4068"
+    "user_metadata": null,
+    "uuid": "1abfa00594d52721f88574b8cf5f4b07"
 }
