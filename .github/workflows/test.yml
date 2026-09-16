@@ -18,7 +18,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macos-latest is disabled: libmamba 2.x reports __osx=0 on the macOS 26
+        # runners, so `uv` (__osx >=11.0) is unsolvable and two env-resolution
+        # fixtures fail. Re-add macos-latest to verify the fix. AIPMDM-1289
+        os: [ubuntu-latest]
         python-version: ["3.10", "3.12", "3.13"]
         resolver: [mamba, conda, micromamba]
         micromamba-version: ["1.5.10-0", "latest"]
