@@ -5,16 +5,16 @@ import pytest
 
 FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
-FIXTURE_ERAS = ["post-runtime-components"]
+FIXTURE_VERSIONS = ["v0.2.7"]
 
 
-def fixture_path(era: str) -> str:
-    return os.path.join(FIXTURES_DIR, era, "reference.json")
+def fixture_path(version: str) -> str:
+    return os.path.join(FIXTURES_DIR, version, "reference.json")
 
 
-@pytest.fixture(params=FIXTURE_ERAS)
+@pytest.fixture(params=FIXTURE_VERSIONS)
 def old_reference(request):
-    """One committed reference JSON, once per schema era."""
+    """One committed reference JSON, once per pinned old version."""
     return fixture_path(request.param)
 
 
@@ -25,7 +25,7 @@ def avro_spec():
         FunctionSpec,
     )
 
-    return FunctionSpec.from_json(fixture_path("post-runtime-components"))
+    return FunctionSpec.from_json(fixture_path(FIXTURE_VERSIONS[0]))
 
 
 @pytest.fixture

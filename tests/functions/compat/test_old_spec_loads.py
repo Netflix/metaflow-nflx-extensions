@@ -1,6 +1,7 @@
 """Today's code must still load reference JSONs written by older versions.
 
-One fixture per era under `fixtures/` (see its README). Nothing here touches S3:
+One fixture per pinned version under `fixtures/` (see its README). Nothing here
+touches S3:
 `start_runtime=False` stops after importing the function class.
 """
 
@@ -11,11 +12,10 @@ from metaflow_extensions.nflx.plugins.functions.core.function_spec import Functi
 
 pytestmark = pytest.mark.no_backend_parametrization
 
-# FunctionSpec's field set at each era's cutoff commit. A fixture that drifts from
-# this is no longer evidence about the version it claims to be.
-ERA_TOP_LEVEL_KEYS = {
-    # f072249 = #98; older shapes are out of support.
-    "post-runtime-components": {
+# FunctionSpec's field set in each pinned version. A fixture that drifts from this is
+# no longer evidence about the version it claims to be.
+VERSION_TOP_LEVEL_KEYS = {
+    "v0.2.7": {
         "name",
         "uuid",
         "class_name",
@@ -37,10 +37,10 @@ ERA_TOP_LEVEL_KEYS = {
 }
 
 
-def test_fixture_matches_its_era(old_reference, old_reference_data):
-    era = old_reference.split("/")[-2]
+def test_fixture_matches_its_version(old_reference, old_reference_data):
+    version = old_reference.split("/")[-2]
 
-    assert set(old_reference_data) == ERA_TOP_LEVEL_KEYS[era]
+    assert set(old_reference_data) == VERSION_TOP_LEVEL_KEYS[version]
 
 
 def test_old_reference_parses(old_reference, old_reference_data):

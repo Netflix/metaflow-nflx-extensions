@@ -3,7 +3,7 @@
 The old runtime is not the installed one: the committed task package carries
 `.mf_code/metaflow_extensions`, which `update_packaging_env_vars` puts on the runtime
 subprocess's `PYTHONPATH`, shadowing site-packages. So this runs today's caller
-against that version's code -- the test #98 would have needed.
+against that version's code.
 
 Three path fields are rewritten into a temp copy, and two parts of the original
 environment cannot be carried in a repo. See `fixtures/README.md`.
@@ -27,13 +27,13 @@ from metaflow_extensions.nflx.plugins.functions.core.function_parameters import 
 
 pytestmark = pytest.mark.no_backend_parametrization
 
-# Committed beside each era's reference.json.
+# Committed beside each version's reference.json.
 PACKAGE_FILES = {
     "code_package": "function_package.zip",
     "task_code_path": "task_package.tar",
 }
 
-# That era's `avro_simple_string`: upper(), spaces stripped, "_" + params.suffix.
+# That version's `avro_simple_string`: upper(), spaces stripped, "_" + params.suffix.
 INPUT = "hello world"
 EXPECTED = "HELLOWORLD_default"
 
@@ -41,13 +41,13 @@ EXPECTED = "HELLOWORLD_default"
 @pytest.fixture
 def replayable_reference(old_reference, old_reference_data, tmp_path, monkeypatch):
     """The committed reference, pointed at the committed packages."""
-    era_dir = os.path.dirname(old_reference)
+    version_dir = os.path.dirname(old_reference)
     desc = dict(old_reference_data)
 
     for field, file_name in PACKAGE_FILES.items():
-        package = os.path.join(era_dir, file_name)
+        package = os.path.join(version_dir, file_name)
         if not os.path.exists(package):
-            pytest.skip(f"{os.path.basename(era_dir)} has no committed {file_name}")
+            pytest.skip(f"{os.path.basename(version_dir)} has no committed {file_name}")
         desc[field] = package
 
     desc["artifacts"] = {}
@@ -86,8 +86,8 @@ def test_old_function_still_executes_twice(replayable_reference, backend):
 
 @pytest.mark.parametrize("backend", ["memory", "local"])
 def test_old_function_accepts_runtime_components(replayable_reference, backend):
-    """The #98 surface: the caller appends `--runtime-component <cls>` to the runtime
-    command, and a pre-#98 memory_cli has no such option."""
+    """The caller appends `--runtime-component <cls>` to the runtime command, so the
+    old memory_cli has to accept it."""
     metrics = RuntimeMetrics()
     func = function_from_json(
         replayable_reference, backend=backend, runtime_components=[metrics]

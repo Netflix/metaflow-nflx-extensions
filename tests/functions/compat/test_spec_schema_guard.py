@@ -3,7 +3,7 @@
 The JSON is `json.dump(asdict(spec))` and every loader ends in `cls(**desc)` on a
 `kw_only` dataclass, so a key that is not a field is a `TypeError` in already-deployed
 readers. Adding a name to either baseline below is a breaking change for them;
-additive data goes inside `system_metadata`, as #98 did for `runtime_components`.
+additive data goes inside `system_metadata`, which is free-form.
 """
 
 import json
