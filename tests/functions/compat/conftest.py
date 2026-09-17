@@ -5,7 +5,7 @@ import pytest
 
 FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
-FIXTURE_VERSIONS = ["v0.2.7"]
+FIXTURE_VERSIONS = ["v0.2.8"]
 
 
 def fixture_path(version: str) -> str:

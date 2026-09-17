@@ -968,12 +968,15 @@ def test_function_from_json_rejects_duplicate_component_types():
     fake_subclass = MagicMock()
     fake_subclass._create_proxy_from_spec.return_value = MagicMock()
 
-    with patch(
-        "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
-        return_value=fake_spec,
-    ), patch(
-        "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
-        return_value=fake_subclass,
+    with (
+        patch(
+            "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
+            return_value=fake_spec,
+        ),
+        patch(
+            "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
+            return_value=fake_subclass,
+        ),
     ):
         with pytest.raises(
             MetaflowFunctionException, match="Duplicate runtime component"
@@ -1003,12 +1006,15 @@ def test_function_from_json_allows_distinct_component_types():
     recorder = RecordingComponent()
     producer = _OutputComponent()
 
-    with patch(
-        "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
-        return_value=fake_spec,
-    ), patch(
-        "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
-        return_value=fake_subclass,
+    with (
+        patch(
+            "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
+            return_value=fake_spec,
+        ),
+        patch(
+            "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
+            return_value=fake_subclass,
+        ),
     ):
         func = function_from_json(
             "fake-reference.json",
@@ -1043,12 +1049,15 @@ def test_function_from_json_runtime_metrics_component():
 
     metrics = RuntimeMetrics()
 
-    with patch(
-        "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
-        return_value=fake_spec,
-    ), patch(
-        "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
-        return_value=fake_subclass,
+    with (
+        patch(
+            "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
+            return_value=fake_spec,
+        ),
+        patch(
+            "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
+            return_value=fake_subclass,
+        ),
     ):
         func = function_from_json(
             "fake-reference.json",
@@ -1110,15 +1119,19 @@ def test_local_backend_default_use_proxy_path_keeps_runtime_components():
     log = _tmp_log()
     RecordingComponent._log_path = log
     try:
-        with patch(
-            "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
-            return_value=fake_spec,
-        ), patch(
-            "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
-            return_value=fake_subclass,
-        ), patch(
-            "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.download_to_temp",
-            return_value="fake-reference.json",
+        with (
+            patch(
+                "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.from_json",
+                return_value=fake_spec,
+            ),
+            patch(
+                "metaflow_extensions.nflx.plugins.functions.utils.load_type_from_string",
+                return_value=fake_subclass,
+            ),
+            patch(
+                "metaflow_extensions.nflx.plugins.functions.core.function_spec.FunctionSpec.download_to_temp",
+                return_value="fake-reference.json",
+            ),
         ):
             # Default use_proxy=True - this is the caller-facing path.
             func = function_from_json(

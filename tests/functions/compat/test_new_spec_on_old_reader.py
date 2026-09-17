@@ -12,11 +12,11 @@ executing the function body.
 
 import json
 import subprocess
-import sys
 from dataclasses import asdict
 
 import pytest
 
+from ..old_reader import install
 from .conftest import FIXTURE_VERSIONS
 
 # Runs inside the old venv; prints what it managed to read back.
@@ -33,30 +33,11 @@ print(json.dumps({"name": spec.name, "uuid": spec.uuid, "function": spec.functio
 def old_reader(request, tmp_path_factory):
     """A venv with that version of metaflow-functions installed from the index."""
     version = request.param.lstrip("v")
-    venv = tmp_path_factory.mktemp(f"reader-{version}")
 
     try:
-        subprocess.run(
-            [sys.executable, "-m", "venv", str(venv)], check=True, capture_output=True
-        )
-        subprocess.run(
-            [
-                str(venv / "bin" / "pip"),
-                "install",
-                "-q",
-                "metaflow",
-                "fastavro",
-                "psutil",
-                f"metaflow-functions=={version}",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=600,
-        )
+        return install(version, tmp_path_factory.mktemp(f"reader-{version}"))
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         pytest.skip(f"cannot install metaflow-functions=={version}: {e}")
-
-    return str(venv / "bin" / "python")
 
 
 def _read_with(python, reference):

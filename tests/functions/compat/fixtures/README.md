@@ -4,7 +4,12 @@ One directory per pinned old version, named for it. Each holds a reference JSON 
 version wrote, plus the packages needed to run it. Add a newer one, or drop an older
 one, whenever the versions worth testing against change.
 
-## `v0.2.7/`
+## `v0.2.8/`
+
+Captured at `f072249`, whose in-repo VERSION still said 0.2.7 -- the bump came later in
+#105, so this code first shipped as **0.2.8**. Name the directory for the release, not
+for the VERSION file: `pip install metaflow-functions==0.2.7` gets a build with no
+`functions/components` in it at all.
 
 `reference.json` is the real artifact, byte-for-byte as `Function._export` wrote it:
 the `avro_simple_string` ux function bound by an actual flow run against a local S3
