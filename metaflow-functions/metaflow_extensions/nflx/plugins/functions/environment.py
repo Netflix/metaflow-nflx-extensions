@@ -15,10 +15,6 @@ if TYPE_CHECKING:
 
 from metaflow.plugins.env_escape import generate_trampolines
 
-try:
-    from metaflow_extensions.netflixext.plugins.conda.conda import Conda  # type: ignore
-except ImportError:
-    from metaflow_extensions.netflix_ext.plugins.conda.conda import Conda  # type: ignore
 from metaflow_extensions.nflx.plugins.functions.debug import debug
 from metaflow_extensions.nflx.plugins.functions.utils import (
     is_s3,
@@ -440,6 +436,22 @@ def materialize_conda_environment(system_metadata: Dict[str, Any]) -> str:
 
     def no_echo(*args, **kwargs):
         pass
+
+    # Imported here rather than at module scope: this is the only use of Conda,
+    # and a *serving* environment carries the serving stack but not the conda
+    # builder -- it was created from a resolved environment and never resolves
+    # one. At module scope the import made the whole backend chain
+    # (local_backend -> abstract_backend -> this module) unimportable there:
+    #   ModuleNotFoundError: No module named 'metaflow_extensions.netflix_ext'
+    # seen loading a function inside its own environment on Triton.
+    try:
+        from metaflow_extensions.netflixext.plugins.conda.conda import (  # type: ignore
+            Conda,
+        )
+    except ImportError:
+        from metaflow_extensions.netflix_ext.plugins.conda.conda import (  # type: ignore
+            Conda,
+        )
 
     c = Conda(no_echo, "s3")
     resolved_env = c.environment_from_alias(alias, arch)
