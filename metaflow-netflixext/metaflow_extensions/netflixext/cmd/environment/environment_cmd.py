@@ -39,6 +39,9 @@ from metaflow_extensions.netflixext.plugins.conda.env_descr import (
     env_type_for_deps,
 )
 from metaflow_extensions.netflixext.plugins.conda.envsresolver import EnvsResolver
+from metaflow_extensions.netflixext.plugins.conda.conda_lock_file import (
+    resolved_environments_from_conda_lock,
+)
 
 from metaflow_extensions.netflixext.plugins.conda.parsers import (
     parse_req_value,
@@ -98,7 +101,27 @@ def env_spec_options(func):
         "yml_file",
         default=None,
         type=click.Path(exists=True, readable=True, dir_okay=False, resolve_path=True),
-        help="Get the environment definition from a environment.yml file (conda-lock format).",
+        help="Get the environment definition from an environment.yml file. The "
+        "environment is resolved from it; to use an already resolved conda-lock "
+        "lockfile as-is, use --lockfile.",
+    )
+    @click.option(
+        "--lockfile",
+        "lockfile",
+        default=None,
+        type=click.Path(exists=True, readable=True, dir_okay=False, resolve_path=True),
+        help="Use an already resolved conda-lock lockfile (the conda-lock.yml produced "
+        "by 'conda-lock lock'). The packages it pins are used exactly as they are "
+        "instead of being re-resolved. Defaults to every platform the lockfile was "
+        "locked for; restrict with --arch.",
+    )
+    @click.option(
+        "--include-dev/--no-include-dev",
+        "include_dev",
+        show_default=True,
+        default=False,
+        help="Include the packages of the 'dev' category of the conda-lock lockfile. "
+        "Only meaningful with --lockfile.",
     )
     @click.option(
         "-p",
@@ -631,6 +654,8 @@ def resolve(
     python: Optional[str],
     req_file: Optional[str],
     yml_file: Optional[str],
+    lockfile: Optional[str],
+    include_dev: bool,
     pyproject_file: Optional[str],
     using_pathspec: Optional[str],
     using: Optional[str],
@@ -640,6 +665,43 @@ def resolve(
     # Check combinations -- TODO: we could leverage a click add-on to do this
     if req_file is not None and yml_file is not None and pyproject_file is not None:
         raise click.BadOptionUsage("-r/-f/-p", "Can only specify one of -r or -f or -p")
+    if lockfile is not None:
+        # A lockfile is already resolved, so none of the options that feed or alter a
+        # resolution apply to it.
+        conflicting = [
+            name
+            for name, value in (
+                ("-r/--requirement", req_file),
+                ("-f/--file", yml_file),
+                ("-p/--pyproject", pyproject_file),
+                ("--python", python),
+                ("--using", using),
+                ("--using-pathspec", using_pathspec),
+                ("--from", from_),
+                ("--from-pathspec", from_pathspec),
+            )
+            if value is not None
+        ]
+        if conflicting:
+            raise click.BadOptionUsage(
+                "--lockfile",
+                "Cannot specify %s with --lockfile: a conda-lock lockfile is already "
+                "resolved and is used as-is" % "/".join(conflicting),
+            )
+        _resolve_from_lockfile(
+            obj,
+            lockfile,
+            archs=list(arch) if arch else None,
+            include_dev=include_dev,
+            alias=alias,
+            dry_run=dry_run,
+            set_default=set_default,
+        )
+        return
+    if include_dev:
+        raise click.BadOptionUsage(
+            "--include-dev", "--include-dev is only meaningful with --lockfile"
+        )
     if (
         using_pathspec is not None
         or using is not None
@@ -1155,6 +1217,73 @@ def get(obj, default: bool, arch: Optional[str], pathspec: bool, source_env: str
                 f.write("\n")
     else:
         obj.echo(env.pretty_print(existing_envs))
+    cast(Conda, obj.conda).write_out_environments()
+
+
+def _resolve_from_lockfile(
+    obj: Any,
+    lockfile: str,
+    archs: Optional[List[str]],
+    include_dev: bool,
+    alias: Optional[Tuple[str]],
+    dry_run: bool,
+    set_default: bool,
+) -> None:
+    """
+    Register the environments of an already resolved conda-lock lockfile.
+
+    Nothing is resolved here: a lockfile produced by `conda-lock lock` already pins an
+    exact package set, with URLs and hashes, for each platform it was locked for. The
+    environments are built straight from it and then cached and recorded exactly like
+    resolved ones, which is the point of the feature -- the lockfile a team validated is
+    the thing that runs.
+    """
+    with open(lockfile, "r", encoding="utf-8") as f:
+        file_content = f.read()
+
+    envs = resolved_environments_from_conda_lock(
+        file_content, platforms=archs, include_dev=include_dev
+    )
+
+    existing_envs = cast(Conda, obj.conda).created_environments(
+        next(iter(envs.values())).env_id.req_id
+    )
+
+    for arch, env in envs.items():
+        if obj.quiet:
+            obj.echo_always(arch)
+            obj.echo_always(env.quiet_print(existing_envs.get(env.env_id)))
+        else:
+            obj.echo("### Environment for architecture %s" % arch)
+            obj.echo(env.pretty_print(existing_envs.get(env.env_id)))
+
+    if obj.quiet and obj.quiet_file_output:
+        with open(obj.quiet_file_output, "w") as f:
+            for arch, env in envs.items():
+                f.write(arch)
+                f.write("\n")
+                f.write(env.quiet_print(existing_envs.get(env.env_id)))
+                f.write("\n")
+
+    if dry_run:
+        obj.echo("Dry-run -- not caching or aliasing")
+        return
+
+    update_envs = list(envs.values())
+    if obj.datastore_type != "local" or CONDA_TEST:
+        # Let cache_environments pick the formats (CONDA_PREFERRED_FORMAT or any).
+        cast(Conda, obj.conda).cache_environments(update_envs)
+
+    cast(Conda, obj.conda).add_environments(update_envs)
+
+    if alias:
+        # Arch doesn't matter for aliasing
+        obj.conda.alias_environment(update_envs[0].env_id, list(alias))
+
+    if set_default:
+        for env in update_envs:
+            obj.conda.set_default_environment(env.env_id)
+
     cast(Conda, obj.conda).write_out_environments()
 
 
