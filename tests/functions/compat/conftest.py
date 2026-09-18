@@ -1,11 +1,31 @@
 import json
 import os
+import sys
 
 import pytest
 
 FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
 FIXTURE_VERSIONS = ["v0.2.8"]
+
+
+# The flow under test names its module the same thing, and `get_function_from_path`
+# resolves a bare module name through `sys.modules`, so whichever copy is imported
+# first wins for the rest of the process.
+PACKAGED_MODULE = "function_module"
+
+
+@pytest.fixture(autouse=True)
+def evict_packaged_module():
+    """Drop the fixture package's module after each test in this directory.
+
+    Replaying a committed package imports its ``function_module``. Left cached, a later
+    in-process load returns that old copy: a function added since the fixture was cut
+    reports itself missing, and one that existed then runs the fixture's code instead of
+    the code under test.
+    """
+    yield
+    sys.modules.pop(PACKAGED_MODULE, None)
 
 
 def fixture_path(version: str) -> str:
