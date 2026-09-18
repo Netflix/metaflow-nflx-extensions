@@ -50,6 +50,7 @@ class AvroSerializer(BaseSerializer, AvroSerializationMixin):
                 float: "double",
                 bool: "boolean",
                 bytes: "bytes",
+                type(None): "null",
             }
             avro_type = type_mapping.get(type_hint, "string")
             return {

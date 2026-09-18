@@ -192,6 +192,11 @@ def load_type_from_string(type_str: str) -> Optional[Type[Any]]:
     Optional[Type[Any]]
         The loaded type, or None if it cannot be loaded
     """
+    # NoneType reports __module__ "builtins" but is not an attribute of it, so the
+    # generic module lookup below cannot resolve its canonical string.
+    if type_str in ("builtins.NoneType", "NoneType"):
+        return type(None)
+
     if "." in type_str:
         module_name, class_name = type_str.rsplit(".", 1)
         return load_class_from_string(module_name, class_name)

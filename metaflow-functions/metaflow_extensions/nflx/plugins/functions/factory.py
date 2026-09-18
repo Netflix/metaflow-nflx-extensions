@@ -12,6 +12,10 @@ from metaflow_extensions.nflx.plugins.functions.core.function_decorator_spec imp
     FunctionDecoratorSpec,
 )
 from metaflow_extensions.nflx.plugins.functions.core.function_spec import FunctionSpec
+from metaflow_extensions.nflx.plugins.functions.core.function_spec_contribution import (
+    FunctionSpecMetadataContribution,
+    add_function_spec_metadata,
+)
 from metaflow_extensions.nflx.plugins.functions.utils import (
     validate_function_signature,
     get_caller_module,
@@ -25,6 +29,22 @@ from metaflow_extensions.nflx.plugins.functions.serializers.import_interceptor i
 
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _concrete_signature_types(param_type: Any) -> List[Any]:
+    """Expand a signature annotation into the concrete types a value for it can have.
+
+    A union has no usable canonical type string, so ``ctx: Optional[SomeProto] = None``
+    registers nothing while a bare ``SomeProto`` annotation works. Unwrap both spellings
+    (``Optional[X]`` / ``Union[X, Y]`` and PEP 604 ``X | Y``), dropping ``NoneType``;
+    anything else passes through. Covers implicit Optional, dropped in Python 3.11.
+    """
+    import types
+    from typing import Union, get_args, get_origin
+
+    if get_origin(param_type) in (Union, types.UnionType):
+        return [arg for arg in get_args(param_type) if arg is not type(None)]
+    return [param_type]
 
 
 @dataclass
@@ -42,11 +62,16 @@ class FunctionTypeConfig:
     type_serializer_resolvers: Optional[List[Callable[[Type], Optional[Dict]]]] = (
         None  # List of functions that resolve serializer configs for types
     )
+    # Called at decoration time with the function and decorator options. Its
+    # JSON-safe result is stored under system_metadata_namespace at bind time.
+    system_metadata_builder: Optional[Callable[..., Optional[Dict[str, Any]]]] = None
+    # Defaults to the fully qualified name of the generated decorator.
+    system_metadata_namespace: Optional[str] = None
 
 
 def create_function_type(
     config: FunctionTypeConfig,
-) -> tuple[Type[MetaflowFunction], Callable[[F], F]]:
+) -> tuple[Type[MetaflowFunction], Callable[..., Any]]:
     """
     Create a complete function type from a config.
 
@@ -68,6 +93,12 @@ def create_function_type(
     ...     return_validator=is_json_type
     ... ))
     """
+
+    if config.system_metadata_namespace is not None and (
+        not isinstance(config.system_metadata_namespace, str)
+        or not config.system_metadata_namespace.strip()
+    ):
+        raise TypeError("system_metadata_namespace must be a non-empty string or None")
 
     # Register core serializers directly (needed by all function types)
     # Register FunctionPayload serializer (which depends on FunctionParameters)
@@ -142,6 +173,9 @@ def create_function_type(
         "builtins.int",
         "builtins.float",
         "builtins.bool",
+        # An omitted optional argument is never serialized, but an explicitly passed
+        # None is, and it dispatches on type(None) rather than on the annotation.
+        "builtins.NoneType",
     ]
 
     primitive_configs = _create_serializer_configs_for_types(
@@ -222,8 +256,41 @@ def create_function_type(
     class GeneratedDecorator(MetaflowFunctionDecorator):
         TYPE = config.name
 
-        def __init__(self, func):
+        def __init__(self, func, **kwargs: Any):
+            contribution = None
+            if config.system_metadata_builder is None:
+                if kwargs:
+                    unexpected = next(iter(kwargs))
+                    raise TypeError(
+                        f"{config.name}() got an unexpected keyword argument "
+                        f"{unexpected!r}"
+                    )
+                metadata = None
+            else:
+                metadata = config.system_metadata_builder(func, **kwargs)
+
+            if metadata is not None and not isinstance(metadata, dict):
+                raise TypeError(
+                    f"{config.name} system_metadata_builder must return a dict or None"
+                )
+            if metadata:
+                namespace = config.system_metadata_namespace or (
+                    f"{decorator_function.__module__}.{decorator_function.__name__}"
+                )
+                try:
+                    contribution = FunctionSpecMetadataContribution(
+                        field="system_metadata",
+                        namespace=namespace,
+                        metadata=metadata,
+                    )
+                except (TypeError, ValueError) as e:
+                    raise TypeError(
+                        f"{config.name} system metadata must be JSON serializable: {e}"
+                    ) from e
+
             super().__init__(func)
+            if contribution is not None:
+                add_function_spec_metadata(self, contribution)
             # Register serializers when decorator is created
             self._register_serializers()
 
@@ -243,7 +310,8 @@ def create_function_type(
             type_hints = get_type_hints(self.func)
 
             for param_name, param_type in type_hints.items():
-                self._register_serializer_for_type(param_type)
+                for concrete_type in _concrete_signature_types(param_type):
+                    self._register_serializer_for_type(concrete_type)
 
         def _register_serializer_for_type(self, param_type):
             """Register appropriate serializer for a specific type."""
@@ -555,8 +623,13 @@ def create_function_type(
                 return False
 
     # 5. Create the decorator function
-    def decorator_function(func: F) -> F:
-        return cast(F, GeneratedDecorator(func))
+    def decorator_function(func: Optional[F] = None, **kwargs: Any) -> Any:
+        def decorate(target: F) -> F:
+            return cast(F, GeneratedDecorator(target, **kwargs))
+
+        if func is None:
+            return decorate
+        return decorate(func)
 
     # Set proper names for all generated classes
     GeneratedDecoratorSpec.__name__ = f"{base_name}DecoratorSpec"
