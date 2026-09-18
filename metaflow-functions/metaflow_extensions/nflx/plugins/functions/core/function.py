@@ -52,6 +52,9 @@ from metaflow_extensions.nflx.plugins.functions.core.function_decorator import (
     MetaflowFunctionDecorator,
 )
 from metaflow_extensions.nflx.plugins.functions.core.function_spec import FunctionSpec
+from metaflow_extensions.nflx.plugins.functions.core.function_spec_contribution import (
+    get_function_spec_metadata,
+)
 from metaflow_extensions.nflx.plugins.functions.debug import debug
 from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionException,
@@ -316,6 +319,26 @@ class MetaflowFunction(ABC):
                 collected[component_id] = metadata
         return collected
 
+    def _apply_spec_metadata_contributions(self, func_spec: FunctionSpec) -> None:
+        """Merge decorator contributions into namespaced FunctionSpec metadata."""
+        if self._func is None:
+            return
+
+        for contribution in get_function_spec_metadata(self._func):
+            existing_metadata = dict(getattr(func_spec, contribution.field) or {})
+            if (
+                contribution.namespace in existing_metadata
+                and existing_metadata[contribution.namespace] != contribution.metadata
+            ):
+                metadata_name = contribution.field.replace("_", " ")
+                raise MetaflowFunctionException(
+                    f"{self.__class__.__name__} {metadata_name} conflicts with "
+                    f"existing key: {contribution.namespace!r}"
+                )
+
+            existing_metadata[contribution.namespace] = contribution.metadata
+            setattr(func_spec, contribution.field, existing_metadata)
+
     def _build_function_spec(self, **kwargs) -> FunctionSpec:
         """
         Builds the function specification for the Metaflow function.
@@ -409,6 +432,7 @@ class MetaflowFunction(ABC):
             func_spec.system_metadata["runtime_components"] = runtime_component_metadata
         # Set user metadata if provided
         func_spec.user_metadata = kwargs.get("user_metadata", None)
+        self._apply_spec_metadata_contributions(func_spec)
 
         # Add class name and type specs
         func_spec.class_name = (

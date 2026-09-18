@@ -1,7 +1,6 @@
 from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, cast
 from dataclasses import dataclass
 import inspect
-import json
 import os
 import sys
 
@@ -13,6 +12,10 @@ from metaflow_extensions.nflx.plugins.functions.core.function_decorator_spec imp
     FunctionDecoratorSpec,
 )
 from metaflow_extensions.nflx.plugins.functions.core.function_spec import FunctionSpec
+from metaflow_extensions.nflx.plugins.functions.core.function_spec_contribution import (
+    FunctionSpecMetadataContribution,
+    add_function_spec_metadata,
+)
 from metaflow_extensions.nflx.plugins.functions.utils import (
     validate_function_signature,
     get_caller_module,
@@ -235,6 +238,7 @@ def create_function_type(
         TYPE = config.name
 
         def __init__(self, func, **kwargs: Any):
+            contribution = None
             if config.system_metadata_builder is None:
                 if kwargs:
                     unexpected = next(iter(kwargs))
@@ -250,23 +254,24 @@ def create_function_type(
                 raise TypeError(
                     f"{config.name} system_metadata_builder must return a dict or None"
                 )
-            try:
-                serialized_metadata = json.dumps(metadata, sort_keys=True)
-            except (TypeError, ValueError) as e:
-                raise TypeError(
-                    f"{config.name} system metadata must be JSON serializable: {e}"
-                ) from e
-
             if metadata:
                 namespace = config.system_metadata_namespace or (
                     f"{decorator_function.__module__}.{decorator_function.__name__}"
                 )
-                self._function_type_system_metadata = {
-                    namespace: json.loads(serialized_metadata)
-                }
-            else:
-                self._function_type_system_metadata = {}
+                try:
+                    contribution = FunctionSpecMetadataContribution(
+                        field="system_metadata",
+                        namespace=namespace,
+                        metadata=metadata,
+                    )
+                except (TypeError, ValueError) as e:
+                    raise TypeError(
+                        f"{config.name} system metadata must be JSON serializable: {e}"
+                    ) from e
+
             super().__init__(func)
+            if contribution is not None:
+                add_function_spec_metadata(self, contribution)
             # Register serializers when decorator is created
             self._register_serializers()
 
@@ -454,24 +459,6 @@ def create_function_type(
         def _build_function_spec(self, **kwargs):
             """Build function spec and populate serializer configs."""
             func_spec = super()._build_function_spec(**kwargs)
-
-            contributed_metadata = getattr(
-                self._func, "_function_type_system_metadata", {}
-            )
-            if contributed_metadata:
-                system_metadata = dict(func_spec.system_metadata or {})
-                conflicting_keys = {
-                    key
-                    for key, value in contributed_metadata.items()
-                    if key in system_metadata and system_metadata[key] != value
-                }
-                if conflicting_keys:
-                    raise MetaflowFunctionException(
-                        f"{self.__class__.__name__} system metadata conflicts with existing keys: "
-                        f"{sorted(conflicting_keys)}"
-                    )
-                system_metadata.update(contributed_metadata)
-                func_spec.system_metadata = system_metadata
 
             # Filter artifacts based on what the function's FunctionParameters declares:
             #   - parameter_schema is None (Optional[FunctionParameters]): no artifacts needed

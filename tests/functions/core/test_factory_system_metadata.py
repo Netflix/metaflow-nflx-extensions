@@ -7,6 +7,10 @@ from metaflow_extensions.nflx.plugins.functions.core.function import MetaflowFun
 from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionException,
 )
+from metaflow_extensions.nflx.plugins.functions.core.function_spec_contribution import (
+    FunctionSpecMetadataContribution,
+    add_function_spec_metadata,
+)
 from metaflow_extensions.nflx.plugins.functions.factory import (
     FunctionTypeConfig,
     create_function_type,
@@ -32,6 +36,18 @@ def _create_type(system_metadata_builder=None, system_metadata_namespace=None):
             system_metadata_namespace=system_metadata_namespace,
         )
     )
+
+
+def _metadata_only(namespace, metadata, field="system_metadata"):
+    def decorate(func):
+        return add_function_spec_metadata(
+            func,
+            FunctionSpecMetadataContribution(
+                field=field, namespace=namespace, metadata=metadata
+            ),
+        )
+
+    return decorate
 
 
 def _skip_export(monkeypatch):
@@ -84,6 +100,52 @@ def test_explicit_system_metadata_namespace_must_be_a_non_empty_string(namespace
             lambda _func, **kwargs: {"label": "value"},
             system_metadata_namespace=namespace,
         )
+
+
+def test_metadata_only_contributions_stack_in_either_order(monkeypatch):
+    Function, decorator = _create_type(
+        lambda _func, *, label: {"label": label},
+        system_metadata_namespace="function-type",
+    )
+
+    @_metadata_only("outer-metadata", {"position": "outer"})
+    @decorator(label="base")
+    @_metadata_only("inner-metadata", {"position": "inner"})
+    def handler(data: str) -> str:
+        return data
+
+    _skip_export(monkeypatch)
+
+    function = Function(handler, task=_Task())
+
+    assert function.spec.system_metadata["outer-metadata"] == {"position": "outer"}
+    assert function.spec.system_metadata["function-type"] == {"label": "base"}
+    assert function.spec.system_metadata["inner-metadata"] == {"position": "inner"}
+
+
+def test_metadata_only_contribution_can_extend_user_metadata(monkeypatch):
+    Function, decorator = _create_type()
+
+    @_metadata_only(
+        "decorator-metadata",
+        {"owner": "payments"},
+        field="user_metadata",
+    )
+    @decorator
+    def handler(data: str) -> str:
+        return data
+
+    _skip_export(monkeypatch)
+    function = Function(
+        handler,
+        task=_Task(),
+        user_metadata={"binding-metadata": {"label": "value"}},
+    )
+
+    assert function.spec.user_metadata == {
+        "binding-metadata": {"label": "value"},
+        "decorator-metadata": {"owner": "payments"},
+    }
 
 
 def test_bare_and_empty_decorator_forms_remain_supported(monkeypatch):
