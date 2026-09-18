@@ -47,6 +47,27 @@ def test_functions_simple_avro(bound_functions, backend):
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
+def test_functions_avro_optional_argument(bound_functions, backend):
+    """An optional argument is callable all three ways: omitted, None, and with a value."""
+    from metaflow_extensions.nflx.plugins.functions.core.function import (
+        close_function,
+        function_from_json,
+    )
+
+    _skip_if_backend_unavailable(backend)
+
+    func = function_from_json(
+        bound_functions["avro_optional_context_function"], backend=backend
+    )
+    try:
+        assert func("hello") == "hello"
+        assert func("hello", context=None) == "hello"
+        assert func("hello", context="ctx") == "hello+ctx"
+    finally:
+        close_function(func)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
 def test_functions_simple_avro_with_runtime_metrics(bound_functions, backend):
     """RuntimeMetrics fires for real against the dependency-free avro function."""
     from metaflow_extensions.nflx.plugins.functions.core.function import (

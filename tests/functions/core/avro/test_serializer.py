@@ -242,3 +242,26 @@ class TestAvroSerializer:
         # Should default to string type
         assert schema["fields"][0]["type"] == "string"
         assert schema["name"] == "CustomTypeWrapper"
+
+    def test_none_serializer(self):
+        """Test AvroSerializer for NoneType, the type an explicit None dispatches on."""
+        serializer = AvroSerializer(type(None))
+        assert serializer.supported_type is type(None)
+
+        schema = serializer._generate_schema(type(None))
+        assert schema["fields"][0]["type"] == "null"
+
+        serialized_bytes, artifacts = serializer.serialize(None)
+        assert isinstance(serialized_bytes, bytes)
+        assert artifacts == []
+        assert serializer.deserialize(serialized_bytes) is None
+
+    def test_none_payload_is_readable_by_another_type(self):
+        """A None written for a parameter declared Optional[str] must read back as None.
+
+        Deserialization picks the serializer from the declared type, not from the value,
+        so the reader here is deliberately the str one. It works because the Avro
+        container carries its own writer schema.
+        """
+        serialized_bytes, _ = AvroSerializer(type(None)).serialize(None)
+        assert AvroSerializer(str).deserialize(serialized_bytes) is None

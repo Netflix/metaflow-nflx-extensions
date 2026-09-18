@@ -30,6 +30,7 @@ def bound_functions():
             "avro_simple_function",
             "avro_pydash_function",
             "avro_error_function",
+            "avro_optional_context_function",
             "avro_pipeline_function",
             "json_simple_function",
         ):
