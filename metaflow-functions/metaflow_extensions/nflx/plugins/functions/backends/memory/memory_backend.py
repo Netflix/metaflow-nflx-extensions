@@ -690,6 +690,10 @@ class MemoryBackend(AbstractBackend):
             load_component_instances(component_class_names),
             function=func_instance,
         )
+        # Reachable from the function itself, so code inside execute() (e.g. a
+        # pipeline opening a span per constituent) can find the instances the
+        # backend started. The local backend already keeps them here.
+        func_instance._component_instances = component_instances
         try:
             cls._runtime_with_buffers(
                 inp, out, sem, func_instance, prefetch_artifacts, component_instances

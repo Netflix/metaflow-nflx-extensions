@@ -608,6 +608,9 @@ class FunctionActorClass:
             load_component_instances(component_class_names),
             function=self.function,
         )
+        # Same as the memory backend: make them reachable from the function
+        # so code inside execute() can open spans on them.
+        self.function._component_instances = self._component_instances
 
     def shutdown(self):
         """Stop runtime components. Called before the actor is killed."""
