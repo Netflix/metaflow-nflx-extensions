@@ -1,43 +1,18 @@
 # Reference-JSON compatibility fixtures
 
+This directory is used to store previous versions of the functions and code package 
+for testing backward and forward compatibility. 
+
 One directory per pinned old version, named for it. Each holds a reference JSON that
 version wrote, plus the packages needed to run it. Add a newer one, or drop an older
 one, whenever the versions worth testing against change.
 
 ## `v0.2.8/`
 
-Captured at `f072249`, whose in-repo VERSION still said 0.2.7 -- the bump came later in
-#105, so this code first shipped as **0.2.8**. Name the directory for the release, not
-for the VERSION file: `pip install metaflow-functions==0.2.7` gets a build with no
-`functions/components` in it at all.
+Captured at `f072249`
 
-`reference.json` is the real artifact, byte-for-byte as `Function._export` wrote it:
-the `avro_simple_string` ux function bound by an actual flow run against a local S3
-endpoint using the `test-functions` workflow's environment, so its paths are all
-`s3://metaflow-test/...`.
-
-Alongside it: `task_package.tar` (1.9 MB) carries `.mf_code/metaflow` and
-`.mf_code/metaflow_extensions`, i.e. that version's own runtime code, which
-`update_packaging_env_vars` puts on the runtime subprocess's `PYTHONPATH`;
-`function_package.zip` (10 KB) carries the function module and its schemas.
-`setup_code_packages` extracts the tar then the zip over it, so both are needed.
-
-## Replaying
-
-`test_replay_old_function.py` rewrites three path fields into a temp copy rather than
-doctoring the artifact: the two package fields (`download_s3_packages` passes non-S3
-paths through untouched) and `reference`, which both backends re-read and download
-themselves (`LocalBackend.apply`, `MemoryBackend.get_runtime_command`).
-
-Two things a repo cannot carry, so replay does without them:
-
-- the conda env behind `system_metadata.environment.alias` —
-  `METAFLOW_FUNCTIONS_TEST_MODE=1` skips resolving it; the old *code* still comes from
-  the package, so the compat surface is intact;
-- the `artifacts` map, whose entries are metaflow datastore objects addressed by sha
-  (`location: ":root:s3://..."`) rather than paths. Cleared, so the function falls back
-  to its parameter defaults. Caller-side `params=` is not a substitute on the memory
-  backend, whose runtime builds parameters itself inside the subprocess.
+`reference.json` is the real artifact, byte-for-byte as `Function._export` wrote it. `task_package.tar` (1.9 MB) carries `.mf_code/metaflow` and
+`.mf_code/metaflow_extensions`, i.e. that version's own runtime code.
 
 ## Capturing another version
 
