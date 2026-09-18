@@ -43,9 +43,11 @@ class FunctionTypeConfig:
     type_serializer_resolvers: Optional[List[Callable[[Type], Optional[Dict]]]] = (
         None  # List of functions that resolve serializer configs for types
     )
-    # Called at decoration time with the function and decorator options.
-    # Its JSON-safe result is merged into FunctionSpec.system_metadata at bind time.
+    # Called at decoration time with the function and decorator options. Its
+    # JSON-safe result is stored under system_metadata_namespace at bind time.
     system_metadata_builder: Optional[Callable[..., Optional[Dict[str, Any]]]] = None
+    # Defaults to the fully qualified name of the generated decorator.
+    system_metadata_namespace: Optional[str] = None
 
 
 def create_function_type(
@@ -72,6 +74,12 @@ def create_function_type(
     ...     return_validator=is_json_type
     ... ))
     """
+
+    if config.system_metadata_namespace is not None and (
+        not isinstance(config.system_metadata_namespace, str)
+        or not config.system_metadata_namespace.strip()
+    ):
+        raise TypeError("system_metadata_namespace must be a non-empty string or None")
 
     # Register core serializers directly (needed by all function types)
     # Register FunctionPayload serializer (which depends on FunctionParameters)
@@ -234,24 +242,30 @@ def create_function_type(
                         f"{config.name}() got an unexpected keyword argument "
                         f"{unexpected!r}"
                     )
-                system_metadata = None
+                metadata = None
             else:
-                system_metadata = config.system_metadata_builder(func, **kwargs)
+                metadata = config.system_metadata_builder(func, **kwargs)
 
-            if system_metadata is not None and not isinstance(system_metadata, dict):
+            if metadata is not None and not isinstance(metadata, dict):
                 raise TypeError(
                     f"{config.name} system_metadata_builder must return a dict or None"
                 )
             try:
-                serialized_metadata = json.dumps(system_metadata, sort_keys=True)
+                serialized_metadata = json.dumps(metadata, sort_keys=True)
             except (TypeError, ValueError) as e:
                 raise TypeError(
                     f"{config.name} system metadata must be JSON serializable: {e}"
                 ) from e
 
-            self._function_type_system_metadata = (
-                json.loads(serialized_metadata) if system_metadata else {}
-            )
+            if metadata:
+                namespace = config.system_metadata_namespace or (
+                    f"{decorator_function.__module__}.{decorator_function.__name__}"
+                )
+                self._function_type_system_metadata = {
+                    namespace: json.loads(serialized_metadata)
+                }
+            else:
+                self._function_type_system_metadata = {}
             super().__init__(func)
             # Register serializers when decorator is created
             self._register_serializers()

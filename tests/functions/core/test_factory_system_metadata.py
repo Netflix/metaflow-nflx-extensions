@@ -21,7 +21,7 @@ class _Task:
     successful = True
 
 
-def _create_type(system_metadata_builder=None):
+def _create_type(system_metadata_builder=None, system_metadata_namespace=None):
     return create_function_type(
         FunctionTypeConfig(
             name="metadata_test_function",
@@ -29,6 +29,7 @@ def _create_type(system_metadata_builder=None):
             return_validator=lambda type_hint: type_hint is str,
             param_count=1,
             system_metadata_builder=system_metadata_builder,
+            system_metadata_namespace=system_metadata_namespace,
         )
     )
 
@@ -43,7 +44,7 @@ def _skip_export(monkeypatch):
 
 def test_parameterized_decorator_contributes_system_metadata(monkeypatch):
     def build_metadata(_func, *, label=None):
-        return {"example": {"label": label}} if label is not None else None
+        return {"label": label} if label is not None else None
 
     Function, decorator = _create_type(build_metadata)
 
@@ -54,7 +55,35 @@ def test_parameterized_decorator_contributes_system_metadata(monkeypatch):
     _skip_export(monkeypatch)
     function = Function(handler, task=_Task())
 
-    assert function.spec.system_metadata["example"] == {"label": "value"}
+    namespace = f"{decorator.__module__}.{decorator.__name__}"
+    assert function.spec.system_metadata[namespace] == {"label": "value"}
+
+
+def test_explicit_system_metadata_namespace(monkeypatch):
+    Function, decorator = _create_type(
+        lambda _func, **kwargs: {"joins": ["my_join"]},
+        system_metadata_namespace="feature-store",
+    )
+
+    @decorator(features=[object()])
+    def handler(data: str) -> str:
+        return data
+
+    _skip_export(monkeypatch)
+    function = Function(handler, task=_Task())
+
+    assert function.spec.system_metadata["feature-store"] == {"joins": ["my_join"]}
+
+
+@pytest.mark.parametrize("namespace", ["", "   ", 42])
+def test_explicit_system_metadata_namespace_must_be_a_non_empty_string(namespace):
+    with pytest.raises(
+        TypeError, match="system_metadata_namespace must be a non-empty string"
+    ):
+        _create_type(
+            lambda _func, **kwargs: {"label": "value"},
+            system_metadata_namespace=namespace,
+        )
 
 
 def test_bare_and_empty_decorator_forms_remain_supported(monkeypatch):
@@ -76,8 +105,9 @@ def test_bare_and_empty_decorator_forms_remain_supported(monkeypatch):
 
     _skip_export(monkeypatch)
 
-    assert Function(bare, task=_Task()).spec.system_metadata.get("example") is None
-    assert Function(empty, task=_Task()).spec.system_metadata.get("example") is None
+    namespace = f"{decorator.__module__}.{decorator.__name__}"
+    assert namespace not in Function(bare, task=_Task()).spec.system_metadata
+    assert namespace not in Function(empty, task=_Task()).spec.system_metadata
     assert builder_calls == [None, None]
 
 
@@ -114,7 +144,8 @@ def test_metadata_builder_output_must_be_json_serializable():
 
 def test_contributed_metadata_cannot_overwrite_framework_metadata(monkeypatch):
     Function, decorator = _create_type(
-        lambda _func, **kwargs: {"environment": {"replacement": True}}
+        lambda _func, **kwargs: {"replacement": True},
+        system_metadata_namespace="environment",
     )
 
     @decorator(label="value")
