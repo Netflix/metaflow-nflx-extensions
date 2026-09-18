@@ -12,6 +12,10 @@ from metaflow_extensions.nflx.plugins.functions.core.function_decorator_spec imp
     FunctionDecoratorSpec,
 )
 from metaflow_extensions.nflx.plugins.functions.core.function_spec import FunctionSpec
+from metaflow_extensions.nflx.plugins.functions.core.function_spec_contribution import (
+    FunctionSpecMetadataContribution,
+    add_function_spec_metadata,
+)
 from metaflow_extensions.nflx.plugins.functions.utils import (
     validate_function_signature,
     get_caller_module,
@@ -58,11 +62,16 @@ class FunctionTypeConfig:
     type_serializer_resolvers: Optional[List[Callable[[Type], Optional[Dict]]]] = (
         None  # List of functions that resolve serializer configs for types
     )
+    # Called at decoration time with the function and decorator options. Its
+    # JSON-safe result is stored under system_metadata_namespace at bind time.
+    system_metadata_builder: Optional[Callable[..., Optional[Dict[str, Any]]]] = None
+    # Defaults to the fully qualified name of the generated decorator.
+    system_metadata_namespace: Optional[str] = None
 
 
 def create_function_type(
     config: FunctionTypeConfig,
-) -> tuple[Type[MetaflowFunction], Callable[[F], F]]:
+) -> tuple[Type[MetaflowFunction], Callable[..., Any]]:
     """
     Create a complete function type from a config.
 
@@ -84,6 +93,12 @@ def create_function_type(
     ...     return_validator=is_json_type
     ... ))
     """
+
+    if config.system_metadata_namespace is not None and (
+        not isinstance(config.system_metadata_namespace, str)
+        or not config.system_metadata_namespace.strip()
+    ):
+        raise TypeError("system_metadata_namespace must be a non-empty string or None")
 
     # Register core serializers directly (needed by all function types)
     # Register FunctionPayload serializer (which depends on FunctionParameters)
@@ -241,8 +256,41 @@ def create_function_type(
     class GeneratedDecorator(MetaflowFunctionDecorator):
         TYPE = config.name
 
-        def __init__(self, func):
+        def __init__(self, func, **kwargs: Any):
+            contribution = None
+            if config.system_metadata_builder is None:
+                if kwargs:
+                    unexpected = next(iter(kwargs))
+                    raise TypeError(
+                        f"{config.name}() got an unexpected keyword argument "
+                        f"{unexpected!r}"
+                    )
+                metadata = None
+            else:
+                metadata = config.system_metadata_builder(func, **kwargs)
+
+            if metadata is not None and not isinstance(metadata, dict):
+                raise TypeError(
+                    f"{config.name} system_metadata_builder must return a dict or None"
+                )
+            if metadata:
+                namespace = config.system_metadata_namespace or (
+                    f"{decorator_function.__module__}.{decorator_function.__name__}"
+                )
+                try:
+                    contribution = FunctionSpecMetadataContribution(
+                        field="system_metadata",
+                        namespace=namespace,
+                        metadata=metadata,
+                    )
+                except (TypeError, ValueError) as e:
+                    raise TypeError(
+                        f"{config.name} system metadata must be JSON serializable: {e}"
+                    ) from e
+
             super().__init__(func)
+            if contribution is not None:
+                add_function_spec_metadata(self, contribution)
             # Register serializers when decorator is created
             self._register_serializers()
 
@@ -575,8 +623,13 @@ def create_function_type(
                 return False
 
     # 5. Create the decorator function
-    def decorator_function(func: F) -> F:
-        return cast(F, GeneratedDecorator(func))
+    def decorator_function(func: Optional[F] = None, **kwargs: Any) -> Any:
+        def decorate(target: F) -> F:
+            return cast(F, GeneratedDecorator(target, **kwargs))
+
+        if func is None:
+            return decorate
+        return decorate(func)
 
     # Set proper names for all generated classes
     GeneratedDecoratorSpec.__name__ = f"{base_name}DecoratorSpec"
