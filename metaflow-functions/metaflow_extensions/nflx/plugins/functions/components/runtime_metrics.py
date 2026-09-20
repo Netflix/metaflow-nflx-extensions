@@ -43,7 +43,7 @@ class RuntimeMetrics(AbstractRuntimeComponent):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._metrics: Dict[str, Any] = {}
-        self._metric_targets: List[Dict[str, Any]] = []
+        self._scope_stack: List[Dict[str, Any]] = []
 
     @classmethod
     def metric(cls, data: Optional[Mapping[str, Any]] = None, **kwargs: Any) -> None:
@@ -65,7 +65,7 @@ class RuntimeMetrics(AbstractRuntimeComponent):
         if not data and not kwargs:
             raise ValueError("RuntimeMetrics.metric(): requires at least one metric")
 
-        target = self._metric_targets[-1] if self._metric_targets else self._metrics
+        target = self._scope_stack[-1] if self._scope_stack else self._metrics
         target.update(data)
         target.update(kwargs)
 
@@ -87,9 +87,7 @@ class RuntimeMetrics(AbstractRuntimeComponent):
             raise ValueError("RuntimeMetrics.scope(): requires at least one key")
 
         parent = (
-            instance._metric_targets[-1]
-            if instance._metric_targets
-            else instance._metrics
+            instance._scope_stack[-1] if instance._scope_stack else instance._metrics
         )
         target = parent
         for part in path:
@@ -99,11 +97,11 @@ class RuntimeMetrics(AbstractRuntimeComponent):
                 target[part] = child
             target = child
 
-        instance._metric_targets.append(target)
+        instance._scope_stack.append(target)
         try:
             yield
         finally:
-            instance._metric_targets.pop()
+            instance._scope_stack.pop()
 
     def start(self, *args: Any, **kwargs: Any) -> None:
         self._call_count = 0
@@ -111,7 +109,7 @@ class RuntimeMetrics(AbstractRuntimeComponent):
         self._last_duration = 0.0
         self._call_started_at: Optional[float] = None
         self._metrics = {}
-        self._metric_targets = []
+        self._scope_stack = []
 
     def stop(self, *args: Any, **kwargs: Any) -> None:
         pass
@@ -119,7 +117,7 @@ class RuntimeMetrics(AbstractRuntimeComponent):
     def before_call(self, *args: Any, **kwargs: Any) -> None:
         self._call_started_at = time.monotonic()
         self._metrics = {}
-        self._metric_targets = []
+        self._scope_stack = []
 
     def after_call(self, *args: Any, **kwargs: Any) -> None:
         started_at = self._call_started_at
