@@ -156,3 +156,95 @@ class TestPinnedDatastoreRoot:
         _pin_local_datastore_root()
 
         assert os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] == "/somewhere/chosen"
+
+
+class TestCliContract:
+    """The wire contract with python-model-serving, pinned deliberately.
+
+    That repo cannot import metaflow -- its JVM owns the Triton model repository --
+    so it runs this CLI as a subprocess and hard-codes the module path, the flag
+    names and the keys it reads back out of the answer:
+
+        CLI_MODULE = "metaflow_extensions.nflx.plugins.functions.execution_env_cli"
+        ...  "-m", CLI_MODULE, "--alias", alias, "--arch", arch
+        root.path("prefix"), root.path("python")
+
+    Renaming any of those is a breaking change for a caller no test over there can
+    catch: its unit tests stub this CLI with a shell script, so they keep passing
+    against a CLI that no longer exists, and the break surfaces as a failed model
+    load on a serving instance. These tests are the tripwire for that -- if one of
+    them has to change, a consumer has to change with it.
+    """
+
+    MODULE = "metaflow_extensions.nflx.plugins.functions.execution_env_cli"
+
+    def test_the_module_is_runnable_under_its_published_path(self):
+        import importlib
+
+        module = importlib.import_module(self.MODULE)
+        assert hasattr(module, "main")
+
+    def test_it_accepts_the_flags_the_host_passes(self, monkeypatch, capsys, tmp_path):
+        from metaflow_extensions.nflx.plugins.functions import execution_env_cli
+
+        monkeypatch.setattr(
+            "metaflow_extensions.nflx.plugins.functions.environment."
+            "materialize_conda_environment",
+            lambda system_metadata: str(tmp_path),
+        )
+
+        # Exactly the argv CondaEnvironmentResolver builds, in that order.
+        assert execution_env_cli.main(["--alias", "env:abc", "--arch", "linux-64"]) == 0
+
+    def test_it_answers_with_the_keys_the_host_reads(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        from metaflow_extensions.nflx.plugins.functions import execution_env_cli
+
+        (tmp_path / "lib" / "python3.10").mkdir(parents=True)
+        monkeypatch.setattr(
+            "metaflow_extensions.nflx.plugins.functions.environment."
+            "materialize_conda_environment",
+            lambda system_metadata: str(tmp_path),
+        )
+
+        execution_env_cli.main(["--alias", "env:abc", "--arch", "linux-64"])
+        answer = json.loads(capsys.readouterr().out)
+
+        # "prefix" becomes EXECUTION_ENV_PATH; "python" is matched against the
+        # version the shipped triton_python_backend_stub links against.
+        assert "prefix" in answer
+        assert "python" in answer
+
+    def test_the_alias_flag_is_mandatory(self, capsys):
+        """The host always passes it, so this failing loudly beats resolving
+        something arbitrary."""
+        from metaflow_extensions.nflx.plugins.functions import execution_env_cli
+
+        with pytest.raises(SystemExit):
+            execution_env_cli.main(["--arch", "linux-64"])
+
+    def test_nothing_but_the_answer_reaches_stdout(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """The host parses the whole of stdout as one JSON object, so a stray
+        print here is indistinguishable from a broken answer."""
+        from metaflow_extensions.nflx.plugins.functions import execution_env_cli
+
+        def _chatty(system_metadata):
+            import sys
+
+            print("resolving 47 packages", file=sys.stderr)
+            return str(tmp_path)
+
+        monkeypatch.setattr(
+            "metaflow_extensions.nflx.plugins.functions.environment."
+            "materialize_conda_environment",
+            _chatty,
+        )
+
+        execution_env_cli.main(["--alias", "env:abc"])
+        captured = capsys.readouterr()
+
+        json.loads(captured.out)  # parses whole, or this raises
+        assert "resolving 47 packages" in captured.err
