@@ -7,7 +7,6 @@ from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionException,
     MetaflowFunctionRuntimeException,
 )
-from metaflow_extensions.nflx.plugins.functions.debug import debug
 
 if TYPE_CHECKING:
     from .abstract_component import AbstractRuntimeComponent
@@ -197,49 +196,3 @@ def after_call_components(
                 instance, "_previous_active_instance", None
             )
     return collected
-
-
-def child_call_start_components(
-    instances: List["AbstractRuntimeComponent"],
-    name: Optional[str],
-    **kwargs: Any,
-) -> None:
-    """Open a nested span named ``name`` on each instance.
-
-    Unlike ``before_call_components`` this leaves ``active_instance`` alone: a
-    span is part of the invocation already in flight, so routing must not move.
-
-    A hook that raises is debug-logged and skipped rather than propagated.
-    These hooks exist to measure a call; letting one fail the call would make
-    enabling a profiler a correctness risk.
-    """
-    for instance in instances:
-        try:
-            instance.on_child_call_start(name, **kwargs)
-        except Exception as e:  # noqa: BLE001 - instrumentation must not fail the call
-            debug.functions_exec(
-                f"{type(instance).__name__}.on_child_call_start({name!r}) raised, "
-                f"ignoring: {e!r}"
-            )
-
-
-def child_call_end_components(
-    instances: List["AbstractRuntimeComponent"],
-    name: Optional[str],
-    exception: Optional[BaseException] = None,
-    **kwargs: Any,
-) -> None:
-    """Close the nested span named ``name``, in reverse order of opening.
-
-    ``exception`` is what the nested unit raised, or ``None``. Runs for every
-    instance even if some raise, for the same reason as
-    ``child_call_start_components``.
-    """
-    for instance in reversed(instances):
-        try:
-            instance.on_child_call_end(name, exception=exception, **kwargs)
-        except Exception as e:  # noqa: BLE001 - instrumentation must not fail the call
-            debug.functions_exec(
-                f"{type(instance).__name__}.on_child_call_end({name!r}) raised, "
-                f"ignoring: {e!r}"
-            )

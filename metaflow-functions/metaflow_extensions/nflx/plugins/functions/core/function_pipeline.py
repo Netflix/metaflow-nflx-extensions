@@ -39,9 +39,6 @@ from metaflow_extensions.nflx.plugins.functions.core.function_parameters import 
 from metaflow_extensions.nflx.plugins.functions.utils import load_type_from_string
 
 if TYPE_CHECKING:
-    from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
-        AbstractRuntimeComponent,
-    )
     from metaflow_extensions.nflx.plugins.functions.memory.memory import (
         ReadBuffer,
         WriteBuffer,
@@ -361,63 +358,37 @@ class FunctionPipeline(MetaflowFunction):
             ]
 
         result = data
-        # Only non-empty once a backend has started components for this
-        # function, which is the uncommon case; no components, no span cost.
-        instances = getattr(self, "_component_instances", [])
-        for func, func_params in zip(self.functions, self._scoped_params):
-            if instances:
-                result = self._execute_constituent(
-                    instances, func, result, func_params, **kwargs
-                )
-            else:
-                result = func.execute(result, func_params, **kwargs)
-        return result
-
-    def _execute_constituent(
-        self,
-        instances: List["AbstractRuntimeComponent"],
-        func: MetaflowFunction,
-        data: Any,
-        func_params: Optional["FunctionParameters"],
-        **kwargs: Any,
-    ) -> Any:
-        """Run one constituent inside a nested component span.
-
-        A span is not an invocation: same instances, same ``active_instance``,
-        no extra ``start``/``stop``, so nothing a component already does per
-        call changes.
-
-        ``instances`` is ``_component_instances`` (what the backend started),
-        not ``_runtime_components``, which exists only on the caller's handle
-        and is therefore empty in every backend but local.
-        """
-        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
-            child_call_start_components,
-            child_call_end_components,
+        from metaflow_extensions.nflx.plugins.functions.components.runtime_metrics import (
+            RuntimeMetrics,
         )
 
-        name = self._constituent_span_name(func)
-        child_call_start_components(instances, name)
-        exception: Optional[BaseException] = None
-        try:
-            return func.execute(data, func_params, **kwargs)
-        except BaseException as e:
-            exception = e
-            raise
-        finally:
-            child_call_end_components(instances, name, exception=exception)
+        for index, (func, func_params) in enumerate(
+            zip(self.functions, self._scoped_params)
+        ):
+            scope_name = self._constituent_metric_scope_name(index, func)
+            with RuntimeMetrics.scope("constituents", scope_name):
+                started_at = time.monotonic()
+                try:
+                    result = func.execute(result, func_params, **kwargs)
+                finally:
+                    RuntimeMetrics.metric(
+                        duration_s=time.monotonic() - started_at,
+                    )
+        return result
 
     @staticmethod
-    def _constituent_span_name(func: MetaflowFunction) -> Optional[str]:
-        """Best-effort label for a constituent.
+    def _constituent_metric_scope_name(index: int, func: MetaflowFunction) -> str:
+        """Return a stable, unique-enough scope for one constituent.
 
         ``MetaflowFunction.name`` raises when the spec carries no name, and a
-        span label is never worth failing a call over.
+        metric label is never worth failing a call over. The index also
+        disambiguates repeated function names.
         """
         try:
-            return func.name
+            name = func.name
         except Exception:  # noqa: BLE001 - a missing label is not an error
-            return None
+            name = None
+        return f"{index}:{name or '<unnamed>'}"
 
     def is_compatible_with(self, other: MetaflowFunction) -> bool:
         """Check if pipeline output is compatible with other function input."""

@@ -256,43 +256,6 @@ class AbstractRuntimeComponent(metaclass=ComponentMeta):
         """
         return None
 
-    def on_child_call_start(self, name: Optional[str], **kwargs: Any) -> None:
-        """
-        Called before a nested unit of work *inside* the current invocation --
-        today, each constituent function of a ``FunctionPipeline``.
-
-        ``name`` identifies the unit (the constituent's function name), or is
-        ``None`` if it could not be determined.
-
-        This is a span within one invocation, not an invocation of its own.
-        ``before_call``/``after_call`` still bracket the whole call and
-        ``active_instance`` keeps naming this same instance throughout, so a
-        ``log()`` from inside a constituent lands exactly where it did before.
-
-        Default implementation is a no-op. Overrides must not raise to report a
-        problem with the call: an exception here is debug-logged and swallowed,
-        so instrumentation can never break the invocation it measures.
-        """
-        pass
-
-    def on_child_call_end(
-        self,
-        name: Optional[str],
-        exception: Optional[BaseException] = None,
-        **kwargs: Any,
-    ) -> None:
-        """
-        Called after a nested unit of work, whether or not it raised, pairing
-        with ``on_child_call_start`` for the same ``name``.
-
-        ``exception`` is what that unit raised, or ``None`` on success. Spans
-        close in reverse order of opening, so an override can keep a stack.
-
-        Default implementation is a no-op. Same rule as
-        ``on_child_call_start``: do not raise.
-        """
-        pass
-
     @classmethod
     def contribute_spec_metadata(
         cls,
