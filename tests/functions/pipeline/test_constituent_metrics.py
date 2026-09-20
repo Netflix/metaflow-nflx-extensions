@@ -51,6 +51,16 @@ class _NamelessFunc:
         return data + ["nameless"]
 
 
+class _FastPathFunc:
+    @property
+    def name(self):
+        raise AssertionError("inactive fast path must not read constituent names")
+
+    def execute(self, data, params, **kwargs):
+        RuntimeMetrics.metric(ignored_without_component=True)
+        return data + ["fast"]
+
+
 def _make_pipeline(functions, name="pipeline"):
     """Build a small executable pipeline without packaging function specs."""
     pipeline = FunctionPipeline.__new__(FunctionPipeline)
@@ -195,6 +205,16 @@ def test_nameless_constituent_uses_index_and_fallback_label():
 
     scoped = metrics.output["metrics"]["constituents"]["0:<unnamed>"]
     assert scoped["ran"] is True
+
+
+def test_inactive_fast_path_skips_names_and_timing(monkeypatch):
+    pipeline = _make_pipeline([_FastPathFunc()])
+    monkeypatch.setattr(
+        "metaflow_extensions.nflx.plugins.functions.core.function_pipeline.time.monotonic",
+        lambda: pytest.fail("inactive fast path must not collect timing"),
+    )
+
+    assert pipeline.execute([], FunctionParameters()) == ["fast"]
 
 
 def test_pipeline_without_runtime_metrics_runs_unchanged():

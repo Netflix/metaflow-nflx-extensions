@@ -7,6 +7,9 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 from dataclasses import dataclass, field, asdict
 
+from metaflow_extensions.nflx.plugins.functions.components.runtime_metrics import (
+    RuntimeMetrics,
+)
 from metaflow_extensions.nflx.plugins.functions.core.function import MetaflowFunction
 
 
@@ -358,9 +361,10 @@ class FunctionPipeline(MetaflowFunction):
             ]
 
         result = data
-        from metaflow_extensions.nflx.plugins.functions.components.runtime_metrics import (
-            RuntimeMetrics,
-        )
+        if RuntimeMetrics.active_instance is None:
+            for func, func_params in zip(self.functions, self._scoped_params):
+                result = func.execute(result, func_params, **kwargs)
+            return result
 
         for index, (func, func_params) in enumerate(
             zip(self.functions, self._scoped_params)
