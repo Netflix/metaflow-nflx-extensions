@@ -456,17 +456,29 @@ def environment_python_version(prefix: str) -> Optional[str]:
     ``lib/pythonX.Y/`` is the thing to read: conda always creates it, it is
     cheap to list, and it does not depend on a shared libpython existing --
     a static-python environment has no ``libpython3.Y.so`` at all.
+
+    A conda environment has exactly one such directory, so the choice below only
+    matters for a prefix that is not one. Sorting numerically rather than by name
+    is what keeps that case sane: a system prefix like ``/usr`` carries
+    python2.7, python3.10 and python3.11 together, and sorting the names as
+    strings answers "2.7", because ``"python2.7" < "python3.10"``. Asked about
+    /usr in a jammy image whose python is 3.10.12, this returned 2.7 -- which as
+    a stub-compatibility answer would refuse a perfectly good model.
     """
     lib = os.path.join(prefix, "lib")
     try:
         entries = os.listdir(lib)
     except OSError:
         return None
-    for entry in sorted(entries):
-        match = re.fullmatch(r"python(\d+\.\d+)", entry)
+    found = []
+    for entry in entries:
+        match = re.fullmatch(r"python(\d+)\.(\d+)", entry)
         if match and os.path.isdir(os.path.join(lib, entry)):
-            return match.group(1)
-    return None
+            found.append((int(match.group(1)), int(match.group(2))))
+    if not found:
+        return None
+    major, minor = max(found)
+    return "%d.%d" % (major, minor)
 
 
 def materialize_conda_environment(system_metadata: Dict[str, Any]) -> str:
