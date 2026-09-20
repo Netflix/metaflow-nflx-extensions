@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+import sys
 
 import pytest
 
@@ -270,3 +271,88 @@ class TestCliContract:
 
         json.loads(captured.out)  # parses whole, or this raises
         assert "resolving 47 packages" in captured.err
+
+
+class TestMemoryBackendIsUnaffected:
+    """resolve_conda_environment is the memory backend's path -- every gunicorn model
+    load goes through it -- and it predates materialize_conda_environment being split
+    out of it. Splitting must not have given it side effects it never had."""
+
+    def _stub_conda(self, monkeypatch, prefix):
+        """Stand in for the conda machinery, so these test the wrapper, not conda."""
+        import types
+
+        created = {"prefix": str(prefix)}
+
+        class FakeConda:
+            def __init__(self, echo, datastore):
+                pass
+
+            def environment_from_alias(self, alias, arch):
+                return object()
+
+            def create_for_name(self, name, env, do_symlink=False):
+                return created["prefix"]
+
+        module = types.ModuleType(
+            "metaflow_extensions.netflixext.plugins.conda.conda"
+        )
+        module.Conda = FakeConda
+        for name in (
+            "metaflow_extensions.netflixext",
+            "metaflow_extensions.netflixext.plugins",
+            "metaflow_extensions.netflixext.plugins.conda",
+        ):
+            sys.modules.setdefault(name, types.ModuleType(name))
+        sys.modules["metaflow_extensions.netflixext.plugins.conda.conda"] = module
+        monkeypatch.delenv("METAFLOW_FUNCTIONS_TEST_MODE", raising=False)
+
+    @staticmethod
+    def _metadata():
+        return {"environment": {"alias": "env:abc", "arch": "linux-64"}}
+
+    def test_it_does_not_write_an_activate_script(self, monkeypatch, tmp_path):
+        """The handoff path needs one; this one does not, and writing into an
+        environment another user created raises rather than degrading."""
+        (tmp_path / "bin").mkdir()
+        self._stub_conda(monkeypatch, tmp_path)
+
+        from metaflow_extensions.nflx.plugins.functions.environment import (
+            resolve_conda_environment,
+        )
+
+        assert resolve_conda_environment(self._metadata()) == str(
+            tmp_path / "bin" / "python"
+        )
+        assert not (tmp_path / "bin" / "activate").exists()
+
+    def test_it_does_not_pin_a_datastore_root(self, monkeypatch, tmp_path):
+        """A process-global that would also move where unrelated metaflow calls in a
+        long-lived functions server look."""
+        (tmp_path / "bin").mkdir()
+        self._stub_conda(monkeypatch, tmp_path)
+        monkeypatch.delenv("METAFLOW_DATASTORE_SYSROOT_LOCAL", raising=False)
+
+        from metaflow_extensions.nflx.plugins.functions.environment import (
+            resolve_conda_environment,
+        )
+
+        resolve_conda_environment(self._metadata())
+
+        assert "METAFLOW_DATASTORE_SYSROOT_LOCAL" not in os.environ
+
+    def test_the_handoff_path_still_does_both(self, monkeypatch, tmp_path):
+        (tmp_path / "bin").mkdir()
+        self._stub_conda(monkeypatch, tmp_path)
+        monkeypatch.delenv("METAFLOW_DATASTORE_SYSROOT_LOCAL", raising=False)
+        monkeypatch.setattr(
+            "metaflow.metaflow_config.CONDA_LOCAL_PATH", str(tmp_path), raising=False
+        )
+
+        from metaflow_extensions.nflx.plugins.functions.environment import (
+            materialize_conda_environment,
+        )
+
+        assert materialize_conda_environment(self._metadata()) == str(tmp_path)
+        assert (tmp_path / "bin" / "activate").exists()
+        assert os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"].startswith(str(tmp_path))

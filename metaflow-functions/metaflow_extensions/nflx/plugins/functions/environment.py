@@ -481,7 +481,9 @@ def environment_python_version(prefix: str) -> Optional[str]:
     return "%d.%d" % (major, minor)
 
 
-def materialize_conda_environment(system_metadata: Dict[str, Any]) -> str:
+def materialize_conda_environment(
+    system_metadata: Dict[str, Any], *, for_handoff: bool = True
+) -> str:
     """Create the environment this function was published against; return its prefix.
 
     Split out of :func:`resolve_conda_environment`, which wants the python
@@ -492,6 +494,16 @@ def materialize_conda_environment(system_metadata: Dict[str, Any]) -> str:
     The environment is content-addressed by its alias, so two functions
     published against the same one share a single local copy and only the first
     pays to create it.
+
+    ``for_handoff`` is what keeps this refactor invisible to the caller that was
+    here first. :func:`resolve_conda_environment` only ever wanted a python
+    binary, and it is the memory backend's path -- every gunicorn model load
+    goes through it. The two things a handoff needs are side effects it has
+    never had: writing an ``activate`` script *into* the environment, which
+    fails outright if this process does not own a directory another user
+    created, and pinning a process-global datastore root, which in a long-lived
+    functions server would also change where unrelated metaflow calls look. So
+    they happen for a handoff and not otherwise.
     """
     if os.environ.get("METAFLOW_FUNCTIONS_TEST_MODE") == "1":
         debug.functions_exec("Test mode: using current prefix: %s" % sys.prefix)
@@ -513,7 +525,8 @@ def materialize_conda_environment(system_metadata: Dict[str, Any]) -> str:
     def no_echo(*args, **kwargs):
         pass
 
-    _pin_local_datastore_root()
+    if for_handoff:
+        _pin_local_datastore_root()
 
     # Imported here rather than at module scope: this is the only use of Conda,
     # and a *serving* environment carries the serving stack but not the conda
@@ -542,7 +555,7 @@ def materialize_conda_environment(system_metadata: Dict[str, Any]) -> str:
 
     prefix = c.create_for_name(alias.replace(":", "_"), resolved_env, do_symlink=False)
     debug.functions_exec("Materialized conda environment: %s" % prefix)
-    return ensure_activate_script(prefix)
+    return ensure_activate_script(prefix) if for_handoff else prefix
 
 
 def resolve_conda_environment(system_metadata: Dict[str, Any]) -> str:
@@ -566,8 +579,12 @@ def resolve_conda_environment(system_metadata: Dict[str, Any]) -> str:
         debug.functions_exec(f"Test mode: using current Python: {sys.executable}")
         return sys.executable
 
+    # for_handoff=False: this wants the interpreter, not a handoff, and did neither
+    # of those side effects before materialize_conda_environment was split out of it.
     python_path = os.path.join(
-        materialize_conda_environment(system_metadata), "bin", "python"
+        materialize_conda_environment(system_metadata, for_handoff=False),
+        "bin",
+        "python",
     )
     debug.functions_exec(f"Resolved conda environment: {python_path}")
     return python_path
