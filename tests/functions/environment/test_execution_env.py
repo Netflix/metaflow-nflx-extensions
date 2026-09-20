@@ -133,6 +133,28 @@ class TestEnvironmentPythonVersion:
     def test_returns_none_for_a_prefix_with_no_lib(self, tmp_path):
         assert environment_python_version(str(tmp_path)) is None
 
+    def test_picks_the_highest_version_not_the_first_alphabetically(self, tmp_path):
+        """Only reachable for a prefix that is not a conda environment, which has
+        exactly one. A system prefix has several, and sorting the names as strings
+        answers 2.7 because 'python2.7' < 'python3.10' -- observed against /usr in a
+        jammy image whose python is 3.10.12. As a stub-compatibility answer that
+        would refuse a model for being built against a python nothing is using."""
+        lib = tmp_path / "lib"
+        lib.mkdir()
+        for name in ("python2.7", "python3", "python3.10", "python3.11"):
+            (lib / name).mkdir()
+
+        assert environment_python_version(str(tmp_path)) == "3.11"
+
+    def test_compares_minor_versions_numerically(self, tmp_path):
+        """'3.9' > '3.10' as strings, which is the other half of the same bug."""
+        lib = tmp_path / "lib"
+        lib.mkdir()
+        (lib / "python3.9").mkdir()
+        (lib / "python3.10").mkdir()
+
+        assert environment_python_version(str(tmp_path)) == "3.10"
+
 
 class TestPinnedDatastoreRoot:
     """Conda's datastore root must not depend on the caller's cwd: a serving host
