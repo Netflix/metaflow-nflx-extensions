@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 import tempfile
@@ -8,7 +9,7 @@ import tarfile
 import zipfile
 import contextlib
 import fcntl
-from typing import TYPE_CHECKING, Dict, Any, Callable, List
+from typing import TYPE_CHECKING, Dict, Any, Callable, List, Optional
 
 if TYPE_CHECKING:
     from metaflow import S3
@@ -405,6 +406,69 @@ def ensure_activate_script(prefix: str) -> str:
     return prefix
 
 
+def _pin_local_datastore_root() -> None:
+    """Give the conda machinery a datastore root that does not depend on the caller.
+
+    ``Conda.__init__`` calls ``LocalStorage.get_datastore_root_from_config``, which,
+    with no ``METAFLOW_DATASTORE_SYSROOT_LOCAL`` set, walks *up from the current
+    working directory* looking for a ``.metaflow`` and creates one wherever it runs
+    out of parents. That is reasonable for a CLI a user runs inside their project,
+    and wrong for a host process that materialises an environment on someone else's
+    behalf: a serving host's cwd is arbitrary (``/`` for a stub Triton exec'd), and
+    when it is not writable the failure surfaces as a ``PermissionError`` from a
+    directory creation nobody asked for, which reads like a conda problem and is not.
+
+    So pin it, and pin it next to the conda tree this is about to write to: those two
+    belong on the same volume, and ``CONDA_LOCAL_PATH`` is already the host's answer
+    to "where does metaflow keep big things". Only ever a default -- an explicit
+    ``METAFLOW_DATASTORE_SYSROOT_LOCAL`` still wins, so a caller that does have a
+    project root keeps it.
+    """
+    if os.environ.get("METAFLOW_DATASTORE_SYSROOT_LOCAL"):
+        return
+
+    from metaflow.metaflow_config import CONDA_LOCAL_PATH
+
+    base = CONDA_LOCAL_PATH or tempfile.gettempdir()
+    root = os.path.join(base, "metaflow-functions-datastore")
+    try:
+        os.makedirs(root, exist_ok=True)
+    except OSError as e:
+        # Nothing to gain by failing here: leaving the variable unset just restores
+        # the cwd walk, which is what the caller would have got anyway.
+        debug.functions_exec("Could not pin a local datastore root at %s: %s" % (root, e))
+        return
+    os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = root
+    debug.functions_exec("Pinned local datastore root: %s" % root)
+
+
+def environment_python_version(prefix: str) -> Optional[str]:
+    """The ``major.minor`` python an environment at ``prefix`` carries.
+
+    Reported from here rather than left to the caller to work out. A host that
+    execs something else *into* this environment has to know the version to
+    decide whether it can -- Triton's python backend ships a stub built against
+    one specific ``libpython``, and loading an environment built against another
+    fails inside the stub with nothing useful in the message. The caller owns
+    the policy ("which versions can I run"); this owns the fact, because the
+    layout it is read off is conda's and therefore metaflow's.
+
+    ``lib/pythonX.Y/`` is the thing to read: conda always creates it, it is
+    cheap to list, and it does not depend on a shared libpython existing --
+    a static-python environment has no ``libpython3.Y.so`` at all.
+    """
+    lib = os.path.join(prefix, "lib")
+    try:
+        entries = os.listdir(lib)
+    except OSError:
+        return None
+    for entry in sorted(entries):
+        match = re.fullmatch(r"python(\d+\.\d+)", entry)
+        if match and os.path.isdir(os.path.join(lib, entry)):
+            return match.group(1)
+    return None
+
+
 def materialize_conda_environment(system_metadata: Dict[str, Any]) -> str:
     """Create the environment this function was published against; return its prefix.
 
@@ -436,6 +500,8 @@ def materialize_conda_environment(system_metadata: Dict[str, Any]) -> str:
 
     def no_echo(*args, **kwargs):
         pass
+
+    _pin_local_datastore_root()
 
     # Imported here rather than at module scope: this is the only use of Conda,
     # and a *serving* environment carries the serving stack but not the conda
