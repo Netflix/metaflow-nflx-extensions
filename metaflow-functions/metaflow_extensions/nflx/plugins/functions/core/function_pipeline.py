@@ -7,6 +7,9 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 from dataclasses import dataclass, field, asdict
 
+from metaflow_extensions.nflx.plugins.functions.components.runtime_metrics import (
+    RuntimeMetrics,
+)
 from metaflow_extensions.nflx.plugins.functions.core.function import MetaflowFunction
 
 
@@ -358,9 +361,29 @@ class FunctionPipeline(MetaflowFunction):
             ]
 
         result = data
-        for func, func_params in zip(self.functions, self._scoped_params):
-            result = func.execute(result, func_params, **kwargs)
+        if RuntimeMetrics.active_instance is None:
+            for func, func_params in zip(self.functions, self._scoped_params):
+                result = func.execute(result, func_params, **kwargs)
+            return result
+
+        for index, (func, func_params) in enumerate(
+            zip(self.functions, self._scoped_params)
+        ):
+            scope_name = self._constituent_metric_scope_name(index, func)
+            with RuntimeMetrics.scope("constituents", scope_name):
+                started_at = time.monotonic()
+                try:
+                    result = func.execute(result, func_params, **kwargs)
+                finally:
+                    RuntimeMetrics.metric(
+                        duration_s=time.monotonic() - started_at,
+                    )
         return result
+
+    @staticmethod
+    def _constituent_metric_scope_name(index: int, func: MetaflowFunction) -> str:
+        """Return a stable scope that disambiguates repeated function names."""
+        return f"{index}:{func.name}"
 
     def is_compatible_with(self, other: MetaflowFunction) -> bool:
         """Check if pipeline output is compatible with other function input."""
