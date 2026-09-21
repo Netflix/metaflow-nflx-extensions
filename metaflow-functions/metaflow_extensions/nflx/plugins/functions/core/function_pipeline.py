@@ -382,17 +382,8 @@ class FunctionPipeline(MetaflowFunction):
 
     @staticmethod
     def _constituent_metric_scope_name(index: int, func: MetaflowFunction) -> str:
-        """Return a stable, unique-enough scope for one constituent.
-
-        ``MetaflowFunction.name`` raises when the spec carries no name, and a
-        metric label is never worth failing a call over. The index also
-        disambiguates repeated function names.
-        """
-        try:
-            name = func.name
-        except Exception:  # noqa: BLE001 - a missing label is not an error
-            name = None
-        return f"{index}:{name or '<unnamed>'}"
+        """Return a stable scope that disambiguates repeated function names."""
+        return f"{index}:{func.name}"
 
     def is_compatible_with(self, other: MetaflowFunction) -> bool:
         """Check if pipeline output is compatible with other function input."""

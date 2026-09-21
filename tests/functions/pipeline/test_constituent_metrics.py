@@ -41,16 +41,6 @@ class _Func:
         return data + [self.name]
 
 
-class _NamelessFunc:
-    @property
-    def name(self):
-        raise RuntimeError("no name in spec")
-
-    def execute(self, data, params, **kwargs):
-        RuntimeMetrics.metric(ran=True)
-        return data + ["nameless"]
-
-
 class _FastPathFunc:
     @property
     def name(self):
@@ -193,18 +183,6 @@ def test_constituent_exception_keeps_metrics_and_duration():
     scoped = metrics.output["metrics"]["constituents"]["0:handler"]
     assert scoped["started"] is True
     assert scoped["duration_s"] >= 0
-
-
-def test_nameless_constituent_uses_index_and_fallback_label():
-    pipeline = _make_pipeline([_NamelessFunc()])
-
-    try:
-        _, metrics = _apply_with_metrics(pipeline)
-    finally:
-        LocalBackend.close(pipeline)
-
-    scoped = metrics.output["metrics"]["constituents"]["0:<unnamed>"]
-    assert scoped["ran"] is True
 
 
 def test_inactive_fast_path_skips_names_and_timing(monkeypatch):
