@@ -306,7 +306,6 @@ def run_in_path(loader_func: Callable[[], Any], root_path: str) -> Any:
     """
     # Change to the temporary directory to load the function
     original_cwd = os.getcwd()
-    original_sys_path = sys.path.copy()
 
     # Add temp directory to Python path so imports work
     os.chdir(root_path)
@@ -318,7 +317,20 @@ def run_in_path(loader_func: Callable[[], Any], root_path: str) -> Any:
     finally:
         # Always restore the original directory and Python path
         os.chdir(original_cwd)
-        sys.path[:] = original_sys_path
+        # Remove the entry this call added, rather than restoring a snapshot
+        # of the whole list. A snapshot restore also deletes every sys.path
+        # change made by anyone else while the load was open: another thread
+        # loading concurrently loses the entry it is importing through, and a
+        # persistent entry LocalBackend.start() added disappears while its
+        # refcount still claims it is there, so that function's deferred
+        # imports start failing and its close() silently removes nothing.
+        try:
+            sys.path.remove(root_path)
+        except ValueError:
+            # Already gone -- loaded code removed it, or another holder of the
+            # same directory took the copy we inserted. Either way there is
+            # nothing of ours left to take back.
+            pass
 
 
 def get_environment_from_metadata(system_metadata: Dict[str, Any]) -> str:
