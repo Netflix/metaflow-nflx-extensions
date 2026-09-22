@@ -571,8 +571,12 @@ class MetaflowFunction(ABC):
                         [(blob_path, blob_path_temp), (json_path, json_path_temp)]
                     )
             else:
-                os.makedirs(root_path, exist_ok=True)
+                # blob_path/json_path each sit under a two-hex-char shard dir
+                # (package/<xx>/, metadata/<xx>/) that shutil.move will not
+                # create.
                 files = [(blob_path_temp, blob_path), (json_path_temp, json_path)]
+                for _, dst in files:
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
                 for f in files:
                     shutil.move(*f)
         return func_spec
