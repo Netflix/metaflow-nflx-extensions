@@ -275,6 +275,33 @@ def test_functions_json_simple(bound_functions, backend):
         close_function(func)
 
 
+def test_functions_simple_avro_apply_binary(bound_functions):
+    """apply_binary round-trips a function loaded from its published reference.
+
+    Not parametrized over BACKENDS: apply_binary is implemented only by
+    LocalBackend. It is also the only backend entry point a serving host calls
+    that nothing else in this suite exercises.
+    """
+    from metaflow_extensions.nflx.plugins.functions.core.function import (
+        close_function,
+        function_from_json,
+    )
+    from metaflow_extensions.nflx.plugins.functions.serializers.registry import (
+        get_global_registry,
+    )
+
+    func = function_from_json(bound_functions["avro_simple_function"], backend="local")
+    try:
+        registry = get_global_registry()
+        serialized, _ = registry.get_serializer_for_type(str)("hello")
+
+        result = func.backend.apply_binary(func, serialized)
+
+        assert registry.deserialize(result, str) == func("hello")
+    finally:
+        close_function(func)
+
+
 @pytest.mark.parametrize("backend", ["memory", "local", "ray"])
 def test_on_runtime_started_receives_spec_metadata_or_none(bound_functions, backend):
     """on_runtime_started receives this component's deploy-time spec metadata,
