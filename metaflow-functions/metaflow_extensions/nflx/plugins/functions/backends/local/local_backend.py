@@ -90,9 +90,6 @@ class LocalBackend(AbstractBackend):
         constituents = getattr(func_instance, "functions", None)
         if constituents is not None:
             return any(LocalBackend._needs_hydration(c) for c in constituents)
-        # A handle with no `_func` at all is not a partly-built MetaflowFunction
-        # -- it is something else standing in for one, and hydrating it would
-        # fail. Only an explicit None means "spec loaded, code not yet".
         return hasattr(func_instance, "_func") and func_instance._func is None
 
     @classmethod
