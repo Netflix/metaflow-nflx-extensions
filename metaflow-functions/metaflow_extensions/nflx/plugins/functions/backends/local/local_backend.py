@@ -15,6 +15,10 @@ from metaflow_extensions.nflx.plugins.functions.debug import debug
 # disagree about which kwargs belong to the caller's function.
 from ..memory.memory_backend import KEYWORDS
 from .supervisor import local_supervisor
+import asyncio
+import concurrent.futures
+import contextvars
+import functools
 import threading
 import traceback
 from contextlib import contextmanager
@@ -31,6 +35,15 @@ from contextlib import contextmanager
 # re-entering on one thread) is allowed, while a genuinely concurrent
 # invocation from a second thread is refused.
 _COMPONENT_INVOCATION_LOCK = threading.RLock()
+
+# One worker, shared by every component-bearing function, because the guard
+# above is global too. apply_async() offloads onto it so concurrent async
+# callers queue for the one permitted invocation slot instead of tripping the
+# guard -- which is what they got while apply_async ran on the event loop,
+# only without blocking the loop for the duration of each call.
+_COMPONENT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="mf-local-component-invocation"
+)
 
 
 @contextmanager
@@ -121,7 +134,26 @@ class LocalBackend(AbstractBackend):
 
     @classmethod
     async def apply_async(cls, func_instance, data: Any, **kwargs) -> Any:
-        return cls.apply(func_instance, data, **kwargs)
+        """Run the call off the event loop.
+
+        The memory backend's apply_async awaits at every IO point, so a serving
+        host's loop keeps turning during a long call. Local has nothing to
+        await -- it executes user code in this process -- so it hands the call
+        to a worker thread instead. Returning ``cls.apply(...)`` directly, as
+        this did before, blocked the caller's loop for the whole invocation.
+
+        The context is copied into the worker so contextvars the caller set are
+        visible to the function, matching ``asyncio.to_thread``.
+        """
+        call = functools.partial(
+            contextvars.copy_context().run, cls.apply, func_instance, data, **kwargs
+        )
+        executor = (
+            _COMPONENT_EXECUTOR
+            if getattr(func_instance, "_runtime_components", None)
+            else None
+        )
+        return await asyncio.get_running_loop().run_in_executor(executor, call)
 
     @classmethod
     def apply(cls, func_instance, data: Any, **kwargs) -> Any:
