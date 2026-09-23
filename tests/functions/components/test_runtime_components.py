@@ -1087,6 +1087,7 @@ def test_local_backend_default_use_proxy_path_keeps_runtime_components():
     from unittest.mock import patch, MagicMock
     from metaflow import FunctionParameters
     from metaflow_extensions.nflx.plugins.functions.core.function import (
+        MetaflowFunction,
         function_from_json,
     )
     from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
@@ -1102,6 +1103,10 @@ def test_local_backend_default_use_proxy_path_keeps_runtime_components():
         name = "proxy_fn"
         _func = None
         spec = fake_spec
+
+        # As _StubMetaflowFunction above: borrow the real accessor rather than
+        # let the fake diverge from what a proxy actually exposes.
+        runtime_components = MetaflowFunction.__dict__["runtime_components"]
 
     fake_subclass = MagicMock()
     fake_subclass._create_proxy_from_spec.return_value = _Proxy()
