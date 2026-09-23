@@ -571,8 +571,10 @@ class MetaflowFunction(ABC):
                         [(blob_path, blob_path_temp), (json_path, json_path_temp)]
                     )
             else:
-                os.makedirs(root_path, exist_ok=True)
+                # Make parent directories and move
                 files = [(blob_path_temp, blob_path), (json_path_temp, json_path)]
+                for _, dst in files:
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
                 for f in files:
                     shutil.move(*f)
         return func_spec
