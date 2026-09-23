@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from ..abstract_backend import AbstractBackend
 from ..backend_type import BackendType
 from metaflow_extensions.nflx.plugins.functions.serializers.registry import (
@@ -16,6 +16,8 @@ from metaflow_extensions.nflx.plugins.functions.common.runtime_utils import (
     create_function_parameters,
 )
 from metaflow_extensions.nflx.plugins.functions.debug import debug
+from dataclasses import dataclass
+import sys
 import threading
 import traceback
 from contextlib import contextmanager
@@ -32,6 +34,31 @@ from contextlib import contextmanager
 # re-entering on one thread) is allowed, while a genuinely concurrent
 # invocation from a second thread is refused.
 _COMPONENT_INVOCATION_LOCK = threading.RLock()
+
+# Identity of the warmed function a handle attaches to. Runtime components are
+# part of it for the same reason they are in the Ray backend's key: two handles
+# on the same function with different components must not share one warmed
+# copy, since components are started against the concrete function.
+LocalWarmKey = Tuple[str, Tuple[str, ...]]
+
+
+@dataclass
+class _WarmEntry:
+    concrete: Any
+    params: Any
+    sys_path_dirs: List[str]
+    attached: int = 0  # number of handles currently attached to this entry
+
+
+_WARM_POOL: Dict[LocalWarmKey, _WarmEntry] = {}
+_POOL_LOCK = threading.RLock()
+
+# Directories the pool has put on sys.path, and how many entries still want
+# each one there. Refcounted separately from the pool because two entries can
+# share a root directory -- a pipeline's constituents do -- so tearing one down
+# must not break the other's deferred imports.
+_SYS_PATH_LOCK = threading.Lock()
+_SYS_PATH_REFCOUNTS: Dict[str, int] = {}
 
 
 @contextmanager
@@ -96,6 +123,225 @@ class LocalBackend(AbstractBackend):
         return hasattr(func_instance, "_func") and func_instance._func is None
 
     @classmethod
+    def _resolve_key(cls, func_instance) -> Optional[LocalWarmKey]:
+        """Identity of the warm entry a handle would attach to.
+
+        ``None`` for a function built in this process: it has no uuid, so
+        there is no identity two handles could match on. The other backends
+        never see one -- they can only run a published reference -- so this
+        case is unique to local and takes the un-pooled path below.
+        """
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            serialize_components,
+        )
+
+        # A handle with no _runtime_id slot is not a MetaflowFunction (which
+        # declares it as a class attribute) -- it is something standing in for
+        # one, and it has no runtime identity to pool on.
+        if not hasattr(func_instance, "_runtime_id"):
+            return None
+
+        try:
+            uuid = func_instance.uuid
+        except (AttributeError, MetaflowFunctionException):
+            return None
+        if uuid is None:
+            return None
+
+        component_specs = tuple(
+            serialize_components(getattr(func_instance, "_runtime_components", []))
+        )
+        return (uuid, component_specs)
+
+    @staticmethod
+    def _root_dirs(concrete) -> List[str]:
+        """Extraction directories whose contents the function may import.
+
+        A pipeline's own directory is near-empty -- each constituent extracts
+        its own package -- and ``function_root_dir`` reports only the first
+        constituent's, so a deferred import in constituent #2 would not
+        resolve. Every constituent's directory goes on the path.
+        """
+        dirs: List[str] = []
+        for handle in [concrete] + list(getattr(concrete, "functions", []) or []):
+            try:
+                root_dir = handle.function_root_dir
+            except MetaflowFunctionException as e:
+                # Only raised as "Function root dir is not set", which is the
+                # normal state for a handle that owns no extracted code. Left
+                # visible: a function whose extraction half-failed shows up
+                # here rather than as an opaque ModuleNotFoundError later.
+                debug.functions_exec(
+                    "LocalBackend: no root dir for '%s' (%s)"
+                    % (getattr(handle, "name", handle), e)
+                )
+                continue
+            if root_dir and root_dir not in dirs:
+                dirs.append(root_dir)
+        return dirs
+
+    @staticmethod
+    def _acquire_sys_path(dirs: List[str]) -> None:
+        """Put each directory on sys.path, once, and record the reference.
+
+        Front-inserted to match ``run_in_path``, which is what was on the path
+        while the function's own modules were imported at load time; a deferred
+        import must resolve to the same module the load-time import would have.
+        """
+        with _SYS_PATH_LOCK:
+            for root_dir in dirs:
+                _SYS_PATH_REFCOUNTS[root_dir] = _SYS_PATH_REFCOUNTS.get(root_dir, 0) + 1
+                if root_dir not in sys.path:
+                    sys.path.insert(0, root_dir)
+
+    @staticmethod
+    def _release_sys_path(dirs: List[str]) -> None:
+        """Drop references, removing a directory once nothing wants it."""
+        with _SYS_PATH_LOCK:
+            for root_dir in dirs:
+                remaining = _SYS_PATH_REFCOUNTS.get(root_dir, 0) - 1
+                if remaining > 0:
+                    _SYS_PATH_REFCOUNTS[root_dir] = remaining
+                    continue
+                _SYS_PATH_REFCOUNTS.pop(root_dir, None)
+                while root_dir in sys.path:
+                    sys.path.remove(root_dir)
+
+    @classmethod
+    def _hydrate(cls, func_instance):
+        """Materialize a proxy handle into a concrete, executable function."""
+        from metaflow_extensions.nflx.plugins.functions.core.function import (
+            function_from_json,
+        )
+        from metaflow_extensions.nflx.plugins.functions.core.function_spec import (
+            FunctionSpec,
+        )
+
+        func_spec = func_instance.spec
+
+        if not func_spec.reference:
+            raise MetaflowFunctionRuntimeException(
+                "Function spec missing reference path"
+            )
+
+        # Download S3 reference to local temp file if needed
+        local_reference = FunctionSpec.download_to_temp(func_spec.reference)
+
+        # Carry the proxy's runtime_components over to the concrete function -
+        # function_from_json() below has no way to see the proxy's, and would
+        # otherwise silently default to none.
+        runtime_components = getattr(func_instance, "_runtime_components", [])
+
+        # Load concrete function from reference. This handles both regular functions
+        # and pipelines by delegating to the appropriate from_spec() implementation.
+        # Don't start runtime - function executes directly in this process
+        return function_from_json(
+            local_reference,
+            use_proxy=False,
+            backend="local",
+            start_runtime=False,
+            runtime_components=runtime_components,
+        )
+
+    @staticmethod
+    def _reject_multiprocess(process) -> None:
+        """Refuse a process count this backend cannot honour.
+
+        The memory backend keys a runtime on ``process`` and forks that many
+        workers. Local executes in the caller's thread, so there is nothing to
+        fork; accepting the argument would report parallelism the caller does
+        not get.
+        """
+        if process is not None and process > 1:
+            raise MetaflowFunctionRuntimeException(
+                f"The local backend cannot run a function with process={process}: "
+                "it executes in the calling thread and has no worker processes. "
+                "Use the memory backend for multiple processes, or drop the "
+                "argument to run in-process."
+            )
+
+    @classmethod
+    def _get_or_create_entry(cls, func_instance) -> Optional[_WarmEntry]:
+        """Attach the handle to a warm entry, creating one if needed.
+
+        ``None`` when the handle has no poolable identity; the caller falls
+        back to running it directly.
+        """
+        # Once a handle has attached, reuse its resolved key rather than
+        # recomputing it (which hashes runtime component specs) on every call.
+        already_attached = getattr(func_instance, "_runtime_id", None) is not None
+
+        with _POOL_LOCK:
+            key = (
+                func_instance._runtime_id
+                if already_attached
+                else cls._resolve_key(func_instance)
+            )
+            if key is None:
+                return None
+
+            entry = _WARM_POOL.get(key)
+            if entry is None:
+                concrete = (
+                    cls._hydrate(func_instance)
+                    if cls._needs_hydration(func_instance)
+                    else func_instance
+                )
+                root_dirs = cls._root_dirs(concrete)
+                cls._acquire_sys_path(root_dirs)
+                params = create_function_parameters(
+                    concrete.spec,
+                    prefetch_artifacts=getattr(
+                        func_instance, "_prefetch_artifacts", False
+                    ),
+                )
+                entry = _WarmEntry(concrete, params, root_dirs)
+                _WARM_POOL[key] = entry
+                debug.functions_exec(
+                    "LocalBackend: warmed '%s' (sys.path+=%s)"
+                    % (concrete.name, root_dirs)
+                )
+
+            if not already_attached:
+                func_instance._runtime_id = key
+                entry.attached += 1
+
+            return entry
+
+    @classmethod
+    def _lookup(cls, func_instance) -> Optional[_WarmEntry]:
+        """The warm entry this handle is attached to, or None."""
+        key = func_instance._runtime_id
+        if key is None:
+            return None
+        with _POOL_LOCK:
+            return _WARM_POOL.get(key)
+
+    @classmethod
+    def start(cls, func_instance, **kwargs):
+        """
+        Warm up in-process execution so the first call is not the slow one.
+
+        The local backend has no runtime to launch, but it does have per-call
+        work that only needs doing once: hydrating the code package, resolving
+        ``FunctionParameters``, and putting the function root on ``sys.path``.
+        ``from_spec()`` only adds that root for the duration of the load (see
+        ``run_in_path``, which restores ``sys.path`` in a ``finally``), so an
+        import the user's code defers to call time -- generated protobuf stubs
+        are the common case -- fails after the load window closes.
+
+        Like the memory and Ray backends, this is an optimization and not a
+        precondition: ``apply()`` performs the same get-or-create, so a handle
+        that never calls ``start()`` still works.
+        """
+        cls._reject_multiprocess(kwargs.get("process"))
+        if cls._get_or_create_entry(func_instance) is None:
+            debug.functions_exec(
+                "LocalBackend.start: '%s' has no uuid to pool on; it is already "
+                "in this process, so there is nothing to warm" % func_instance.name
+            )
+
+    @classmethod
     async def apply_async(cls, func_instance, data: Any, **kwargs) -> Any:
         return cls.apply(func_instance, data, **kwargs)
 
@@ -118,44 +364,21 @@ class LocalBackend(AbstractBackend):
         Any
             Result from function execution
         """
-        if cls._needs_hydration(func_instance):
-            from metaflow_extensions.nflx.plugins.functions.core.function import (
-                function_from_json,
-            )
-            from metaflow_extensions.nflx.plugins.functions.core.function_spec import (
-                FunctionSpec,
-            )
+        cls._reject_multiprocess(kwargs.pop("process", None))
 
-            func_spec = func_instance.spec
-
-            if not func_spec.reference:
-                raise MetaflowFunctionRuntimeException(
-                    "Function spec missing reference path"
-                )
-
-            # Download S3 reference to local temp file if needed
-            local_reference = FunctionSpec.download_to_temp(func_spec.reference)
-
-            # Carry the proxy's runtime_components over to the concrete function -
-            # function_from_json() below has no way to see the proxy's, and would
-            # otherwise silently default to none.
-            runtime_components = getattr(func_instance, "_runtime_components", [])
-
-            # Load concrete function from reference. This handles both regular functions
-            # and pipelines by delegating to the appropriate from_spec() implementation.
-            # Don't start runtime - function executes directly in this process
-            func_instance = function_from_json(
-                local_reference,
-                use_proxy=False,
-                backend="local",
-                start_runtime=False,
-                runtime_components=runtime_components,
-            )
-
-        # Use params from kwargs if provided, otherwise create new ones
+        # An explicit params= still wins over anything the pool holds.
         parameters = kwargs.pop("params", None)
-        if parameters is None:
-            parameters = create_function_parameters(func_instance.spec)
+
+        entry = cls._get_or_create_entry(func_instance)
+        if entry is not None:
+            func_instance = entry.concrete
+            if parameters is None:
+                parameters = entry.params
+        else:
+            if cls._needs_hydration(func_instance):
+                func_instance = cls._hydrate(func_instance)
+            if parameters is None:
+                parameters = create_function_parameters(func_instance.spec)
 
         from metaflow_extensions.nflx.plugins.functions.components.runtime import (
             start_components,
@@ -218,16 +441,45 @@ class LocalBackend(AbstractBackend):
 
         return result
 
+    @staticmethod
+    def _stop_components(target) -> None:
+        instances = target._component_instances
+        if not instances:
+            return
+        from metaflow_extensions.nflx.plugins.functions.components.runtime import (
+            stop_components,
+        )
+
+        try:
+            stop_components(instances)
+        finally:
+            # stop_components() raises when any component's stop() fails, and a
+            # component that failed to stop is not a component to keep calling.
+            target._component_instances = []
+
     @classmethod
     def close(cls, func_instance, clean_dir: bool = True, **kwargs):
-        instances = func_instance._component_instances
-        if instances:
-            from metaflow_extensions.nflx.plugins.functions.components.runtime import (
-                stop_components,
-            )
+        """Detach this handle, tearing the warm entry down at the last one."""
+        with _POOL_LOCK:
+            key = getattr(func_instance, "_runtime_id", None)
+            if key is None:
+                # Unpooled: apply() ran this handle directly, so its own
+                # components are the ones to stop.
+                cls._stop_components(func_instance)
+                return
+            func_instance._runtime_id = None
+            entry = _WARM_POOL.get(key)
+            if entry is None:
+                return
+            entry.attached -= 1
+            if entry.attached > 0:
+                return
+            del _WARM_POOL[key]
 
-            stop_components(instances)
-            func_instance._component_instances = []
+        try:
+            cls._stop_components(entry.concrete)
+        finally:
+            cls._release_sys_path(entry.sys_path_dirs)
 
     @classmethod
     def apply_binary(cls, func_instance, data: bytes, **kwargs) -> bytes:
