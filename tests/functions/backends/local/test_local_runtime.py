@@ -1,8 +1,7 @@
-"""Warm in-process runtimes: start(), sharing, refcounted teardown.
+"""Warm in-process runtimes: start(), sys.path lifetime, refcounted teardown.
 
 Uses real AvroFunction handles (as tests/functions/backends/local/
-test_needs_hydration.py does) so the runtime key is the real content-hash
-uuid; only the code-package download is stubbed out.
+test_needs_hydration.py does); only the code-package download is stubbed out.
 """
 
 import json
@@ -15,8 +14,7 @@ pytestmark = pytest.mark.no_backend_parametrization
 
 from metaflow import FunctionParameters
 from metaflow_extensions.nflx.plugins.avro_function import AvroFunction, avro_function
-from metaflow_extensions.nflx.plugins.functions.backends.local import local_backend
-from metaflow_extensions.nflx.plugins.functions.backends.local import supervisor as sup
+from metaflow_extensions.nflx.plugins.functions.backends.local import runtime as rt
 from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
     LocalBackend,
 )
@@ -44,17 +42,9 @@ def _no_export(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def supervisor(monkeypatch):
-    """A fresh supervisor per test.
-
-    The real one is a process-global singleton that other test modules attach
-    handles to and never detach, so a shared one makes these tests depend on
-    what ran before them.
-    """
-    fresh = sup.LocalSupervisor()
-    monkeypatch.setattr(local_backend, "local_supervisor", fresh)
-    monkeypatch.setattr(sup, "_SYS_PATH_REFCOUNTS", {})
-    return fresh
+def _fresh_refcounts(monkeypatch):
+    """The refcount table is process-global; other modules leave entries in it."""
+    monkeypatch.setattr(rt, "_SYS_PATH_REFCOUNTS", {})
 
 
 @pytest.fixture(autouse=True)
@@ -73,8 +63,6 @@ def _concrete_function(root_dir=None, uuid="0" * 32):
 
     func = AvroFunction(passthrough, task=_Task())
     func._function_root_dir = root_dir
-    # _export is stubbed out above, so nothing has assigned the content hash
-    # the runtime key is built from.
     func.spec.uuid = uuid
     return func
 
@@ -97,7 +85,7 @@ def hydration(monkeypatch, tmp_path):
         concrete._runtime_components = getattr(func_instance, "_runtime_components", [])
         return concrete
 
-    monkeypatch.setattr(sup, "_hydrate", fake_hydrate)
+    monkeypatch.setattr(rt, "_hydrate", fake_hydrate)
     return SimpleNamespace(concrete=concrete, calls=calls, root=str(tmp_path))
 
 
@@ -151,21 +139,33 @@ def test_close_takes_the_sys_path_entry_back(hydration):
     assert hydration.root not in sys.path
 
 
-# --- sharing and refcounted teardown ---------------------------------------
+def test_close_then_apply_warms_again(hydration):
+    proxy = _proxy_function()
+    LocalBackend.start(proxy)
+    LocalBackend.close(proxy)
+
+    assert LocalBackend.apply(proxy, "payload") == "payload"
+
+    assert len(hydration.calls) == 2
+    assert hydration.root in sys.path
 
 
-def test_two_handles_on_the_same_reference_share_one_runtime(hydration):
+# --- one runtime per handle ------------------------------------------------
+
+
+def test_each_handle_gets_its_own_runtime(hydration):
     spec = _concrete_function().spec
     first, second = _proxy_function(spec), _proxy_function(spec)
 
     LocalBackend.start(first)
     LocalBackend.start(second)
 
-    assert len(hydration.calls) == 1
-    assert first._runtime_id == second._runtime_id
+    assert first._local_runtime is not second._local_runtime
+    assert len(hydration.calls) == 2
 
 
-def test_closing_one_handle_leaves_the_other_working(hydration):
+def test_closing_one_handle_leaves_the_others_sys_path_entry(hydration):
+    """Why the refcount exists: two handles out of one code package."""
     spec = _concrete_function().spec
     first, second = _proxy_function(spec), _proxy_function(spec)
     LocalBackend.start(first)
@@ -175,59 +175,37 @@ def test_closing_one_handle_leaves_the_other_working(hydration):
 
     assert hydration.root in sys.path
     assert LocalBackend.apply(second, "payload") == "payload"
-    assert len(hydration.calls) == 1
 
     LocalBackend.close(second)
     assert hydration.root not in sys.path
-
-
-def test_different_components_do_not_share_a_runtime(hydration, monkeypatch):
-    from metaflow_extensions.nflx.plugins.functions.components.runtime_metrics import (
-        RuntimeMetrics,
-    )
-
-    spec = _concrete_function().spec
-    plain = _proxy_function(spec)
-    with_component = _proxy_function(spec)
-    with_component._runtime_components = [RuntimeMetrics()]
-
-    LocalBackend.start(plain)
-    LocalBackend.start(with_component)
-
-    assert plain._runtime_id != with_component._runtime_id
-    assert len(hydration.calls) == 2
 
 
 def test_close_on_a_handle_that_was_never_started_is_a_no_op():
     LocalBackend.close(_proxy_function())
 
 
-# --- lease accounting ------------------------------------------------------
+def test_a_handle_that_cannot_be_annotated_still_runs(monkeypatch, hydration):
+    """A non-MetaflowFunction stand-in gets a per-call runtime, not a crash."""
 
+    class _Slotted:
+        __slots__ = ("_component_instances",)
 
-def test_in_flight_count_returns_to_zero(supervisor, hydration):
-    proxy = _proxy_function()
-    LocalBackend.apply(proxy, "payload")
+        name = "slotted"
 
-    entry = supervisor._process_map[proxy._runtime_id]
-    assert entry.leased == 0
-    assert entry.attached == 1
+        def __init__(self):
+            self._component_instances = []
 
+        def execute(self, data, params, **kwargs):
+            return data
 
-def test_in_flight_count_returns_to_zero_when_the_function_raises(
-    monkeypatch, supervisor, hydration
-):
-    def boom(self, data, params, **kwargs):
-        raise ValueError("nope")
+    monkeypatch.setattr(LocalBackend, "_needs_hydration", staticmethod(lambda h: False))
+    handle = _Slotted()
+    # No spec to build FunctionParameters from, so such a handle has always
+    # had to pass its own.
+    params = FunctionParameters()
 
-    monkeypatch.setattr(AvroFunction, "execute", boom)
-    proxy = _proxy_function()
-
-    with pytest.raises(Exception):
-        LocalBackend.apply(proxy, "payload")
-
-    entry = supervisor._process_map[proxy._runtime_id]
-    assert entry.leased == 0
+    assert LocalBackend.apply(handle, "payload", params=params) == "payload"
+    assert LocalBackend.apply(handle, "payload", params=params) == "payload"
 
 
 # --- kwargs ----------------------------------------------------------------
@@ -248,6 +226,21 @@ def test_explicit_params_win_over_the_cached_ones(monkeypatch, hydration):
 
     assert seen[0] is mine
     assert seen[1] is not mine
+
+
+def test_the_cached_params_are_built_once(monkeypatch, hydration):
+    seen = []
+    monkeypatch.setattr(
+        AvroFunction,
+        "execute",
+        lambda self, data, params, **kwargs: seen.append(params) or data,
+    )
+    proxy = _proxy_function()
+
+    LocalBackend.apply(proxy, "payload")
+    LocalBackend.apply(proxy, "payload")
+
+    assert seen[0] is seen[1]
 
 
 def test_backend_keywords_do_not_reach_the_function(monkeypatch, hydration):
@@ -276,11 +269,10 @@ def test_process_greater_than_one_is_refused(hydration):
 # --- component output ------------------------------------------------------
 
 
-def test_component_output_reaches_a_handle_that_did_not_create_the_runtime(
-    hydration,
-):
-    """The runtime runs its creator's component instances, so a second handle's
-    own instances only see output if the backend routes it back by id."""
+def test_component_output_reaches_the_callers_own_handle(hydration):
+    """A hydrated handle runs the concrete function's component instances, so
+    the proxy the caller holds only sees output if the backend routes it back
+    by id."""
     from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
         AbstractRuntimeComponent,
     )
@@ -303,15 +295,9 @@ def test_component_output_reaches_a_handle_that_did_not_create_the_runtime(
         def collect_output(self, *args, **kwargs):
             return "collected"
 
-    spec = _concrete_function().spec
-    first, second = _proxy_function(spec), _proxy_function(spec)
-    first._runtime_components = [_Collector()]
-    second._runtime_components = [_Collector()]
+    proxy = _proxy_function()
+    proxy._runtime_components = [_Collector()]
 
-    LocalBackend.apply(first, "payload")
-    assert len(hydration.calls) == 1
+    LocalBackend.apply(proxy, "payload")
 
-    LocalBackend.apply(second, "payload")
-
-    assert first._runtime_components[0].output == "collected"
-    assert second._runtime_components[0].output == "collected"
+    assert proxy._runtime_components[0].output == "collected"

@@ -1,18 +1,15 @@
-"""In-process runtime supervision for the local backend.
+"""Warm in-process runtimes for the local backend.
 
-Deliberately the same shape as ``backends/memory/supervisor/supervisor.py``:
-the same runtime key, the same ``lease``/``free``/``detach``/``clear`` surface,
-the same attached/leased counters, and ``function._runtime_id`` as the handle's
-attachment marker. What differs is what a runtime *is* -- memory launches a
-subprocess under the resolved conda interpreter, local hydrates the code
-package into the caller's own interpreter and keeps it warm.
+A ``LocalRuntime`` holds what is expensive to rebuild for a function that runs
+in the caller's own interpreter: the hydrated concrete function, its
+``FunctionParameters``, and the code directories its deferred imports need on
+``sys.path``. Each handle owns its own; unlike the memory backend there is no
+subprocess to pool, so there is nothing to arbitrate between handles.
 """
 
 import sys
 import threading
-from collections import namedtuple
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from metaflow_extensions.nflx.plugins.functions.common.runtime_utils import (
     create_function_parameters,
@@ -22,18 +19,6 @@ from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionException,
     MetaflowFunctionRuntimeException,
 )
-
-# The runtime key is imported from the memory supervisor rather than redefined
-# here: two backends disagreeing about what "the same function" means is
-# exactly the bug this module exists to avoid. It depends on nothing
-# memory-specific and should eventually move to a neutral module.
-from metaflow_extensions.nflx.plugins.functions.backends.memory.supervisor.supervisor import (
-    _runtime_key,
-)
-from metaflow_extensions.nflx.plugins.functions.backends.memory.supervisor.utils import (
-    RuntimeKey,
-)
-from metaflow_extensions.nflx.plugins.functions.core.function import MetaflowFunction
 
 # Directories a warm runtime has put on sys.path, and how many runtimes still
 # want each one there. Refcounted rather than a plain set because two functions
@@ -68,20 +53,6 @@ def _release_sys_path(dirs: List[str]) -> None:
             _SYS_PATH_REFCOUNTS.pop(root_dir, None)
             while root_dir in sys.path:
                 sys.path.remove(root_dir)
-
-
-def _local_runtime_key(function, process: int) -> RuntimeKey:
-    """The memory backend's key, with a fallback local alone needs.
-
-    Two handles can only be the same function if there is a content-hash uuid
-    saying so. A handle built in this process has none, and a handle that is
-    not a MetaflowFunction at all is something local accepts and memory cannot
-    -- either way it is its own runtime, so its identity is the key.
-    """
-    uuid = getattr(getattr(function, "spec", None), "uuid", None)
-    if uuid is None or not isinstance(function, MetaflowFunction):
-        return ("object:%d" % id(function), process, ())
-    return _runtime_key(function, process)
 
 
 def _root_dirs(concrete) -> List[str]:
@@ -143,12 +114,7 @@ def _hydrate(func_instance):
 
 
 class LocalRuntime(object):
-    """The in-process analogue of ``FunctionRuntime``.
-
-    Holds everything a warm function needs that is expensive to rebuild: the
-    hydrated concrete function, its ``FunctionParameters``, and the code
-    directories it needs on ``sys.path``.
-    """
+    """A function kept warm in this process."""
 
     def __init__(self, function):
         self.function = function
@@ -187,7 +153,7 @@ class LocalRuntime(object):
         # of the load (run_in_path drops it in a finally). Any import the user's
         # code defers to call time -- generated protobuf stubs are the common
         # case -- then fails once the load window closes, so the warm runtime
-        # holds the entry for as long as it is attached.
+        # holds the entry for as long as it is alive.
         self.sys_path_dirs = _root_dirs(concrete)
         _acquire_sys_path(self.sys_path_dirs)
 
@@ -226,105 +192,38 @@ class LocalRuntime(object):
             self._params = None
 
 
-LocalLease = namedtuple("LocalLease", ["key", "runtime"])
+def runtime_for(func_instance, process: int = 1) -> LocalRuntime:
+    """The handle's warm runtime, created and started on first use."""
+    if process > 1:
+        raise MetaflowFunctionException(
+            "The local backend executes in the calling process and cannot "
+            f"provide {process} workers. Use the memory backend for "
+            "process > 1."
+        )
 
-
-@dataclass
-class LocalProcess:
-    key: Optional[RuntimeKey] = None  # runtime identity backing this entry
-    leased: int = 0  # calls currently in flight against this runtime
-    attached: int = 0  # handles that currently own this runtime
-    function: Optional[Any] = None  # the handle the runtime was created from
-    runtime: Optional[LocalRuntime] = None
-
-
-class LocalSupervisor(object):
-    """Manages the lifecycle of warm in-process function runtimes."""
-
-    def __init__(self):
-        self._process_map: Dict[RuntimeKey, LocalProcess] = {}
-        # Reentrant, unlike the memory supervisor's plain Lock: teardown runs
-        # the user's component stop() in this process, and that code may itself
-        # invoke a local function.
-        self._lock = threading.RLock()
-
-    def lease(self, function, process: int = 1) -> LocalLease:
-        """Get or create the warm runtime for ``function`` and claim a call.
-
-        The first successful lease for a handle attaches it to the resolved
-        runtime (via ``function._runtime_id``); the runtime is torn down only
-        once every attached handle has detached.
-        """
-        if process > 1:
-            raise MetaflowFunctionException(
-                "The local backend executes in the calling process and cannot "
-                f"provide {process} workers. Use the memory backend for "
-                "process > 1."
+    runtime = getattr(func_instance, "_local_runtime", None)
+    if runtime is None:
+        runtime = LocalRuntime(func_instance)
+        # A handle local accepts but cannot annotate (``__slots__``, a mock)
+        # simply gets a fresh runtime per call. Such a handle is already
+        # concrete, so the cost is bounded by the sys.path scan.
+        try:
+            func_instance._local_runtime = runtime
+        except (AttributeError, TypeError):
+            debug.functions_exec(
+                "LocalRuntime: cannot cache on '%s'; warming per call"
+                % getattr(func_instance, "name", func_instance)
             )
-
-        already_attached = getattr(function, "_runtime_id", None) is not None
-        with self._lock:
-            key = (
-                function._runtime_id
-                if already_attached
-                else _local_runtime_key(function, process)
-            )
-            lrp = self._process_map.get(key)
-            if lrp is None:
-                lrp = LocalProcess(key=key, function=function)
-                lrp.runtime = LocalRuntime(function)
-                self._process_map[key] = lrp
-
-            lrp.runtime.start()
-
-            if not already_attached:
-                function._runtime_id = key
-                lrp.attached += 1
-            lrp.leased += 1
-            return LocalLease(key=key, runtime=lrp.runtime)
-
-    def free(self, lease: LocalLease) -> None:
-        with self._lock:
-            lrp = self._process_map.get(lease.key)
-            if lrp is None:
-                raise MetaflowFunctionException(f"Lease {lease.key} not found")
-            lrp.leased -= 1
-
-    def detach(self, function, clean_dir: bool = True) -> None:
-        """Release a handle's ownership, tearing down at the last detach."""
-        key = getattr(function, "_runtime_id", None)
-        if key is None:
-            return
-        function._runtime_id = None
-        with self._lock:
-            lrp = self._process_map.get(key)
-            if lrp is None:
-                return
-            lrp.attached -= 1
-            if lrp.attached > 0:
-                return
-            self._cleanup_process(key, clean_dir=clean_dir)
-
-    def clear(self, function=None, clean_dir: bool = True) -> None:
-        """Clear runtime(s) from the supervisor, unconditionally."""
-        with self._lock:
-            if function is None:
-                for key in list(self._process_map):
-                    self._cleanup_process(key, clean_dir=clean_dir)
-                return
-            key = getattr(function, "_runtime_id", None)
-            if key is not None:
-                self._cleanup_process(key, clean_dir=clean_dir)
-                function._runtime_id = None
-
-    def is_loaded(self, function) -> bool:
-        key = getattr(function, "_runtime_id", None)
-        return key is not None and key in self._process_map
-
-    def _cleanup_process(self, key: RuntimeKey, clean_dir: bool = True) -> None:
-        lrp = self._process_map.pop(key, None)
-        if lrp is not None and lrp.runtime is not None:
-            lrp.runtime.close(clean_dir=clean_dir)
+    runtime.start()
+    return runtime
 
 
-local_supervisor = LocalSupervisor()
+def close_runtime(func_instance, clean_dir: bool = True) -> None:
+    runtime = getattr(func_instance, "_local_runtime", None)
+    if runtime is None:
+        return
+    try:
+        func_instance._local_runtime = None
+    except (AttributeError, TypeError):
+        pass
+    runtime.close(clean_dir=clean_dir)

@@ -14,7 +14,7 @@ from metaflow_extensions.nflx.plugins.functions.debug import debug
 # Backend directive keywords, shared with the memory backend so the two cannot
 # disagree about which kwargs belong to the caller's function.
 from ..memory.memory_backend import KEYWORDS
-from .supervisor import local_supervisor
+from .runtime import close_runtime, runtime_for
 import threading
 import traceback
 from contextlib import contextmanager
@@ -95,11 +95,11 @@ class LocalBackend(AbstractBackend):
     def _route_component_output(cls, func_instance, collected) -> None:
         """Stamp component output onto the caller's own component instances.
 
-        Mirrors ``MemoryBackend._route_component_output``. Needed for the same
-        reason: two handles sharing one warm runtime run the *runtime's*
-        component instances, not their own, so output has to be matched back
-        by ``component_id``. For the handle that created the runtime these are
-        the same objects and this is a no-op.
+        Mirrors ``MemoryBackend._route_component_output``. A hydrated handle
+        runs the *concrete* function's component instances, not the proxy's,
+        so output has to be matched back by ``component_id``. For a handle
+        that was already concrete these are the same objects and this is a
+        no-op.
         """
         if not collected:
             return
@@ -112,12 +112,10 @@ class LocalBackend(AbstractBackend):
     def start(cls, func_instance, **kwargs):
         """Warm the function's runtime so the first call is not the slow one.
 
-        Like ``MemoryBackend.start``, this is lease-then-free: an optimization,
-        never a precondition. ``apply()`` leases the same way and creates the
-        runtime if nothing has yet.
+        Like ``MemoryBackend.start``, an optimization and never a
+        precondition: ``apply()`` warms the same runtime if nothing has yet.
         """
-        lease = local_supervisor.lease(func_instance, process=kwargs.get("process", 1))
-        local_supervisor.free(lease)
+        runtime_for(func_instance, process=kwargs.get("process", 1))
 
     @classmethod
     async def apply_async(cls, func_instance, data: Any, **kwargs) -> Any:
@@ -142,22 +140,19 @@ class LocalBackend(AbstractBackend):
         Any
             Result from function execution
         """
-        lease = local_supervisor.lease(func_instance, process=kwargs.get("process", 1))
-        try:
-            return cls._apply_leased(lease, func_instance, data, **kwargs)
-        finally:
-            local_supervisor.free(lease)
+        runtime = runtime_for(func_instance, process=kwargs.get("process", 1))
+        return cls._apply_warm(runtime, func_instance, data, **kwargs)
 
     @classmethod
-    def _apply_leased(cls, lease, caller_instance, data: Any, **kwargs) -> Any:
+    def _apply_warm(cls, runtime, caller_instance, data: Any, **kwargs) -> Any:
         # The hydrated function the runtime holds, which is the caller's own
         # handle when it was already concrete.
-        func_instance = lease.runtime.function
+        func_instance = runtime.function
 
         # An explicit params= still wins over the runtime's cached ones.
         parameters = kwargs.get("params")
         if parameters is None:
-            parameters = lease.runtime.params
+            parameters = runtime.params
 
         # Backend directives are not the user function's arguments. Same set as
         # the memory backend, for the same reason: `f(data, process=1)` must not
@@ -230,7 +225,7 @@ class LocalBackend(AbstractBackend):
 
     @classmethod
     def close(cls, func_instance, clean_dir: bool = True, **kwargs):
-        local_supervisor.detach(func_instance, clean_dir)
+        close_runtime(func_instance, clean_dir)
 
     @classmethod
     def apply_binary(cls, func_instance, data: bytes, **kwargs) -> bytes:
