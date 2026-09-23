@@ -74,6 +74,21 @@ class LocalBackend(AbstractBackend):
     def backend_type(self) -> BackendType:
         return BackendType.LOCAL
 
+    @staticmethod
+    def _needs_hydration(func_instance) -> bool:
+        """Whether this handle still has to load its code before it can run.
+
+        Not the same as `_func is None`: a pipeline never has a single
+        decorated function, so that test calls every pipeline a proxy.
+        Re-hydrating a concrete one re-downloads code it already has;
+        re-hydrating a locally built one replaces the caller's object with a
+        copy from the datastore. A pipeline is ready when its constituents are.
+        """
+        constituents = getattr(func_instance, "functions", None)
+        if constituents is not None:
+            return any(LocalBackend._needs_hydration(c) for c in constituents)
+        return hasattr(func_instance, "_func") and func_instance._func is None
+
     @classmethod
     async def apply_async(cls, func_instance, data: Any, **kwargs) -> Any:
         return cls.apply(func_instance, data, **kwargs)
@@ -97,8 +112,7 @@ class LocalBackend(AbstractBackend):
         Any
             Result from function execution
         """
-        # If func_instance is a proxy (i.e., _func is None), convert to concrete function
-        if hasattr(func_instance, "_func") and func_instance._func is None:
+        if cls._needs_hydration(func_instance):
             from metaflow_extensions.nflx.plugins.functions.core.function import (
                 function_from_json,
             )
