@@ -11,9 +11,7 @@ from metaflow_extensions.nflx.plugins.functions.exceptions import (
 )
 from metaflow_extensions.nflx.plugins.functions.debug import debug
 
-# Backend directive keywords, shared with the memory backend so the two cannot
-# disagree about which kwargs belong to the caller's function.
-from ..memory.memory_backend import KEYWORDS
+from ..keywords import KEYWORDS
 from .runtime import close_runtime, runtime_for
 import threading
 import traceback
@@ -154,9 +152,6 @@ class LocalBackend(AbstractBackend):
         if parameters is None:
             parameters = runtime.params
 
-        # Backend directives are not the user function's arguments. Same set as
-        # the memory backend, for the same reason: `f(data, process=1)` must not
-        # hand `process` to the decorated function.
         kwargs = {k: v for k, v in kwargs.items() if k not in KEYWORDS}
 
         from metaflow_extensions.nflx.plugins.functions.components.runtime import (
