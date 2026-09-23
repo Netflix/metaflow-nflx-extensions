@@ -4,6 +4,8 @@ import pytest
 
 pytestmark = pytest.mark.no_backend_parametrization
 
+from types import SimpleNamespace
+
 from metaflow import FunctionParameters
 from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
     LocalBackend,
@@ -17,6 +19,7 @@ from metaflow_extensions.nflx.plugins.functions.components.runtime import (
 from metaflow_extensions.nflx.plugins.functions.components.runtime_metrics import (
     RuntimeMetrics,
 )
+from metaflow_extensions.nflx.plugins.functions.core.function import MetaflowFunction
 from metaflow_extensions.nflx.plugins.functions.core.function_pipeline import (
     FunctionPipeline,
 )
@@ -25,11 +28,13 @@ from metaflow_extensions.nflx.plugins.functions.exceptions import (
 )
 
 
-class _Func:
-    """Minimal MetaflowFunction stand-in that can emit metrics."""
+class _Func(MetaflowFunction):
+    """A real MetaflowFunction, minus the task/export machinery, that can emit
+    metrics. Real because LocalBackend only runs MetaflowFunction instances."""
 
     def __init__(self, name, metrics=None, raise_error=False):
-        self.name = name
+        super().__init__(func=lambda data, params, **kwargs: data)
+        self._function_spec = SimpleNamespace(name=name)
         self._metrics = metrics or {}
         self._raise_error = raise_error
 
@@ -40,8 +45,22 @@ class _Func:
             raise ValueError(f"boom in {self.name}")
         return data + [self.name]
 
+    @property
+    def input_types(self):
+        return {}
 
-class _FastPathFunc:
+    @property
+    def output_types(self):
+        return {}
+
+    def is_compatible_with(self, other):
+        return False
+
+
+class _FastPathFunc(_Func):
+    def __init__(self):
+        super().__init__("fast")
+
     @property
     def name(self):
         raise AssertionError("inactive fast path must not read constituent names")
@@ -59,6 +78,8 @@ def _make_pipeline(functions, name="pipeline"):
     pipeline._name = name
     pipeline._component_instances = []
     pipeline._runtime_components = []
+    # __new__ skips __init__, which is what would normally set this.
+    pipeline._function_root_dir = None
     return pipeline
 
 

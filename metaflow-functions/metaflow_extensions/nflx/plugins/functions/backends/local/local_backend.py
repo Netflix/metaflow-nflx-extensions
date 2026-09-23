@@ -40,7 +40,7 @@ def _guard_component_invocation(func_instance):
     constraint is. Functions with no components are unaffected -- there is
     nothing to interleave, so concurrent local invocation stays allowed.
     """
-    if not getattr(func_instance, "_runtime_components", None):
+    if not func_instance.runtime_components:
         yield
         return
 
@@ -87,7 +87,7 @@ class LocalBackend(AbstractBackend):
         constituents = getattr(func_instance, "functions", None)
         if constituents is not None:
             return any(LocalBackend._needs_hydration(c) for c in constituents)
-        return hasattr(func_instance, "_func") and func_instance._func is None
+        return func_instance._func is None
 
     @classmethod
     def _route_component_output(cls, func_instance, collected) -> None:
@@ -101,7 +101,7 @@ class LocalBackend(AbstractBackend):
         """
         if not collected:
             return
-        for component in getattr(func_instance, "_runtime_components", []):
+        for component in func_instance.runtime_components:
             component_id = type(component).component_id
             if component_id in collected:
                 component.output = collected[component_id]
@@ -165,7 +165,7 @@ class LocalBackend(AbstractBackend):
         with _guard_component_invocation(func_instance):
             if not func_instance._component_instances:
                 func_instance._component_instances = start_components(
-                    getattr(func_instance, "_runtime_components", []),
+                    func_instance.runtime_components,
                     function=func_instance,
                 )
 

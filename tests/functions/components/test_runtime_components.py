@@ -18,6 +18,7 @@ events without shared in-process state.  In-process tests can read the same file
 
 import os
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,6 +28,7 @@ from metaflow_extensions.nflx.plugins.functions.components.abstract_component im
     AbstractRuntimeComponent,
     ComponentMeta,
 )
+from metaflow_extensions.nflx.plugins.functions.core.function import MetaflowFunction
 from metaflow_extensions.nflx.plugins.functions.components.runtime import (
     serialize_components,
     load_component_instances,
@@ -403,17 +405,31 @@ def test_load_component_instances_unknown_raises():
 # ---------------------------------------------------------------------------
 
 
-class _MockFunction:
-    """Minimal stand-in for a MetaflowFunction usable by LocalBackend.apply()."""
+class _MockFunction(MetaflowFunction):
+    """A real MetaflowFunction with none of the task/export machinery.
 
-    name = "test_mock_function"
+    LocalBackend only accepts MetaflowFunction instances, so this subclasses
+    rather than imitates; passing func=X with task=None skips spec building.
+    """
 
     def __init__(self, component_classes):
+        super().__init__(func=lambda data, params, **kwargs: data)
+        self._function_spec = SimpleNamespace(name="test_mock_function")
         self._runtime_components = component_classes
-        self._component_instances = []
 
     def execute(self, data, params, **kwargs):
         return f"echo:{data}"
+
+    @property
+    def input_types(self):
+        return {}
+
+    @property
+    def output_types(self):
+        return {}
+
+    def is_compatible_with(self, other):
+        return False
 
 
 def test_local_backend_fires_lifecycle():
@@ -1087,7 +1103,6 @@ def test_local_backend_default_use_proxy_path_keeps_runtime_components():
     from unittest.mock import patch, MagicMock
     from metaflow import FunctionParameters
     from metaflow_extensions.nflx.plugins.functions.core.function import (
-        MetaflowFunction,
         function_from_json,
     )
     from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
@@ -1099,14 +1114,11 @@ def test_local_backend_default_use_proxy_path_keeps_runtime_components():
     fake_spec.class_name = "fake.module.FakeFunction"
     fake_spec.reference = "s3://fake-bucket/fake-reference.json"
 
-    class _Proxy:
-        name = "proxy_fn"
-        _func = None
-        spec = fake_spec
-
-        # As _StubMetaflowFunction above: borrow the real accessor rather than
-        # let the fake diverge from what a proxy actually exposes.
-        runtime_components = MetaflowFunction.__dict__["runtime_components"]
+    class _Proxy(_MockFunction):
+        def __init__(self):
+            super().__init__([])
+            self._func = None  # a proxy: spec loaded, code not yet
+            self._function_spec = fake_spec
 
     fake_subclass = MagicMock()
     fake_subclass._create_proxy_from_spec.return_value = _Proxy()
@@ -1537,17 +1549,12 @@ def test_concurrent_local_invocation_with_components_is_refused():
         def after_call(self, *args, **kwargs):
             pass
 
-    class _Func:
-        name = "slow_func"
-        _component_instances = []
-        _runtime_components = [_Slow()]
-        spec = None
-
+    class _Slow_Func(_MockFunction):
         def execute(self, data, params, **kwargs):
             time.sleep(0.05)
             return data
 
-    func = _Func()
+    func = _Slow_Func([_Slow()])
     errors = []
 
     def call():
@@ -1575,17 +1582,12 @@ def test_concurrent_local_invocation_without_components_is_allowed():
         LocalBackend,
     )
 
-    class _Func:
-        name = "plain_func"
-        _component_instances = []
-        _runtime_components = []
-        spec = None
-
+    class _Plain_Func(_MockFunction):
         def execute(self, data, params, **kwargs):
             time.sleep(0.05)
             return data
 
-    func = _Func()
+    func = _Plain_Func([])
     errors = []
 
     def call(v):

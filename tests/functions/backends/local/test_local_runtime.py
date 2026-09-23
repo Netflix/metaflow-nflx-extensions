@@ -184,28 +184,9 @@ def test_close_on_a_handle_that_was_never_started_is_a_no_op():
     LocalBackend.close(_proxy_function())
 
 
-def test_a_handle_that_cannot_be_annotated_still_runs(monkeypatch, hydration):
-    """A non-MetaflowFunction stand-in gets a per-call runtime, not a crash."""
-
-    class _Slotted:
-        __slots__ = ("_component_instances",)
-
-        name = "slotted"
-
-        def __init__(self):
-            self._component_instances = []
-
-        def execute(self, data, params, **kwargs):
-            return data
-
-    monkeypatch.setattr(LocalBackend, "_needs_hydration", staticmethod(lambda h: False))
-    handle = _Slotted()
-    # No spec to build FunctionParameters from, so such a handle has always
-    # had to pass its own.
-    params = FunctionParameters()
-
-    assert LocalBackend.apply(handle, "payload", params=params) == "payload"
-    assert LocalBackend.apply(handle, "payload", params=params) == "payload"
+def test_a_handle_that_is_not_a_metaflow_function_is_refused():
+    with pytest.raises(MetaflowFunctionException, match="runs MetaflowFunction"):
+        LocalBackend.apply(object(), "payload")
 
 
 # --- kwargs ----------------------------------------------------------------

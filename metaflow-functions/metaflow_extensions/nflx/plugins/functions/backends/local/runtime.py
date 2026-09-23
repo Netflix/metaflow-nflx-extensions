@@ -15,6 +15,7 @@ from metaflow_extensions.nflx.plugins.functions.common.runtime_utils import (
     create_function_parameters,
 )
 from metaflow_extensions.nflx.plugins.functions.debug import debug
+from metaflow_extensions.nflx.plugins.functions.core.function import MetaflowFunction
 from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionException,
     MetaflowFunctionRuntimeException,
@@ -67,16 +68,13 @@ def _root_dirs(concrete) -> List[str]:
     for handle in [concrete] + list(getattr(concrete, "functions", []) or []):
         try:
             root_dir = handle.function_root_dir
-        except (AttributeError, MetaflowFunctionException) as e:
-            # MetaflowFunctionException is only raised as "Function root dir is
-            # not set", the normal state for a handle that owns no extracted
-            # code; AttributeError means the handle is not a MetaflowFunction at
-            # all, which local alone accepts. Left visible: a function whose
-            # extraction half-failed shows up here rather than as an opaque
-            # ModuleNotFoundError later.
+        except MetaflowFunctionException as e:
+            # Only raised as "Function root dir is not set", the normal state
+            # for a handle that owns no extracted code. Left visible: a
+            # function whose extraction half-failed shows up here rather than
+            # as an opaque ModuleNotFoundError later.
             debug.functions_exec(
-                "LocalRuntime: no root dir for '%s' (%s)"
-                % (getattr(handle, "name", handle), e)
+                "LocalRuntime: no root dir for '%s' (%s)" % (handle.name, e)
             )
             continue
         if root_dir and root_dir not in dirs:
@@ -191,6 +189,11 @@ class LocalRuntime(object):
 
 def runtime_for(func_instance, process: int = 1) -> LocalRuntime:
     """The handle's warm runtime, created and started on first use."""
+    if not isinstance(func_instance, MetaflowFunction):
+        raise MetaflowFunctionException(
+            "The local backend runs MetaflowFunction instances; got "
+            f"{type(func_instance).__name__}."
+        )
     if process > 1:
         raise MetaflowFunctionException(
             "The local backend executes in the calling process and cannot "
@@ -201,16 +204,7 @@ def runtime_for(func_instance, process: int = 1) -> LocalRuntime:
     runtime = getattr(func_instance, "_local_runtime", None)
     if runtime is None:
         runtime = LocalRuntime(func_instance)
-        # A handle local accepts but cannot annotate (``__slots__``, a mock)
-        # simply gets a fresh runtime per call. Such a handle is already
-        # concrete, so the cost is bounded by the sys.path scan.
-        try:
-            func_instance._local_runtime = runtime
-        except (AttributeError, TypeError):
-            debug.functions_exec(
-                "LocalRuntime: cannot cache on '%s'; warming per call"
-                % getattr(func_instance, "name", func_instance)
-            )
+        func_instance._local_runtime = runtime
     runtime.start()
     return runtime
 
@@ -219,8 +213,5 @@ def close_runtime(func_instance, clean_dir: bool = True) -> None:
     runtime = getattr(func_instance, "_local_runtime", None)
     if runtime is None:
         return
-    try:
-        func_instance._local_runtime = None
-    except (AttributeError, TypeError):
-        pass
+    func_instance._local_runtime = None
     runtime.close(clean_dir=clean_dir)
