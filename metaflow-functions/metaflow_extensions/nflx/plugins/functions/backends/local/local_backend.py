@@ -229,8 +229,6 @@ class LocalBackend(AbstractBackend):
             Serialized result
         """
         registry = get_global_registry()
-        # input_types is a property on MetaflowFunction/FunctionPipeline, not a
-        # classmethod taking a spec.
         input_types = func_instance.input_types
         expected_input_type = cls._map_type_info_to_python_type(
             input_types, type(func_instance), func_instance.spec
