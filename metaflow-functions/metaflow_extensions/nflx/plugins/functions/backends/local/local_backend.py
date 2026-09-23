@@ -9,10 +9,12 @@ from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionException,
     MetaflowFunctionUserException,
 )
-from metaflow_extensions.nflx.plugins.functions.common.runtime_utils import (
-    create_function_parameters,
-)
 from metaflow_extensions.nflx.plugins.functions.debug import debug
+
+# Backend directive keywords, shared with the memory backend so the two cannot
+# disagree about which kwargs belong to the caller's function.
+from ..memory.memory_backend import KEYWORDS
+from .supervisor import local_supervisor
 import threading
 import traceback
 from contextlib import contextmanager
@@ -90,6 +92,34 @@ class LocalBackend(AbstractBackend):
         return hasattr(func_instance, "_func") and func_instance._func is None
 
     @classmethod
+    def _route_component_output(cls, func_instance, collected) -> None:
+        """Stamp component output onto the caller's own component instances.
+
+        Mirrors ``MemoryBackend._route_component_output``. Needed for the same
+        reason: two handles sharing one warm runtime run the *runtime's*
+        component instances, not their own, so output has to be matched back
+        by ``component_id``. For the handle that created the runtime these are
+        the same objects and this is a no-op.
+        """
+        if not collected:
+            return
+        for component in getattr(func_instance, "_runtime_components", []):
+            component_id = type(component).component_id
+            if component_id in collected:
+                component.output = collected[component_id]
+
+    @classmethod
+    def start(cls, func_instance, **kwargs):
+        """Warm the function's runtime so the first call is not the slow one.
+
+        Like ``MemoryBackend.start``, this is lease-then-free: an optimization,
+        never a precondition. ``apply()`` leases the same way and creates the
+        runtime if nothing has yet.
+        """
+        lease = local_supervisor.lease(func_instance, process=kwargs.get("process", 1))
+        local_supervisor.free(lease)
+
+    @classmethod
     async def apply_async(cls, func_instance, data: Any, **kwargs) -> Any:
         return cls.apply(func_instance, data, **kwargs)
 
@@ -112,44 +142,27 @@ class LocalBackend(AbstractBackend):
         Any
             Result from function execution
         """
-        if cls._needs_hydration(func_instance):
-            from metaflow_extensions.nflx.plugins.functions.core.function import (
-                function_from_json,
-            )
-            from metaflow_extensions.nflx.plugins.functions.core.function_spec import (
-                FunctionSpec,
-            )
+        lease = local_supervisor.lease(func_instance, process=kwargs.get("process", 1))
+        try:
+            return cls._apply_leased(lease, func_instance, data, **kwargs)
+        finally:
+            local_supervisor.free(lease)
 
-            func_spec = func_instance.spec
+    @classmethod
+    def _apply_leased(cls, lease, caller_instance, data: Any, **kwargs) -> Any:
+        # The hydrated function the runtime holds, which is the caller's own
+        # handle when it was already concrete.
+        func_instance = lease.runtime.function
 
-            if not func_spec.reference:
-                raise MetaflowFunctionRuntimeException(
-                    "Function spec missing reference path"
-                )
-
-            # Download S3 reference to local temp file if needed
-            local_reference = FunctionSpec.download_to_temp(func_spec.reference)
-
-            # Carry the proxy's runtime_components over to the concrete function -
-            # function_from_json() below has no way to see the proxy's, and would
-            # otherwise silently default to none.
-            runtime_components = getattr(func_instance, "_runtime_components", [])
-
-            # Load concrete function from reference. This handles both regular functions
-            # and pipelines by delegating to the appropriate from_spec() implementation.
-            # Don't start runtime - function executes directly in this process
-            func_instance = function_from_json(
-                local_reference,
-                use_proxy=False,
-                backend="local",
-                start_runtime=False,
-                runtime_components=runtime_components,
-            )
-
-        # Use params from kwargs if provided, otherwise create new ones
-        parameters = kwargs.pop("params", None)
+        # An explicit params= still wins over the runtime's cached ones.
+        parameters = kwargs.get("params")
         if parameters is None:
-            parameters = create_function_parameters(func_instance.spec)
+            parameters = lease.runtime.params
+
+        # Backend directives are not the user function's arguments. Same set as
+        # the memory backend, for the same reason: `f(data, process=1)` must not
+        # hand `process` to the decorated function.
+        kwargs = {k: v for k, v in kwargs.items() if k not in KEYWORDS}
 
         from metaflow_extensions.nflx.plugins.functions.components.runtime import (
             start_components,
@@ -194,7 +207,7 @@ class LocalBackend(AbstractBackend):
             # block above (currently only its wrapped `MetaflowFunctionUserException`
             # message is kept, not the exception object itself).
             try:
-                after_call_components(func_instance._component_instances)
+                collected = after_call_components(func_instance._component_instances)
             except Exception as e:
                 if user_exception is None:
                     raise MetaflowFunctionRuntimeException(
@@ -206,6 +219,9 @@ class LocalBackend(AbstractBackend):
                     f"Runtime component exception in after_call for '{func_instance.name}' "
                     f"while handling a prior user exception: {e!r}"
                 )
+            else:
+                if caller_instance is not func_instance:
+                    cls._route_component_output(caller_instance, collected)
 
             if user_exception is not None:
                 raise user_exception
@@ -214,14 +230,7 @@ class LocalBackend(AbstractBackend):
 
     @classmethod
     def close(cls, func_instance, clean_dir: bool = True, **kwargs):
-        instances = func_instance._component_instances
-        if instances:
-            from metaflow_extensions.nflx.plugins.functions.components.runtime import (
-                stop_components,
-            )
-
-            stop_components(instances)
-            func_instance._component_instances = []
+        local_supervisor.detach(func_instance, clean_dir)
 
     @classmethod
     def apply_binary(cls, func_instance, data: bytes, **kwargs) -> bytes:
