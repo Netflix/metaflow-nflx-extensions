@@ -15,9 +15,9 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
 
     env:
-      AWS_ENDPOINT_URL: http://localhost:9000
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_ENDPOINT_URL: http://localhost:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
       METAFLOW_DEFAULT_DATASTORE: s3
       METAFLOW_DATASTORE_SYSROOT_S3: s3://metaflow-test
@@ -29,14 +29,22 @@ jobs:
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
-      - name: Start MinIO
+      # MinIO's images stopped being anonymously pullable on 2026-09-24 (401 at
+      # repo level on both quay.io and Docker Hub), which broke this job on
+      # every branch. Docker Hub did the same thing to the previous image in
+      # September, so this one is pinned by digest.
+      - name: Start S3 server
         run: |
           docker run -d \
-            -p 9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
-          until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done
+            -p 4566:4566 \
+            -e SERVICES=s3 \
+            localstack/localstack:2026.08.4@sha256:03bde1974f8bb7a7b6d4128228cf9048c7bdb8249deb998d1b80af73926c0017
+          for _ in $(seq 90); do
+            curl -sf http://localhost:4566/_localstack/health \
+              | grep -q '"s3": *"\(available\|running\)"' && exit 0
+            sleep 1
+          done
+          echo "S3 server did not come up:"; docker logs $(docker ps -lq); exit 1
 
       - uses: mamba-org/setup-micromamba@b09ef9b599704322748535812ca03efb2625677b # v2.0.5
         with:
@@ -55,16 +63,16 @@ jobs:
           pip install -e metaflow-functions/
           pip install pytest pytest-xdist pytest-cov fastavro psutil pandas pyarrow pytest-mock
 
-      - name: Create minio bucket
+      - name: Create test bucket
         shell: bash -eo pipefail -l {0}
         run: |
           python -c "
           import boto3, botocore
           s3 = boto3.client(
               's3',
-              endpoint_url='http://localhost:9000',
-              aws_access_key_id='minioadmin',
-              aws_secret_access_key='minioadmin',
+              endpoint_url='http://localhost:4566',
+              aws_access_key_id='test',
+              aws_secret_access_key='test',
               region_name='us-east-1',
               config=botocore.config.Config(signature_version='s3v4'),
           )
