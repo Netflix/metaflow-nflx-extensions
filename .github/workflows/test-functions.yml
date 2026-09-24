@@ -15,7 +15,7 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
 
     env:
-      AWS_ENDPOINT_URL: http://localhost:9090
+      AWS_ENDPOINT_URL: http://localhost:8333
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
@@ -31,19 +31,20 @@ jobs:
 
       # MinIO's images stopped being anonymously pullable on 2026-09-24 (401 at
       # repo level on both quay.io and Docker Hub), which broke this job on
-      # every branch. Docker Hub did the same to the image before that in
-      # September, and localstack now refuses to start without a license
-      # token, so: Apache-2.0, no license gate, pinned by digest.
+      # every branch -- as Docker Hub did to the image before it in September.
+      # localstack replaces it with a license check, and adobe/s3mock got the
+      # unit tests through but hung the ux flows for the full hour, so: an
+      # actual S3 implementation, Apache-2.0, pinned by digest.
       - name: Start S3 server
         run: |
           docker run -d \
-            -p 9090:9090 \
-            -e COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS=metaflow-test \
-            adobe/s3mock:5.2.3@sha256:ab01a6946750f451ca215a47e91030695b260e4003b8a5a6201d25029b8fca92
+            -p 8333:8333 \
+            chrislusf/seaweedfs:3.97@sha256:bb05d66d2963b1cc48073190781c3dd29e2c4c88a2ae2986bf58e38c86d89c6e \
+            server -s3 -dir=/data
           # ListBuckets rather than a health endpoint: it proves the S3 API is
           # answering, which is the thing the tests need.
           for _ in $(seq 90); do
-            curl -sf http://localhost:9090/ | grep -q metaflow-test && exit 0
+            curl -sf http://localhost:8333/ >/dev/null && exit 0
             sleep 1
           done
           echo "S3 server did not come up:"; docker logs $(docker ps -lq); exit 1
@@ -64,6 +65,23 @@ jobs:
           pip install -e metaflow-netflixext/
           pip install -e metaflow-functions/
           pip install pytest pytest-xdist pytest-cov fastavro psutil pandas pyarrow pytest-mock
+
+      - name: Create test bucket
+        shell: bash -eo pipefail -l {0}
+        run: |
+          python -c "
+          import boto3, botocore
+          s3 = boto3.client(
+              's3',
+              endpoint_url='http://localhost:8333',
+              aws_access_key_id='test',
+              aws_secret_access_key='test',
+              region_name='us-east-1',
+              config=botocore.config.Config(signature_version='s3v4'),
+          )
+          s3.create_bucket(Bucket='metaflow-test')
+          print('Bucket metaflow-test created')
+          "
 
       - name: Run unit tests
         shell: bash -eo pipefail -l {0}
