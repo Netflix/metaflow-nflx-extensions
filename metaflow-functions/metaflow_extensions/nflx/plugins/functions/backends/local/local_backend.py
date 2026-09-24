@@ -22,8 +22,8 @@ _COMPONENT_INVOCATION_LOCK = threading.RLock()
 
 class _guard_component_invocation:
     """
-    Refuse a concurrent invocation of a function that has runtime components. 
-    You must load the function within a thread. 
+    Refuse a concurrent invocation of a function that has runtime components.
+    You must load the function within a thread.
     """
 
     __slots__ = ("_func_instance", "_held")
