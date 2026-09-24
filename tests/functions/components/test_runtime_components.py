@@ -1516,12 +1516,11 @@ def test_nested_invocation_restores_the_outer_active_instance():
 
 def test_concurrent_local_invocation_with_components_is_refused():
     """Runtime components can't serve overlapping invocations: routing is
-    class-level and the per-call buffer is on the instance, so two at once
-    interleave both. Local mode is the only backend that can express this
-    (memory runs a single-threaded subprocess runloop, a Ray actor is
-    single-threaded), so the guard lives there -- and it raises rather than
-    serialising, which would silently remove the parallelism the caller asked
-    for.
+    class-level, so two functions sharing a component class interleave even
+    with an instance each. Two separate handles, one per thread -- runtime
+    thread-affinity is satisfied and this guard is what is left to catch it.
+    It raises rather than serialising, which would silently remove the
+    parallelism the caller asked for.
     """
     import threading
     import time
@@ -1554,10 +1553,10 @@ def test_concurrent_local_invocation_with_components_is_refused():
             time.sleep(0.05)
             return data
 
-    func = _Slow_Func([_Slow()])
     errors = []
 
-    def call():
+    def call(_):
+        func = _Slow_Func([_Slow()])  # a copy per thread, as the error advises
         try:
             LocalBackend.apply(func, 1, params=object())
         except MetaflowFunctionRuntimeException as e:
@@ -1566,15 +1565,15 @@ def test_concurrent_local_invocation_with_components_is_refused():
             pass
 
     with ThreadPoolExecutor(max_workers=2) as ex:
-        list(ex.map(lambda _: call(), range(2)))
+        list(ex.map(call, range(2)))
 
     assert len(errors) == 1, "exactly one of two overlapping calls must be refused"
     assert "concurrent invocation" in errors[0]
 
 
 def test_concurrent_local_invocation_without_components_is_allowed():
-    """Nothing to interleave when there are no components, so plain concurrent
-    local invocation must keep working -- the guard is not a general lock."""
+    """Nothing to interleave when there are no components, so two handles --
+    one per thread -- must run concurrently. The guard is not a general lock."""
     import time
     from concurrent.futures import ThreadPoolExecutor
 
@@ -1587,10 +1586,10 @@ def test_concurrent_local_invocation_without_components_is_allowed():
             time.sleep(0.05)
             return data
 
-    func = _Plain_Func([])
     errors = []
 
     def call(v):
+        func = _Plain_Func([])  # a copy per thread
         try:
             return LocalBackend.apply(func, v, params=object())
         except Exception as e:  # noqa: BLE001

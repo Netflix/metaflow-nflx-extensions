@@ -24,6 +24,11 @@ from contextlib import contextmanager
 # subprocess runloop and a Ray actor is single-threaded -- but local mode
 # executes in the caller's thread, so a threaded caller can.
 #
+# Still needed alongside runtime thread-affinity, which only covers one handle:
+# ``active_instance`` is per component *class*, so two different functions
+# sharing a component class collide across threads even though each is owned by
+# its own thread.
+#
 # Reentrant on purpose: acquire(blocking=False) then succeeds for the *same*
 # thread, so an invocation nested inside another one (or anything else
 # re-entering on one thread) is allowed, while a genuinely concurrent

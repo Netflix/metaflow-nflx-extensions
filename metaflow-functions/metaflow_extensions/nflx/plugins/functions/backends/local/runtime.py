@@ -9,7 +9,7 @@ subprocess to pool, so there is nothing to arbitrate between handles.
 
 import sys
 import threading
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from metaflow_extensions.nflx.plugins.functions.common.runtime_utils import (
     create_function_parameters,
@@ -27,6 +27,11 @@ from metaflow_extensions.nflx.plugins.functions.exceptions import (
 # the other's deferred imports.
 _SYS_PATH_LOCK = threading.Lock()
 _SYS_PATH_REFCOUNTS: Dict[str, int] = {}
+
+# Serializes claiming a handle's runtime. Held only for the bookkeeping, never
+# across hydration: once a thread has claimed ownership no other thread can
+# reach the slow path anyway.
+_OWNERSHIP_LOCK = threading.Lock()
 
 
 def _acquire_sys_path(dirs: List[str]) -> None:
@@ -113,6 +118,7 @@ class LocalRuntime(object):
 
     def __init__(self, function):
         self.function = function
+        self.owner_thread: Optional[int] = None
         self.sys_path_dirs: List[str] = []
         self._params: Any = None
         self._prefetch_artifacts = False
@@ -201,17 +207,41 @@ def runtime_for(func_instance, process: int = 1) -> LocalRuntime:
             "process > 1."
         )
 
-    runtime = getattr(func_instance, "_local_runtime", None)
-    if runtime is None:
-        runtime = LocalRuntime(func_instance)
-        func_instance._local_runtime = runtime
+    caller = threading.get_ident()
+    with _OWNERSHIP_LOCK:
+        runtime = getattr(func_instance, "_local_runtime", None)
+        if runtime is None:
+            runtime = LocalRuntime(func_instance)
+            func_instance._local_runtime = runtime
+        owner = runtime.owner_thread
+        if owner is None:
+            # Claimed before the slow work below, so two simultaneous first
+            # calls cannot both hydrate.
+            runtime.owner_thread = caller
+        elif owner != caller:
+            raise MetaflowFunctionException(
+                f"Function '{func_instance.name}' is owned by thread {owner} "
+                f"and was invoked from thread {caller}. A local function's "
+                "warm runtime, its loaded code and its runtime component "
+                "instances are all single-threaded state. Load a separate "
+                "copy of the function in each thread that calls it."
+            )
+
     runtime.start()
     return runtime
 
 
 def close_runtime(func_instance, clean_dir: bool = True) -> None:
-    runtime = getattr(func_instance, "_local_runtime", None)
-    if runtime is None:
-        return
-    func_instance._local_runtime = None
+    """Tear the handle's runtime down, from any thread.
+
+    Deliberately not owner-only: tearing down from the thread that finished
+    coordinating the workers is a reasonable thing to do. It releases the
+    claim with the runtime, so another thread may load and own the handle
+    afterwards.
+    """
+    with _OWNERSHIP_LOCK:
+        runtime = getattr(func_instance, "_local_runtime", None)
+        if runtime is None:
+            return
+        func_instance._local_runtime = None
     runtime.close(clean_dir=clean_dir)

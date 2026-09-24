@@ -189,6 +189,91 @@ def test_a_handle_that_is_not_a_metaflow_function_is_refused():
         LocalBackend.apply(object(), "payload")
 
 
+# --- thread affinity ------------------------------------------------------
+
+
+def _call_on_new_thread(fn):
+    """Run fn() on another thread, returning its result or its exception."""
+    import threading
+
+    box = {}
+
+    def target():
+        try:
+            box["value"] = fn()
+        except BaseException as e:  # noqa: BLE001
+            box["error"] = e
+
+    t = threading.Thread(target=target)
+    t.start()
+    t.join()
+    return box
+
+
+def test_a_second_thread_is_refused_even_without_overlapping(hydration):
+    """Affinity, not a lock: the calls here are strictly sequential."""
+    proxy = _proxy_function()
+    LocalBackend.apply(proxy, "payload")
+
+    box = _call_on_new_thread(lambda: LocalBackend.apply(proxy, "payload"))
+
+    assert isinstance(box.get("error"), MetaflowFunctionException)
+    assert "owned by thread" in str(box["error"])
+
+
+def test_the_owning_thread_keeps_working(hydration):
+    proxy = _proxy_function()
+
+    assert LocalBackend.apply(proxy, "a") == "a"
+    assert LocalBackend.apply(proxy, "b") == "b"
+
+
+def test_close_releases_the_claim(hydration):
+    proxy = _proxy_function()
+    LocalBackend.apply(proxy, "payload")
+    LocalBackend.close(proxy)
+
+    box = _call_on_new_thread(lambda: LocalBackend.apply(proxy, "payload"))
+
+    assert "error" not in box, box.get("error")
+    assert box["value"] == "payload"
+
+
+def test_one_handle_per_thread_is_the_supported_pattern(hydration):
+    """What the refusal message tells callers to do has to actually work."""
+    mine = _proxy_function()
+    theirs = _proxy_function()
+
+    assert LocalBackend.apply(mine, "payload") == "payload"
+    box = _call_on_new_thread(lambda: LocalBackend.apply(theirs, "payload"))
+
+    assert "error" not in box, box.get("error")
+    assert len(hydration.calls) == 2
+
+
+def test_two_simultaneous_first_calls_hydrate_once(hydration):
+    """The claim is taken under a lock, so only one thread reaches hydration."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    proxy = _proxy_function()
+    start = threading.Barrier(2)
+
+    def call(_):
+        start.wait()
+        try:
+            return LocalBackend.apply(proxy, "payload")
+        except MetaflowFunctionException:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        results = list(ex.map(call, range(2)))
+
+    assert len(hydration.calls) == 1
+    assert sorted(results, key=lambda r: r is None) == ["payload", None]
+    assert sys.path.count(hydration.root) == 1
+
+
 # --- kwargs ----------------------------------------------------------------
 
 
