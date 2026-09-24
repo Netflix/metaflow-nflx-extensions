@@ -16,35 +16,14 @@ from .runtime import close_runtime, runtime_for
 import threading
 import traceback
 
-# Runtime components cannot serve two invocations at once: routing
-# (``Cls.active_instance``) is class-level state and a component's per-call
-# buffer lives on the instance, so overlapping invocations interleave both. The
-# other backends can't hit this -- the memory backend runs a single-threaded
-# subprocess runloop and a Ray actor is single-threaded -- but local mode
-# executes in the caller's thread, so a threaded caller can.
-#
-# Still needed alongside runtime thread-affinity, which only covers one handle:
-# ``active_instance`` is per component *class*, so two different functions
-# sharing a component class collide across threads even though each is owned by
-# its own thread.
-#
-# Reentrant on purpose: acquire(blocking=False) then succeeds for the *same*
-# thread, so an invocation nested inside another one (or anything else
-# re-entering on one thread) is allowed, while a genuinely concurrent
-# invocation from a second thread is refused.
+# components are shared so if a thread spawns more thread we need this lock
 _COMPONENT_INVOCATION_LOCK = threading.RLock()
 
 
 class _guard_component_invocation:
-    """Refuse a concurrent invocation of a function that has runtime components.
-
-    Raises rather than serialising. Serialising would silently remove the
-    parallelism a threaded caller was asking for; raising says what the
-    constraint is. Functions with no components are unaffected -- there is
-    nothing to interleave, so concurrent local invocation stays allowed.
-
-    A class rather than a ``@contextmanager``: the generator machinery costs
-    ~0.6us of a ~3.5us apply(), and functions with no components pay it too.
+    """
+    Refuse a concurrent invocation of a function that has runtime components. 
+    You must load the function within a thread. 
     """
 
     __slots__ = ("_func_instance", "_held")
@@ -93,13 +72,8 @@ class LocalBackend(AbstractBackend):
 
     @staticmethod
     def _needs_hydration(func_instance) -> bool:
-        """Whether this handle still has to load its code before it can run.
-
-        Not the same as `_func is None`: a pipeline never has a single
-        decorated function, so that test calls every pipeline a proxy.
-        Re-hydrating a concrete one re-downloads code it already has;
-        re-hydrating a locally built one replaces the caller's object with a
-        copy from the datastore. A pipeline is ready when its constituents are.
+        """
+        Check whether this handle still has to load its code before it can run.
         """
         constituents = getattr(func_instance, "functions", None)
         if constituents is not None:
@@ -108,13 +82,8 @@ class LocalBackend(AbstractBackend):
 
     @classmethod
     def _route_component_output(cls, func_instance, collected) -> None:
-        """Stamp component output onto the caller's own component instances.
-
-        Mirrors ``MemoryBackend._route_component_output``. A hydrated handle
-        runs the *concrete* function's component instances, not the proxy's,
-        so output has to be matched back by ``component_id``. For a handle
-        that was already concrete these are the same objects and this is a
-        no-op.
+        """
+        Stamp component output onto the caller's own component instances.
         """
         if not collected:
             return
@@ -125,10 +94,8 @@ class LocalBackend(AbstractBackend):
 
     @classmethod
     def start(cls, func_instance, **kwargs):
-        """Warm the function's runtime so the first call is not the slow one.
-
-        Like ``MemoryBackend.start``, an optimization and never a
-        precondition: ``apply()`` warms the same runtime if nothing has yet.
+        """
+        Warm the function's runtime so the first call is not the slow one.
         """
         runtime_for(func_instance, process=kwargs.get("process", 1))
 
