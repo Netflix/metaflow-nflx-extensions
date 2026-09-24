@@ -15,7 +15,6 @@ from ..keywords import KEYWORDS
 from .runtime import close_runtime, runtime_for
 import threading
 import traceback
-from contextlib import contextmanager
 
 # Runtime components cannot serve two invocations at once: routing
 # (``Cls.active_instance``) is class-level state and a component's per-call
@@ -36,32 +35,45 @@ from contextlib import contextmanager
 _COMPONENT_INVOCATION_LOCK = threading.RLock()
 
 
-@contextmanager
-def _guard_component_invocation(func_instance):
+class _guard_component_invocation:
     """Refuse a concurrent invocation of a function that has runtime components.
 
     Raises rather than serialising. Serialising would silently remove the
     parallelism a threaded caller was asking for; raising says what the
     constraint is. Functions with no components are unaffected -- there is
     nothing to interleave, so concurrent local invocation stays allowed.
-    """
-    if not func_instance.runtime_components:
-        yield
-        return
 
-    if not _COMPONENT_INVOCATION_LOCK.acquire(blocking=False):
-        raise MetaflowFunctionRuntimeException(
-            f"Function '{func_instance.name}' has runtime components and is "
-            "already being invoked on another thread. Runtime components do not "
-            "support concurrent invocation: routing and per-call buffers are "
-            "shared, so overlapping calls would mix rows between invocations. "
-            "Invoke it from one thread at a time, or load a separate copy per "
-            "thread and serialise calls within each."
-        )
-    try:
-        yield
-    finally:
-        _COMPONENT_INVOCATION_LOCK.release()
+    A class rather than a ``@contextmanager``: the generator machinery costs
+    ~0.6us of a ~3.5us apply(), and functions with no components pay it too.
+    """
+
+    __slots__ = ("_func_instance", "_held")
+
+    def __init__(self, func_instance):
+        self._func_instance = func_instance
+        self._held = False
+
+    def __enter__(self):
+        if not self._func_instance.runtime_components:
+            return self
+
+        if not _COMPONENT_INVOCATION_LOCK.acquire(blocking=False):
+            raise MetaflowFunctionRuntimeException(
+                f"Function '{self._func_instance.name}' has runtime components "
+                "and is already being invoked on another thread. Runtime "
+                "components do not support concurrent invocation: routing and "
+                "per-call buffers are shared, so overlapping calls would mix "
+                "rows between invocations. Invoke it from one thread at a time, "
+                "or load a separate copy per thread and serialise calls within "
+                "each."
+            )
+        self._held = True
+        return self
+
+    def __exit__(self, *exc_info):
+        if self._held:
+            _COMPONENT_INVOCATION_LOCK.release()
+        return False
 
 
 class LocalBackend(AbstractBackend):
