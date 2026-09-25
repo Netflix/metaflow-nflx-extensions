@@ -21,9 +21,6 @@ from metaflow_extensions.nflx.plugins.functions.core.function import (
     close_function,
     function_from_json,
 )
-from metaflow_extensions.nflx.plugins.functions.core.function_parameters import (
-    FunctionParameters,
-)
 
 pytestmark = pytest.mark.no_backend_parametrization
 
@@ -96,14 +93,5 @@ def test_old_function_accepts_runtime_components(replayable_reference, backend):
         assert func(INPUT) == EXPECTED
         assert metrics.output["call_count"] == 1
         assert metrics.output["total_duration_s"] >= 0
-    finally:
-        close_function(func)
-
-
-def test_old_function_accepts_caller_params(replayable_reference):
-    """Local only: the memory runtime builds parameters itself inside the subprocess."""
-    func = function_from_json(replayable_reference, backend="local")
-    try:
-        assert func(INPUT, params=FunctionParameters(suffix="ctx")) == "HELLOWORLD_ctx"
     finally:
         close_function(func)

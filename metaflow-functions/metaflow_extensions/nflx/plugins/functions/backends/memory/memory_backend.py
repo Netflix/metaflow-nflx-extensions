@@ -29,6 +29,7 @@ from metaflow_extensions.nflx.plugins.functions.serializers.registry import (
 )
 from ..abstract_backend import AbstractBackend
 from ..backend_type import BackendType
+from ..keywords import KEYWORDS
 from metaflow_extensions.nflx.plugins.functions.core.function_payload import (
     FunctionPayload,
     parse_function_payload,
@@ -38,7 +39,6 @@ from ...memory.concurrency import Semaphore
 
 IO_WAIT = 10**-6
 BUFFER_PER_PROCESS = 2
-KEYWORDS = {"process", "params"}
 
 # Sentinel object to distinguish "no result ready" from "result is falsy"
 # (e.g., None, 0, False, [], {}, "", empty dataframes)

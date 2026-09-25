@@ -11,8 +11,7 @@ pytestmark = pytest.mark.no_backend_parametrization
 
 from metaflow import FunctionParameters
 from metaflow_extensions.nflx.plugins.avro_function import AvroFunction, avro_function
-from metaflow_extensions.nflx.plugins.functions.backends.local import local_backend
-from metaflow_extensions.nflx.plugins.functions.backends.local import supervisor as sup
+from metaflow_extensions.nflx.plugins.functions.backends.local import runtime as rt
 from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend import (
     LocalBackend,
 )
@@ -59,11 +58,9 @@ def _no_export(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def supervisor(monkeypatch):
-    fresh = sup.LocalSupervisor()
-    monkeypatch.setattr(local_backend, "local_supervisor", fresh)
-    monkeypatch.setattr(sup, "_SYS_PATH_REFCOUNTS", {})
-    return fresh
+def _fresh_refcounts(monkeypatch):
+    """The refcount table is process-global; other modules leave entries in it."""
+    monkeypatch.setattr(rt, "_SYS_PATH_REFCOUNTS", {})
 
 
 def _function(uuid="0" * 32):
@@ -178,6 +175,37 @@ def test_concurrent_calls_on_a_component_bearing_function_queue(monkeypatch):
 
     assert asyncio.run(go()) == ["a", "b"]
     assert max(overlap) == 1
+
+
+def test_successive_calls_on_one_handle_keep_the_same_worker():
+    """A runtime is owned by the thread that claimed it, so every offloaded
+    call for a handle has to land on that same thread. The default executor
+    would spread them and the second call would be refused."""
+    func = _function()
+    threads = []
+
+    async def go():
+        for _ in range(4):
+            await LocalBackend.apply_async(func, "payload")
+
+    asyncio.run(go())
+    asyncio.run(go())  # a second loop, same handle
+
+    assert func._local_runtime.owner_thread is not None
+
+
+def test_closing_releases_the_worker():
+    from metaflow_extensions.nflx.plugins.functions.backends.local.runtime import (
+        close_runtime,
+    )
+
+    func = _function()
+    asyncio.run(LocalBackend.apply_async(func, "payload"))
+    assert func._local_async_executor is not None
+
+    close_runtime(func)
+
+    assert func._local_async_executor is None
 
 
 def test_component_free_calls_can_overlap(monkeypatch):
