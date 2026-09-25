@@ -81,18 +81,6 @@ class LocalBackend(AbstractBackend):
         return func_instance._func is None
 
     @classmethod
-    def _route_component_output(cls, func_instance, collected) -> None:
-        """
-        Stamp component output onto the caller's own component instances.
-        """
-        if not collected:
-            return
-        for component in func_instance.runtime_components:
-            component_id = type(component).component_id
-            if component_id in collected:
-                component.output = collected[component_id]
-
-    @classmethod
     def start(cls, func_instance, **kwargs):
         """
         Warm the function's runtime so the first call is not the slow one.
@@ -123,12 +111,14 @@ class LocalBackend(AbstractBackend):
             Result from function execution
         """
         runtime = runtime_for(func_instance, process=kwargs.get("process", 1))
-        return cls._apply_warm(runtime, func_instance, data, **kwargs)
+        return cls._apply_warm(runtime, data, **kwargs)
 
     @classmethod
-    def _apply_warm(cls, runtime, caller_instance, data: Any, **kwargs) -> Any:
+    def _apply_warm(cls, runtime, data: Any, **kwargs) -> Any:
         # The hydrated function the runtime holds, which is the caller's own
-        # handle when it was already concrete.
+        # handle when it was already concrete. Component instances are carried
+        # across by _hydrate, so output lands on the caller's own objects --
+        # memory and ray have to route theirs back across a process boundary.
         func_instance = runtime.function
 
         parameters = runtime.params
@@ -178,7 +168,7 @@ class LocalBackend(AbstractBackend):
             # block above (currently only its wrapped `MetaflowFunctionUserException`
             # message is kept, not the exception object itself).
             try:
-                collected = after_call_components(func_instance._component_instances)
+                after_call_components(func_instance._component_instances)
             except Exception as e:
                 if user_exception is None:
                     raise MetaflowFunctionRuntimeException(
@@ -190,9 +180,6 @@ class LocalBackend(AbstractBackend):
                     f"Runtime component exception in after_call for '{func_instance.name}' "
                     f"while handling a prior user exception: {e!r}"
                 )
-            else:
-                if caller_instance is not func_instance:
-                    cls._route_component_output(caller_instance, collected)
 
             if user_exception is not None:
                 raise user_exception
