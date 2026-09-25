@@ -414,7 +414,7 @@ class _MockFunction(MetaflowFunction):
 
     def __init__(self, component_classes):
         super().__init__(func=lambda data, params, **kwargs: data)
-        self._function_spec = SimpleNamespace(name="test_mock_function")
+        self._function_spec = SimpleNamespace(name="test_mock_function", function=None)
         self._runtime_components = component_classes
 
     def execute(self, data, params, **kwargs):
@@ -444,12 +444,12 @@ def test_local_backend_fires_lifecycle():
     try:
         func = _MockFunction([RecordingComponent()])
 
-        result = LocalBackend.apply(func, "hello", params=FunctionParameters())
+        result = LocalBackend.apply(func, "hello")
         assert result == "echo:hello"
         assert _read_events(log) == ["start", "before_call", "after_call"]
 
         # second call: start must NOT fire again
-        LocalBackend.apply(func, "world", params=FunctionParameters())
+        LocalBackend.apply(func, "world")
         assert _read_events(log) == [
             "start",
             "before_call",
@@ -493,7 +493,7 @@ def test_local_backend_stop_not_called_on_exception():
     try:
         func = FailingFunction([RecordingComponent()])
         with pytest.raises(MetaflowFunctionUserException):
-            LocalBackend.apply(func, "x", params=FunctionParameters())
+            LocalBackend.apply(func, "x")
 
         events = _read_events(log)
         assert "start" in events
@@ -529,7 +529,7 @@ def test_local_backend_after_call_runs_when_execute_raises():
     try:
         func = FailingFunction([RecordingComponent()])
         with pytest.raises(MetaflowFunctionUserException):
-            LocalBackend.apply(func, "x", params=FunctionParameters())
+            LocalBackend.apply(func, "x")
 
         events = _read_events(log)
         assert events == ["start", "before_call", "after_call"]
@@ -559,7 +559,7 @@ def test_local_backend_after_call_failure_does_not_mask_user_exception():
     try:
         func = FailingFunction([FailingComponent()])
         with pytest.raises(MetaflowFunctionUserException, match="user error"):
-            LocalBackend.apply(func, "x", params=FunctionParameters())
+            LocalBackend.apply(func, "x")
     finally:
         FailingComponent.fail_after_call = False
 
@@ -572,7 +572,7 @@ def test_local_backend_no_components():
     )
 
     func = _MockFunction([])
-    result = LocalBackend.apply(func, "world", params=FunctionParameters())
+    result = LocalBackend.apply(func, "world")
     assert result == "echo:world"
 
 
@@ -612,7 +612,7 @@ def test_local_backend_before_call_component_failure_raises_runtime_exception():
     try:
         func = _MockFunction([FailingComponent()])
         with pytest.raises(MetaflowFunctionRuntimeException):
-            LocalBackend.apply(func, "x", params=FunctionParameters())
+            LocalBackend.apply(func, "x")
     finally:
         FailingComponent.fail_before_call = False
 
@@ -631,7 +631,7 @@ def test_local_backend_after_call_component_failure_raises_runtime_exception():
     try:
         func = _MockFunction([FailingComponent()])
         with pytest.raises(MetaflowFunctionRuntimeException):
-            LocalBackend.apply(func, "x", params=FunctionParameters())
+            LocalBackend.apply(func, "x")
     finally:
         FailingComponent.fail_after_call = False
 
@@ -1073,7 +1073,7 @@ def test_function_from_json_runtime_metrics_component():
         )
 
     try:
-        result = LocalBackend.apply(func, "hello", params=FunctionParameters())
+        result = LocalBackend.apply(func, "hello")
 
         assert result == "echo:hello"
         assert metrics.output.keys() == {
@@ -1145,7 +1145,7 @@ def test_local_backend_default_use_proxy_path_keeps_runtime_components():
             )
             assert func._func is None  # sanity: we really got a proxy
 
-            result = LocalBackend.apply(func, "hello", params=FunctionParameters())
+            result = LocalBackend.apply(func, "hello")
 
         assert result == "echo:hello"
         assert _read_events(log) == ["start", "before_call", "after_call"]
@@ -1558,7 +1558,7 @@ def test_concurrent_local_invocation_with_components_is_refused():
     def call(_):
         func = _Slow_Func([_Slow()])  # a copy per thread, as the error advises
         try:
-            LocalBackend.apply(func, 1, params=object())
+            LocalBackend.apply(func, 1)
         except MetaflowFunctionRuntimeException as e:
             errors.append(str(e))
         except Exception:
@@ -1591,7 +1591,7 @@ def test_concurrent_local_invocation_without_components_is_allowed():
     def call(v):
         func = _Plain_Func([])  # a copy per thread
         try:
-            return LocalBackend.apply(func, v, params=object())
+            return LocalBackend.apply(func, v)
         except Exception as e:  # noqa: BLE001
             errors.append(repr(e))
             return None

@@ -131,10 +131,7 @@ class LocalBackend(AbstractBackend):
         # handle when it was already concrete.
         func_instance = runtime.function
 
-        # An explicit params= still wins over the runtime's cached ones.
-        parameters = kwargs.get("params")
-        if parameters is None:
-            parameters = runtime.params
+        parameters = runtime.params
 
         kwargs = {k: v for k, v in kwargs.items() if k not in KEYWORDS}
 

@@ -34,7 +34,7 @@ class _Func(MetaflowFunction):
 
     def __init__(self, name, metrics=None, raise_error=False):
         super().__init__(func=lambda data, params, **kwargs: data)
-        self._function_spec = SimpleNamespace(name=name)
+        self._function_spec = SimpleNamespace(name=name, function=None)
         self._metrics = metrics or {}
         self._raise_error = raise_error
 
@@ -78,15 +78,16 @@ def _make_pipeline(functions, name="pipeline"):
     pipeline._name = name
     pipeline._component_instances = []
     pipeline._runtime_components = []
-    # __new__ skips __init__, which is what would normally set this.
+    # __new__ skips __init__, which is what would normally set these.
     pipeline._function_root_dir = None
+    pipeline._function_spec = SimpleNamespace(name=name, function=None)
     return pipeline
 
 
 def _apply_with_metrics(pipeline, metrics=None):
     metrics = metrics or RuntimeMetrics()
     pipeline._runtime_components = [metrics]
-    result = LocalBackend.apply(pipeline, [], params=FunctionParameters())
+    result = LocalBackend.apply(pipeline, [])
     return result, metrics
 
 
@@ -197,7 +198,7 @@ def test_constituent_exception_keeps_metrics_and_duration():
 
     try:
         with pytest.raises(MetaflowFunctionUserException, match="boom in handler"):
-            LocalBackend.apply(pipeline, [], params=FunctionParameters())
+            LocalBackend.apply(pipeline, [])
     finally:
         LocalBackend.close(pipeline)
 

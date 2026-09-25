@@ -277,7 +277,8 @@ def test_two_simultaneous_first_calls_hydrate_once(hydration):
 # --- kwargs ----------------------------------------------------------------
 
 
-def test_explicit_params_win_over_the_cached_ones(monkeypatch, hydration):
+def test_a_caller_cannot_substitute_its_own_params(monkeypatch, hydration):
+    """Parameters are bound to the loaded function, as they are on memory."""
     seen = []
     monkeypatch.setattr(
         AvroFunction,
@@ -288,10 +289,8 @@ def test_explicit_params_win_over_the_cached_ones(monkeypatch, hydration):
     mine = FunctionParameters()
 
     LocalBackend.apply(proxy, "payload", params=mine)
-    LocalBackend.apply(proxy, "payload")
 
-    assert seen[0] is mine
-    assert seen[1] is not mine
+    assert seen[0] is not mine
 
 
 def test_the_cached_params_are_built_once(monkeypatch, hydration):

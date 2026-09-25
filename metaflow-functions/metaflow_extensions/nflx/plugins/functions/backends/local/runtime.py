@@ -128,9 +128,8 @@ class LocalRuntime(object):
     def params(self) -> Any:
         """The function's parameters, built once and reused.
 
-        Built on demand rather than in ``start()``: a caller that passes its
-        own ``params=`` never needs them, and local accepts handles that have
-        no spec to build them from.
+        Built on demand rather than in ``start()`` so a warm runtime nothing
+        has called yet has not paid for them.
         """
         if self._params is None:
             self._params = create_function_parameters(

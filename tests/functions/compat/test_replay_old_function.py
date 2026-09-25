@@ -100,10 +100,11 @@ def test_old_function_accepts_runtime_components(replayable_reference, backend):
         close_function(func)
 
 
-def test_old_function_accepts_caller_params(replayable_reference):
-    """Local only: the memory runtime builds parameters itself inside the subprocess."""
+def test_old_function_ignores_caller_params(replayable_reference):
+    """Parameters belong to the loaded function, as they do on memory, where the
+    runtime builds them inside the subprocess and never sees the caller's."""
     func = function_from_json(replayable_reference, backend="local")
     try:
-        assert func(INPUT, params=FunctionParameters(suffix="ctx")) == "HELLOWORLD_ctx"
+        assert func(INPUT, params=FunctionParameters(suffix="ctx")) == EXPECTED
     finally:
         close_function(func)
