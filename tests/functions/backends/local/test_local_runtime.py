@@ -19,8 +19,12 @@ from metaflow_extensions.nflx.plugins.functions.backends.local.local_backend imp
     LocalBackend,
 )
 from metaflow_extensions.nflx.plugins.functions.core.function import MetaflowFunction
+from metaflow_extensions.nflx.plugins.functions.components.abstract_component import (
+    AbstractRuntimeComponent,
+)
 from metaflow_extensions.nflx.plugins.functions.exceptions import (
     MetaflowFunctionException,
+    MetaflowFunctionUserException,
 )
 
 
@@ -329,6 +333,57 @@ def test_process_greater_than_one_is_refused(hydration):
         LocalBackend.apply(proxy, "payload", process=2)
 
     assert hydration.calls == []
+
+
+# --- what after_call sees -------------------------------------------------
+
+
+class _ExceptionRecorder(AbstractRuntimeComponent):
+    component_id = "test.exception_recorder"
+
+    def __init__(self):
+        super().__init__()
+        self.seen = []
+
+    def start(self, *args, **kwargs):
+        pass
+
+    def stop(self, *args, **kwargs):
+        pass
+
+    def before_call(self, *args, **kwargs):
+        pass
+
+    def after_call(self, *args, exception=None, **kwargs):
+        self.seen.append(exception)
+
+
+def test_after_call_receives_the_users_exception(monkeypatch, hydration):
+    """The raw exception, not the wrapped one -- as memory passes it."""
+    boom = ValueError("nope")
+    monkeypatch.setattr(
+        AvroFunction,
+        "execute",
+        lambda self, data, params, **kwargs: (_ for _ in ()).throw(boom),
+    )
+    recorder = _ExceptionRecorder()
+    proxy = _proxy_function()
+    proxy._runtime_components = [recorder]
+
+    with pytest.raises(MetaflowFunctionUserException):
+        LocalBackend.apply(proxy, "payload")
+
+    assert recorder.seen == [boom]
+
+
+def test_after_call_receives_none_on_success(hydration):
+    recorder = _ExceptionRecorder()
+    proxy = _proxy_function()
+    proxy._runtime_components = [recorder]
+
+    LocalBackend.apply(proxy, "payload")
+
+    assert recorder.seen == [None]
 
 
 # --- component output ------------------------------------------------------

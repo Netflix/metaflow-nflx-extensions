@@ -148,27 +148,27 @@ class LocalBackend(AbstractBackend):
                 )
 
             user_exception: Optional[MetaflowFunctionUserException]
+            raw_exception: Optional[BaseException]
             try:
                 result = func_instance.execute(data, parameters, **kwargs)
             except Exception as e:
+                raw_exception = e
                 user_exception = MetaflowFunctionUserException(
                     f"Exception in function '{func_instance.name}': {str(e)}\n{traceback.format_exc()}"
                 )
                 result = None
             else:
+                raw_exception = None
                 user_exception = None
 
             # after_call must run whether or not the function call itself failed,
-            # so components (e.g. metrics/logging) see every invocation.
-            # TODO(local-backend exception parity): thread the raw exception
-            # through here (`after_call_components(func_instance._component_instances,
-            # exception=raw_exception)`) so after_call()/collect_output() can see
-            # the failure, matching memory_backend.py. Requires keeping a
-            # reference to the raw exception from the `except Exception as e:`
-            # block above (currently only its wrapped `MetaflowFunctionUserException`
-            # message is kept, not the exception object itself).
+            # so components (e.g. metrics/logging) see every invocation. The raw
+            # exception goes through rather than the wrapped one, as memory does
+            # it, so a component sees what the user's code actually raised.
             try:
-                after_call_components(func_instance._component_instances)
+                after_call_components(
+                    func_instance._component_instances, exception=raw_exception
+                )
             except Exception as e:
                 if user_exception is None:
                     raise MetaflowFunctionRuntimeException(
