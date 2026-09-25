@@ -206,11 +206,11 @@ class LocalBackend(AbstractBackend):
         expected_input_type = cls._map_type_info_to_python_type(
             input_types, type(func_instance), func_instance.spec
         )
-        
+
         deserialized_data = registry.deserialize(data, expected_input_type)
         result = cls.apply(func_instance, deserialized_data, **kwargs)
         serializer = registry.get_serializer_for_type(type(result))
-        
+
         if serializer is None:
             raise MetaflowFunctionException(
                 f"No serializer registered for type {type(result)}"
