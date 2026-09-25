@@ -40,11 +40,9 @@ class _guard_component_invocation:
             raise MetaflowFunctionRuntimeException(
                 f"Function '{self._func_instance.name}' has runtime components "
                 "and is already being invoked on another thread. Runtime "
-                "components do not support concurrent invocation: routing and "
-                "per-call buffers are shared, so overlapping calls would mix "
-                "rows between invocations. Invoke it from one thread at a time, "
-                "or load a separate copy per thread and serialise calls within "
-                "each."
+                "components do not support concurrent invocation Invoke it "
+                "from one thread at a time, or load a separate copy per thread "
+                "and serialise calls within each."
             )
         self._held = True
         return self
@@ -115,14 +113,8 @@ class LocalBackend(AbstractBackend):
 
     @classmethod
     def _apply_warm(cls, runtime, data: Any, **kwargs) -> Any:
-        # The hydrated function the runtime holds, which is the caller's own
-        # handle when it was already concrete. Component instances are carried
-        # across by _hydrate, so output lands on the caller's own objects --
-        # memory and ray have to route theirs back across a process boundary.
         func_instance = runtime.function
-
         parameters = runtime.params
-
         kwargs = {k: v for k, v in kwargs.items() if k not in KEYWORDS}
 
         from metaflow_extensions.nflx.plugins.functions.components.runtime import (
@@ -214,15 +206,11 @@ class LocalBackend(AbstractBackend):
         expected_input_type = cls._map_type_info_to_python_type(
             input_types, type(func_instance), func_instance.spec
         )
+        
         deserialized_data = registry.deserialize(data, expected_input_type)
-
-        # apply() takes the user's own input type and returns the user's own
-        # output type. Wrapping the input in a FunctionPayload here handed the
-        # user's function the wrapper instead of its declared input; unwrapping
-        # `.data` from the result did the mirror of that on the way out.
         result = cls.apply(func_instance, deserialized_data, **kwargs)
-
         serializer = registry.get_serializer_for_type(type(result))
+        
         if serializer is None:
             raise MetaflowFunctionException(
                 f"No serializer registered for type {type(result)}"
