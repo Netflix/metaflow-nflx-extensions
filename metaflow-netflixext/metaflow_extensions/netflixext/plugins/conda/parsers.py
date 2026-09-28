@@ -1,6 +1,6 @@
 import re
 import warnings
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from metaflow.metaflow_config import CONDA_SYS_DEPENDENCIES
 from metaflow.metaflow_environment import InvalidEnvironmentException
@@ -369,3 +369,203 @@ def parse_toml_value(
             sources.setdefault("pypi", []).append(s["url"])
 
     return python_version
+
+
+# conda-lock writes a `version` key at the top of the lockfile. Only v1 has been
+# released so far; refuse anything else rather than silently mis-reading a future
+# schema.
+CONDA_LOCK_SUPPORTED_VERSIONS = (1,)
+
+# conda-lock records `manager: conda` or `manager: pip` per package. Map those onto the
+# categories the rest of the codebase uses ("pypi" rather than "pip").
+CONDA_LOCK_MANAGERS = {"conda": "conda", "pip": "pypi"}
+
+
+class CondaLockPackage(NamedTuple):
+    """One entry of the `package:` list of a conda-lock lockfile."""
+
+    name: str
+    version: str
+    manager: str  # "conda" or "pypi" (normalized from conda-lock's "pip")
+    platform: str
+    url: str
+    hashes: Dict[str, str]  # e.g. {"md5": ..., "sha256": ...}
+    category: str  # "main", "dev", ...
+    optional: bool
+    dependencies: Dict[str, str]
+
+
+class CondaLockFile(NamedTuple):
+    """A parsed conda-lock lockfile (the output of `conda-lock lock`)."""
+
+    version: int
+    channels: List[str]
+    platforms: List[str]
+    sources: List[str]
+    content_hash: Dict[str, str]
+    packages: List[CondaLockPackage]
+
+    def packages_for(
+        self, platform: str, include_dev: bool = False
+    ) -> List[CondaLockPackage]:
+        """
+        Packages of a single platform, skipping non-main categories by default.
+
+        conda-lock marks every package outside the `main` category both with its
+        category and with `optional: true`, so the two have to be tested together:
+        testing `optional` on its own would make `include_dev` a no-op. The default
+        matches `conda-lock install`, which installs the main category only.
+        """
+        return [
+            pkg
+            for pkg in self.packages
+            if pkg.platform == platform
+            and (include_dev or (pkg.category == "main" and not pkg.optional))
+        ]
+
+
+def parse_conda_lock_yml(file_content: str) -> CondaLockFile:
+    """
+    Parse a conda-lock lockfile (`conda-lock.yml`, the output of `conda-lock lock`).
+
+    This is *not* the same format as an `environment.yml`: a lockfile is already
+    resolved and carries a `metadata` header plus a flat `package:` list with one entry
+    per (package, platform) holding an exact URL and hash. Use `yml_parser` for an
+    `environment.yml`.
+
+    Parameters
+    ----------
+    file_content : str
+        Content of the lockfile.
+
+    Returns
+    -------
+    CondaLockFile
+        The parsed lockfile.
+    """
+    try:
+        import yaml
+    except ImportError as e:
+        raise InvalidEnvironmentException(
+            "Parsing a conda-lock lockfile requires PyYAML. Please install 'pyyaml'."
+        ) from e
+
+    try:
+        data = yaml.safe_load(file_content)
+    except yaml.YAMLError as e:
+        raise InvalidEnvironmentException(
+            "Could not parse the conda-lock lockfile: %s" % str(e)
+        ) from e
+
+    if not isinstance(data, dict):
+        raise InvalidEnvironmentException(
+            "A conda-lock lockfile must be a YAML mapping; got %s" % type(data).__name__
+        )
+
+    version = data.get("version")
+    if version not in CONDA_LOCK_SUPPORTED_VERSIONS:
+        raise InvalidEnvironmentException(
+            "Unsupported conda-lock lockfile version %s; supported versions are: %s. "
+            "This does not look like the output of 'conda-lock lock' -- note that an "
+            "environment.yml is passed with -f/--file, not --lockfile."
+            % (version, ", ".join(str(v) for v in CONDA_LOCK_SUPPORTED_VERSIONS))
+        )
+
+    metadata = data.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        raise InvalidEnvironmentException(
+            "The 'metadata' section of the conda-lock lockfile must be a mapping"
+        )
+
+    platforms = metadata.get("platforms") or []
+    if not platforms:
+        raise InvalidEnvironmentException(
+            "The conda-lock lockfile does not list any platform in "
+            "'metadata.platforms'"
+        )
+
+    # Channels are recorded as a list of mappings ({url: ..., used_env_vars: [...]}),
+    # but tolerate plain strings in case a lockfile was written by hand.
+    channels = []  # type: List[str]
+    for channel in metadata.get("channels") or []:
+        if isinstance(channel, dict):
+            url = channel.get("url")
+            if url:
+                channels.append(url)
+        elif isinstance(channel, str):
+            channels.append(channel)
+
+    packages = [
+        _parse_conda_lock_package(raw, idx)
+        for idx, raw in enumerate(data.get("package") or [])
+    ]
+
+    known_platforms = set(platforms)
+    unknown = sorted({p.platform for p in packages} - known_platforms)
+    if unknown:
+        raise InvalidEnvironmentException(
+            "The conda-lock lockfile has packages for platform(s) %s which are not "
+            "listed in 'metadata.platforms' (%s)"
+            % (", ".join(unknown), ", ".join(platforms))
+        )
+
+    return CondaLockFile(
+        version=version,
+        channels=channels,
+        platforms=list(platforms),
+        sources=list(metadata.get("sources") or []),
+        content_hash=dict(metadata.get("content_hash") or {}),
+        packages=packages,
+    )
+
+
+def _parse_conda_lock_package(raw: Any, idx: int) -> CondaLockPackage:
+    if not isinstance(raw, dict):
+        raise InvalidEnvironmentException(
+            "Entry %d of the 'package' list of the conda-lock lockfile is not a "
+            "mapping" % idx
+        )
+
+    def _required(key: str) -> str:
+        value = raw.get(key)
+        if not value or not isinstance(value, str):
+            raise InvalidEnvironmentException(
+                "Package '%s' (entry %d) of the conda-lock lockfile is missing a "
+                "'%s'" % (raw.get("name", "<unnamed>"), idx, key)
+            )
+        return value
+
+    name = _required("name")
+    manager = _required("manager")
+    if manager not in CONDA_LOCK_MANAGERS:
+        raise InvalidEnvironmentException(
+            "Package '%s' of the conda-lock lockfile has an unsupported manager "
+            "'%s'; supported managers are: %s"
+            % (name, manager, ", ".join(sorted(CONDA_LOCK_MANAGERS)))
+        )
+
+    hashes = raw.get("hash") or {}
+    if not isinstance(hashes, dict):
+        raise InvalidEnvironmentException(
+            "Package '%s' of the conda-lock lockfile has a malformed 'hash' section"
+            % name
+        )
+
+    dependencies = raw.get("dependencies") or {}
+    if not isinstance(dependencies, dict):
+        raise InvalidEnvironmentException(
+            "Package '%s' of the conda-lock lockfile has a malformed 'dependencies' "
+            "section" % name
+        )
+
+    return CondaLockPackage(
+        name=name,
+        version=_required("version"),
+        manager=CONDA_LOCK_MANAGERS[manager],
+        platform=_required("platform"),
+        url=_required("url"),
+        hashes={k: str(v) for k, v in hashes.items()},
+        category=raw.get("category") or "main",
+        optional=bool(raw.get("optional", False)),
+        dependencies={str(k): str(v) for k, v in dependencies.items()},
+    )
