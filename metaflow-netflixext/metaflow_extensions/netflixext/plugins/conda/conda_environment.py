@@ -619,15 +619,15 @@ class CondaEnvironment(MetaflowEnvironment):
         # env-type is mixed
 
         if env_type == EnvType.PYPI_ONLY:
-            all_packages["pypi"] = merge_dep_dicts(
-                all_packages.get("pypi", {}),
+            pypi_pins = merge_dep_dicts(
                 conda_deps_to_pypi_deps(
                     get_pinned_conda_libs(final_req.python, datastore_type)
                 ),
+                get_pinned_pypi_libs(final_req.python, datastore_type),
             )
             all_packages["pypi"] = merge_dep_dicts(
-                all_packages["pypi"],
-                get_pinned_pypi_libs(final_req.python, datastore_type),
+                all_packages.get("pypi", {}),
+                pypi_pins,
             )
         else:
             all_packages["conda"] = merge_dep_dicts(
