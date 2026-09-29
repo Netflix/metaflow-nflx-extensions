@@ -665,6 +665,29 @@ def merge_dep_dicts(
     return result
 
 
+def get_pinned_pypi_libs(
+    python_version: Optional[str], datastore_type: str
+) -> Dict[str, str]:
+    """Collect pinned PyPI dependencies contributed by config extensions.
+
+    Unlike ``get_pinned_conda_libs``, this hook is Netflix-extension-specific:
+    Metaflow core does not aggregate it. Discovering each config extension here
+    lets multiple extensions contribute PyPI-only packages without requiring a
+    corresponding Metaflow core release.
+    """
+    from metaflow.extension_support import get_modules
+
+    pins: Dict[str, str] = {}
+    for extension in get_modules("config"):
+        hook = getattr(extension.module, "get_pinned_pypi_libs", None)
+        if hook is not None:
+            pins = merge_dep_dicts(
+                pins,
+                hook(python_version, datastore_type),
+            )
+    return pins
+
+
 def reform_pypi_filename(
     name: str, version: Version, build: BuildTag, tags: FrozenSet[Tag]
 ) -> str:

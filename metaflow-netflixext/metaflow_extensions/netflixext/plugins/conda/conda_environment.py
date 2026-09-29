@@ -47,6 +47,7 @@ from .utils import (
     channel_or_url,
     conda_deps_to_pypi_deps,
     get_conda_manifest_path,
+    get_pinned_pypi_libs,
     get_sys_packages,
     merge_dep_dicts,
     resolve_env_alias,
@@ -624,10 +625,19 @@ class CondaEnvironment(MetaflowEnvironment):
                     get_pinned_conda_libs(final_req.python, datastore_type)
                 ),
             )
+            all_packages["pypi"] = merge_dep_dicts(
+                all_packages["pypi"],
+                get_pinned_pypi_libs(final_req.python, datastore_type),
+            )
         else:
             all_packages["conda"] = merge_dep_dicts(
                 all_packages.get("conda", {}),
                 get_pinned_conda_libs(final_req.python, datastore_type),
+            )
+        if env_type == EnvType.MIXED:
+            all_packages["pypi"] = merge_dep_dicts(
+                all_packages.get("pypi", {}),
+                get_pinned_pypi_libs(final_req.python, datastore_type),
             )
 
         # Add the system requirements and default channels.
