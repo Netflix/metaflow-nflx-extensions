@@ -821,10 +821,9 @@ def resolve(
             pypi_deps = conda_deps_to_pypi_deps(
                 get_pinned_conda_libs(base_env_python, obj.datastore_type)
             )
-            pypi_deps = merge_dep_dicts(
-                pypi_deps,
-                get_pinned_pypi_libs(base_env_python, obj.datastore_type),
-            )
+            extension_pins = get_pinned_pypi_libs(base_env_python, obj.datastore_type)
+            if extension_pins:
+                pypi_deps = merge_dep_dicts(pypi_deps, extension_pins)
 
             conda_deps = {}
         else:
