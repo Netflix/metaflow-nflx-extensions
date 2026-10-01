@@ -665,6 +665,23 @@ def merge_dep_dicts(
     return result
 
 
+def get_pinned_pypi_libs(
+    python_version: Optional[str], datastore_type: str
+) -> Dict[str, str]:
+    """Collect and merge pinned PyPI dependencies from config extensions."""
+    from metaflow.extension_support import get_modules
+
+    pins: Dict[str, str] = {}
+    for extension in get_modules("config"):
+        hook = getattr(extension.module, "get_pinned_pypi_libs", None)
+        if hook is not None:
+            pins = merge_dep_dicts(
+                pins,
+                hook(python_version, datastore_type),
+            )
+    return pins
+
+
 def reform_pypi_filename(
     name: str, version: Version, build: BuildTag, tags: FrozenSet[Tag]
 ) -> str:
