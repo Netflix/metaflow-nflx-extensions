@@ -8,7 +8,6 @@ import sys
 import pytest
 
 from metaflow_extensions.nflx.plugins.functions.environment import (
-    _pin_local_datastore_root,
     ensure_activate_script,
     environment_python_version,
 )
@@ -44,6 +43,36 @@ def test_leaves_an_existing_activate_alone(tmp_path):
     ensure_activate_script(str(tmp_path))
 
     assert activate.read_text() == "# the environment's own\n"
+
+
+def _sourced_ld_library_path(prefix, inherited):
+    import subprocess
+
+    env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
+    if inherited is not None:
+        env["LD_LIBRARY_PATH"] = inherited
+    return subprocess.run(
+        ["bash", "-c", '. "$0/bin/activate" && printf %s "$LD_LIBRARY_PATH"', prefix],
+        env=env, capture_output=True, text=True, check=True,
+    ).stdout
+
+
+def test_activate_adds_no_empty_library_path_entry(tmp_path):
+    """An empty entry means the current directory to the dynamic loader."""
+    (tmp_path / "bin").mkdir()
+    ensure_activate_script(str(tmp_path))
+
+    assert _sourced_ld_library_path(str(tmp_path), None) == "%s/lib" % tmp_path
+    assert _sourced_ld_library_path(str(tmp_path), "/usr/x") == "%s/lib:/usr/x" % tmp_path
+
+
+def test_leaves_no_temp_file_behind(tmp_path):
+    """The script is written aside and renamed into place."""
+    (tmp_path / "bin").mkdir()
+
+    ensure_activate_script(str(tmp_path))
+
+    assert sorted(os.listdir(tmp_path / "bin")) == ["activate"]
 
 
 def test_is_idempotent(tmp_path):
@@ -155,30 +184,6 @@ class TestEnvironmentPythonVersion:
         (lib / "python3.10").mkdir()
 
         assert environment_python_version(str(tmp_path)) == "3.10"
-
-
-class TestPinnedDatastoreRoot:
-    """Conda's datastore root must not depend on the caller's cwd: a serving host
-    execs with an arbitrary one, and the walk creates .metaflow wherever it lands."""
-
-    def test_pins_a_root_when_none_is_configured(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("METAFLOW_DATASTORE_SYSROOT_LOCAL", raising=False)
-        monkeypatch.setattr(
-            "metaflow.metaflow_config.CONDA_LOCAL_PATH", str(tmp_path), raising=False
-        )
-
-        _pin_local_datastore_root()
-
-        root = os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"]
-        assert root.startswith(str(tmp_path))
-        assert os.path.isdir(root)
-
-    def test_leaves_an_explicit_root_alone(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("METAFLOW_DATASTORE_SYSROOT_LOCAL", "/somewhere/chosen")
-
-        _pin_local_datastore_root()
-
-        assert os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] == "/somewhere/chosen"
 
 
 class TestCliContract:
@@ -341,13 +346,9 @@ class TestMemoryBackendIsUnaffected:
 
         assert "METAFLOW_DATASTORE_SYSROOT_LOCAL" not in os.environ
 
-    def test_the_handoff_path_still_does_both(self, monkeypatch, tmp_path):
+    def test_the_handoff_path_writes_the_activate_script(self, monkeypatch, tmp_path):
         (tmp_path / "bin").mkdir()
         self._stub_conda(monkeypatch, tmp_path)
-        monkeypatch.delenv("METAFLOW_DATASTORE_SYSROOT_LOCAL", raising=False)
-        monkeypatch.setattr(
-            "metaflow.metaflow_config.CONDA_LOCAL_PATH", str(tmp_path), raising=False
-        )
 
         from metaflow_extensions.nflx.plugins.functions.environment import (
             materialize_conda_environment,
@@ -355,4 +356,3 @@ class TestMemoryBackendIsUnaffected:
 
         assert materialize_conda_environment(self._metadata()) == str(tmp_path)
         assert (tmp_path / "bin" / "activate").exists()
-        assert os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"].startswith(str(tmp_path))

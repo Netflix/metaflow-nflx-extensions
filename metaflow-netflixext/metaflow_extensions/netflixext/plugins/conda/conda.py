@@ -166,15 +166,19 @@ def _open_shared_conda_tree(path: str) -> None:
     the next user on the host cannot so much as exec ``bin/micromamba``.
 
     So widen it once, here, where the tree is known to be complete and the process is
-    known to own it (it just created it). Read and traverse everywhere; write only on
-    the two directories conda actually writes into later. Nothing here is secret: the
-    contents came from the shared conda cache every user on this host can already fetch.
+    known to own it (it just created it). Read and traverse only: write stays with the
+    owner, since a world-writable ``envs/`` would let any local user swap an environment
+    another user's process activates. Symlinks are skipped because chmod follows them.
+    Nothing here is secret: the contents came from the shared conda cache every user on
+    this host can already fetch.
 
     Best-effort on purpose. A caller that does not own some pre-existing path cannot
     repair it and should not fail the install over it -- the permissions it needs may
     well already be right.
     """
     def _chmod(target: str, mode: int) -> None:
+        if os.path.islink(target):
+            return
         try:
             os.chmod(target, os.stat(target).st_mode | mode)
         except OSError as e:
@@ -195,11 +199,6 @@ def _open_shared_conda_tree(path: str) -> None:
             # Executable for its owner means executable for everyone; otherwise
             # read-only is enough.
             _chmod(full, 0o555 if mode & stat.S_IXUSR else 0o444)
-
-    # a+w only where conda writes after installation.
-    for writable in (path, os.path.join(path, "envs"), os.path.join(path, "pkgs")):
-        if os.path.isdir(writable):
-            _chmod(writable, 0o222)
 
 
 class Conda(object):
