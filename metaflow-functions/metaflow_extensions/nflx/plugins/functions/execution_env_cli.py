@@ -1,31 +1,14 @@
-"""Describe the conda environment a published function uses, for a non-python host.
+"""Materialize a published function's conda environment and describe it.
 
-For a host that has to hand a whole environment to something else rather than
-run python itself. Triton's python backend is the case this exists for: its
-``EXECUTION_ENV_PATH`` parameter takes a prefix, and the PPP JVM -- which owns
-the Triton model repository and cannot import metaflow -- needs that path
-before it asks Triton to load the model.
-
-Usage::
+For hosts that cannot import metaflow, e.g. the PPP JVM building Triton's
+``EXECUTION_ENV_PATH``::
 
     python -m metaflow_extensions.nflx.plugins.functions.execution_env_cli \\
         --alias checkmate_env:5f2a91c0 --arch linux-64
 
-Prints one JSON object on stdout::
-
-    {"prefix": "/tmp/metaflow-condav2-.../envs/...", "python": "3.10", "arch": "linux-64"}
-
-``python`` is part of the answer because the host cannot safely work it out for
-itself: a host that execs a prebuilt interpreter *into* this environment has to
-match its python version, and inferring that from the prefix means a caller in
-another language reimplementing conda's directory layout. It is null only when
-the environment has no recognisable ``lib/pythonX.Y``.
-
-Anything that is not the answer goes to stderr, and the exit status is non-zero,
-so a caller can treat stdout as the answer and nothing else.
-
-``--format prefix`` restores the original bare-prefix line, for a caller that
-has not moved to the JSON form yet.
+Prints one JSON object on stdout, ``{"prefix": ..., "python": "3.10", "arch": ...}``,
+and everything else to stderr. ``python`` is null if it can't be determined.
+``--format prefix`` prints only the prefix.
 """
 
 import argparse

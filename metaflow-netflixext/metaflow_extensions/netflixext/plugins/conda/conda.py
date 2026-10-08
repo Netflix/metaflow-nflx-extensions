@@ -156,25 +156,12 @@ ParseURLResult = NamedTuple(
 
 
 def _open_shared_conda_tree(path: str) -> None:
-    """Make a freshly installed local conda distribution usable by other users.
+    """Let other users read and run a freshly installed shared conda tree.
 
-    CONDA_LOCAL_PATH is a *host-level* cache, not a per-user one -- the path carries a
-    date, not a username, and its whole value is that everything on the box shares one
-    copy. But whoever installs it first owns it, and the tarball's own modes plus the
-    installing process's umask decide what everyone else gets. When that first caller
-    is a boot-time root process and the umask is 007, the tree lands 0770 root-owned and
-    the next user on the host cannot so much as exec ``bin/micromamba``.
-
-    So widen it once, here, where the tree is known to be complete and the process is
-    known to own it (it just created it). Read and traverse only: write stays with the
-    owner, since a world-writable ``envs/`` would let any local user swap an environment
-    another user's process activates. Symlinks are skipped because chmod follows them.
-    Nothing here is secret: the contents came from the shared conda cache every user on
-    this host can already fetch.
-
-    Best-effort on purpose. A caller that does not own some pre-existing path cannot
-    repair it and should not fail the install over it -- the permissions it needs may
-    well already be right.
+    The installer's umask can leave it closed to others (0770 when root installs
+    with umask 007). Read and traverse only: write stays with the owner, so no user
+    can swap an environment another user activates. Symlinks are skipped, since
+    chmod follows them. Best-effort: paths this process can't change are left alone.
     """
     def _chmod(target: str, mode: int) -> None:
         if os.path.islink(target):
@@ -184,8 +171,7 @@ def _open_shared_conda_tree(path: str) -> None:
         except OSError as e:
             debug.conda_exec("Could not widen %s: %s" % (target, e))
 
-    # a+rX: read everything, and traverse/execute what is already executable. Walking
-    # rather than a recursive chmod so directories and files get different bits.
+    # a+rX: directories and executables get 555, other files 444.
     _chmod(path, 0o555)
     for root, dirs, files in os.walk(path):
         for name in dirs:
@@ -196,8 +182,6 @@ def _open_shared_conda_tree(path: str) -> None:
                 mode = os.stat(full).st_mode
             except OSError:
                 continue
-            # Executable for its owner means executable for everyone; otherwise
-            # read-only is enough.
             _chmod(full, 0o555 if mode & stat.S_IXUSR else 0o444)
 
 
