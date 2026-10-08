@@ -1,0 +1,347 @@
+"""Unit tests for the execution-environment prefix a host hands to Triton."""
+
+import json
+import os
+import stat
+import sys
+
+import pytest
+
+from metaflow_extensions.nflx.plugins.functions.environment import (
+    CondaEnvironment,
+    ensure_activate_script,
+    environment_python_version,
+)
+
+pytestmark = pytest.mark.local_only
+
+THIS_PYTHON = "%d.%d" % sys.version_info[:2]
+
+
+def _env(prefix, python=sys.executable, activate=True):
+    return CondaEnvironment(
+        str(prefix), python, str(prefix / "bin" / "activate") if activate else None
+    )
+
+
+def test_writes_an_activate_script_when_the_env_has_none(tmp_path):
+    """Triton sources an activate script; create_for_name() writes none."""
+    (tmp_path / "bin").mkdir()
+
+    assert ensure_activate_script(str(tmp_path)) == str(tmp_path)
+
+    activate = tmp_path / "bin" / "activate"
+    written = activate.read_text()
+    assert str(tmp_path) in written
+    # The three variables that decide which interpreter, stdlib and shared
+    # libraries the activated process gets.
+    assert 'export PATH="%s/bin:$PATH"' % tmp_path in written
+    assert "LD_LIBRARY_PATH" in written
+    assert "unset PYTHONHOME" in written
+    assert os.stat(activate).st_mode & stat.S_IXUSR
+
+
+def test_leaves_an_existing_activate_alone(tmp_path):
+    """A conda-pack'd environment's own script is kept."""
+    (tmp_path / "bin").mkdir()
+    activate = tmp_path / "bin" / "activate"
+    activate.write_text("# the environment's own\n")
+
+    ensure_activate_script(str(tmp_path))
+
+    assert activate.read_text() == "# the environment's own\n"
+
+
+def _sourced_ld_library_path(prefix, inherited):
+    import subprocess
+
+    env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
+    if inherited is not None:
+        env["LD_LIBRARY_PATH"] = inherited
+    return subprocess.run(
+        ["bash", "-c", '. "$0/bin/activate" && printf %s "$LD_LIBRARY_PATH"', prefix],
+        env=env, capture_output=True, text=True, check=True,
+    ).stdout
+
+
+def test_activate_adds_no_empty_library_path_entry(tmp_path):
+    """An empty entry means the current directory to the dynamic loader."""
+    (tmp_path / "bin").mkdir()
+    ensure_activate_script(str(tmp_path))
+
+    assert _sourced_ld_library_path(str(tmp_path), None) == "%s/lib" % tmp_path
+    assert _sourced_ld_library_path(str(tmp_path), "/usr/x") == "%s/lib:/usr/x" % tmp_path
+
+
+def test_leaves_no_temp_file_behind(tmp_path):
+    """The script is written aside and renamed into place."""
+    (tmp_path / "bin").mkdir()
+
+    ensure_activate_script(str(tmp_path))
+
+    assert sorted(os.listdir(tmp_path / "bin")) == ["activate"]
+
+
+def test_is_idempotent(tmp_path):
+    (tmp_path / "bin").mkdir()
+
+    ensure_activate_script(str(tmp_path))
+    first = (tmp_path / "bin" / "activate").read_text()
+    ensure_activate_script(str(tmp_path))
+
+    assert (tmp_path / "bin" / "activate").read_text() == first
+
+
+def test_cli_prints_one_json_object(monkeypatch, capsys, tmp_path):
+    """The JVM reads stdout as the answer, so nothing else may land there."""
+    from metaflow_extensions.nflx.plugins.functions import execution_env_cli
+
+    monkeypatch.setattr(
+        "metaflow_extensions.nflx.plugins.functions.environment."
+        "materialize_conda_environment",
+        lambda system_metadata: _env(tmp_path),
+    )
+
+    assert execution_env_cli.main(["--alias", "env:abc", "--arch", "linux-64"]) == 0
+
+    assert json.loads(capsys.readouterr().out) == {
+        "prefix": str(tmp_path),
+        "python": THIS_PYTHON,
+        "arch": "linux-64",
+    }
+
+
+def test_cli_still_prints_a_bare_prefix_on_request(monkeypatch, capsys, tmp_path):
+    """A caller pinned to the original one-line contract keeps working."""
+    from metaflow_extensions.nflx.plugins.functions import execution_env_cli
+
+    monkeypatch.setattr(
+        "metaflow_extensions.nflx.plugins.functions.environment."
+        "materialize_conda_environment",
+        lambda system_metadata: _env(tmp_path),
+    )
+
+    assert (
+        execution_env_cli.main(["--alias", "env:abc", "--format", "prefix"]) == 0
+    )
+    assert capsys.readouterr().out.strip() == str(tmp_path)
+
+
+def test_cli_reports_a_null_python_it_cannot_determine(monkeypatch, capsys, tmp_path):
+    """Null rather than a guess: the host decides what to do about it."""
+    from metaflow_extensions.nflx.plugins.functions import execution_env_cli
+
+    monkeypatch.setattr(
+        "metaflow_extensions.nflx.plugins.functions.environment."
+        "materialize_conda_environment",
+        lambda system_metadata: _env(tmp_path, python=str(tmp_path / "nope")),
+    )
+
+    assert execution_env_cli.main(["--alias", "env:abc"]) == 0
+    assert json.loads(capsys.readouterr().out)["python"] is None
+
+
+def test_cli_fails_without_an_activate_script(monkeypatch, capsys, tmp_path):
+    """The host can't use a prefix it can't activate, so nothing reaches stdout."""
+    from metaflow_extensions.nflx.plugins.functions import execution_env_cli
+
+    monkeypatch.setattr(
+        "metaflow_extensions.nflx.plugins.functions.environment."
+        "materialize_conda_environment",
+        lambda system_metadata: _env(tmp_path, activate=False),
+    )
+
+    assert execution_env_cli.main(["--alias", "env:abc"]) == 1
+    assert capsys.readouterr().out == ""
+
+
+class TestEnvironmentPythonVersion:
+    """The host checks its stub against this, so no answer beats a wrong one."""
+
+    def test_asks_the_interpreter(self):
+        assert environment_python_version(sys.executable) == THIS_PYTHON
+
+    def test_returns_none_for_a_missing_interpreter(self, tmp_path):
+        assert environment_python_version(str(tmp_path / "python")) is None
+
+    def test_returns_none_for_one_that_fails(self, tmp_path):
+        broken = tmp_path / "python"
+        broken.write_text("#!/bin/sh\nexit 1\n")
+        broken.chmod(0o755)
+        assert environment_python_version(str(broken)) is None
+
+
+class TestCliContract:
+    """The CLI contract python-model-serving depends on: module path, flags, keys.
+
+    It runs this CLI as a subprocess and its own tests stub it out, so a rename here
+    only breaks on a serving instance. If one of these tests changes, so must it.
+    """
+
+    MODULE = "metaflow_extensions.nflx.plugins.functions.execution_env_cli"
+
+    def test_the_module_is_runnable_under_its_published_path(self):
+        import importlib
+
+        module = importlib.import_module(self.MODULE)
+        assert hasattr(module, "main")
+
+    def test_it_accepts_the_flags_the_host_passes(self, monkeypatch, capsys, tmp_path):
+        from metaflow_extensions.nflx.plugins.functions import execution_env_cli
+
+        monkeypatch.setattr(
+            "metaflow_extensions.nflx.plugins.functions.environment."
+            "materialize_conda_environment",
+            lambda system_metadata: _env(tmp_path),
+        )
+
+        # Exactly the argv CondaEnvironmentResolver builds, in that order.
+        assert execution_env_cli.main(["--alias", "env:abc", "--arch", "linux-64"]) == 0
+
+    def test_it_answers_with_the_keys_the_host_reads(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        from metaflow_extensions.nflx.plugins.functions import execution_env_cli
+
+        (tmp_path / "lib" / "python3.10").mkdir(parents=True)
+        monkeypatch.setattr(
+            "metaflow_extensions.nflx.plugins.functions.environment."
+            "materialize_conda_environment",
+            lambda system_metadata: _env(tmp_path),
+        )
+
+        execution_env_cli.main(["--alias", "env:abc", "--arch", "linux-64"])
+        answer = json.loads(capsys.readouterr().out)
+
+        # "prefix" becomes EXECUTION_ENV_PATH; "python" is matched against the
+        # version the shipped triton_python_backend_stub links against.
+        assert "prefix" in answer
+        assert "python" in answer
+
+    def test_the_alias_flag_is_mandatory(self, capsys):
+        """The host always passes it; failing beats resolving something arbitrary."""
+        from metaflow_extensions.nflx.plugins.functions import execution_env_cli
+
+        with pytest.raises(SystemExit):
+            execution_env_cli.main(["--arch", "linux-64"])
+
+    def test_nothing_but_the_answer_reaches_stdout(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """The host parses all of stdout as one JSON object."""
+        from metaflow_extensions.nflx.plugins.functions import execution_env_cli
+
+        def _chatty(system_metadata):
+            import sys
+
+            print("resolving 47 packages", file=sys.stderr)
+            return _env(tmp_path)
+
+        monkeypatch.setattr(
+            "metaflow_extensions.nflx.plugins.functions.environment."
+            "materialize_conda_environment",
+            _chatty,
+        )
+
+        execution_env_cli.main(["--alias", "env:abc"])
+        captured = capsys.readouterr()
+
+        json.loads(captured.out)  # parses whole, or this raises
+        assert "resolving 47 packages" in captured.err
+
+
+class TestMaterialize:
+    """materialize_conda_environment, and resolve_conda_environment built on it."""
+
+    def _stub_conda(self, monkeypatch, prefix):
+        """Stand in for the conda machinery, so these test the wrapper, not conda."""
+        import types
+
+        created = {"prefix": str(prefix)}
+
+        class FakeConda:
+            def __init__(self, echo, datastore):
+                pass
+
+            def environment_from_alias(self, alias, arch):
+                return object()
+
+            def create_for_name(self, name, env, do_symlink=False):
+                return created["prefix"]
+
+        module = types.ModuleType(
+            "metaflow_extensions.netflixext.plugins.conda.conda"
+        )
+        module.Conda = FakeConda
+        for name in (
+            "metaflow_extensions.netflixext",
+            "metaflow_extensions.netflixext.plugins",
+            "metaflow_extensions.netflixext.plugins.conda",
+        ):
+            sys.modules.setdefault(name, types.ModuleType(name))
+        sys.modules["metaflow_extensions.netflixext.plugins.conda.conda"] = module
+        monkeypatch.delenv("METAFLOW_FUNCTIONS_TEST_MODE", raising=False)
+
+    @staticmethod
+    def _metadata():
+        return {"environment": {"alias": "env:abc", "arch": "linux-64"}}
+
+    def test_it_returns_the_environment_with_an_activate_script(
+        self, monkeypatch, tmp_path
+    ):
+        (tmp_path / "bin").mkdir()
+        self._stub_conda(monkeypatch, tmp_path)
+
+        from metaflow_extensions.nflx.plugins.functions.environment import (
+            materialize_conda_environment,
+        )
+
+        assert materialize_conda_environment(self._metadata()) == _env(
+            tmp_path, python=str(tmp_path / "bin" / "python")
+        )
+        assert (tmp_path / "bin" / "activate").exists()
+
+    def test_resolve_returns_the_python_binary(self, monkeypatch, tmp_path):
+        (tmp_path / "bin").mkdir()
+        self._stub_conda(monkeypatch, tmp_path)
+
+        from metaflow_extensions.nflx.plugins.functions.environment import (
+            resolve_conda_environment,
+        )
+
+        assert resolve_conda_environment(self._metadata()) == str(
+            tmp_path / "bin" / "python"
+        )
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root can write anywhere")
+    def test_an_unwritable_environment_still_resolves(self, monkeypatch, tmp_path):
+        """Another user's environment: no activate script, but the memory backend's
+        resolve must keep working."""
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin").chmod(0o555)
+        self._stub_conda(monkeypatch, tmp_path)
+
+        from metaflow_extensions.nflx.plugins.functions.environment import (
+            materialize_conda_environment,
+            resolve_conda_environment,
+        )
+
+        try:
+            assert materialize_conda_environment(self._metadata()).activate is None
+            assert resolve_conda_environment(self._metadata()).endswith("bin/python")
+        finally:
+            (tmp_path / "bin").chmod(0o755)
+
+    def test_it_does_not_pin_a_datastore_root(self, monkeypatch, tmp_path):
+        """Nothing on this path sets a process-global datastore root."""
+        (tmp_path / "bin").mkdir()
+        self._stub_conda(monkeypatch, tmp_path)
+        monkeypatch.delenv("METAFLOW_DATASTORE_SYSROOT_LOCAL", raising=False)
+
+        from metaflow_extensions.nflx.plugins.functions.environment import (
+            resolve_conda_environment,
+        )
+
+        resolve_conda_environment(self._metadata())
+
+        assert "METAFLOW_DATASTORE_SYSROOT_LOCAL" not in os.environ

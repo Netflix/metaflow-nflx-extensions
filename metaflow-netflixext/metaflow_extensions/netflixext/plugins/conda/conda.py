@@ -155,6 +155,36 @@ ParseURLResult = NamedTuple(
 )
 
 
+def _open_shared_conda_tree(path: str) -> None:
+    """Let other users read and run a freshly installed shared conda tree.
+
+    The installer's umask can leave it closed to others (0770 when root installs
+    with umask 007). Read and traverse only: write stays with the owner, so no user
+    can swap an environment another user activates. Symlinks are skipped, since
+    chmod follows them. Best-effort: paths this process can't change are left alone.
+    """
+    def _chmod(target: str, mode: int) -> None:
+        if os.path.islink(target):
+            return
+        try:
+            os.chmod(target, os.stat(target).st_mode | mode)
+        except OSError as e:
+            debug.conda_exec("Could not widen %s: %s" % (target, e))
+
+    # a+rX: directories and executables get 555, other files 444.
+    _chmod(path, 0o555)
+    for root, dirs, files in os.walk(path):
+        for name in dirs:
+            _chmod(os.path.join(root, name), 0o555)
+        for name in files:
+            full = os.path.join(root, name)
+            try:
+                mode = os.stat(full).st_mode
+            except OSError:
+                continue
+            _chmod(full, 0o555 if mode & stat.S_IXUSR else 0o444)
+
+
 class Conda(object):
     _cached_info = None
 
@@ -2097,6 +2127,8 @@ class Conda(object):
             " done in %d second%s." % (delta_time, plural_marker(delta_time)),
             timestamp=False,
         )
+
+        _open_shared_conda_tree(path)
 
         # We write a file to say that the local conda installation is good to go. We can
         # use this to check if the installation was complete in case multiple processes
