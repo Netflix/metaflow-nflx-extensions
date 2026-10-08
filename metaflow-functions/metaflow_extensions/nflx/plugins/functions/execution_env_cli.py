@@ -37,19 +37,22 @@ def main(argv=None) -> int:
         materialize_conda_environment,
     )
 
-    prefix = materialize_conda_environment(
+    env = materialize_conda_environment(
         {"environment": {"alias": args.alias, "arch": args.arch}}
     )
+    if env.activate is None:
+        print("Could not write an activate script in %s" % env.prefix, file=sys.stderr)
+        return 1
 
     # stdout carries only the answer; the conda machinery logs to stderr.
     if args.format == "prefix":
-        print(prefix)
+        print(env.prefix)
     else:
         print(
             json.dumps(
                 {
-                    "prefix": prefix,
-                    "python": environment_python_version(prefix),
+                    "prefix": env.prefix,
+                    "python": environment_python_version(env.python),
                     "arch": args.arch,
                 }
             )
