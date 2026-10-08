@@ -430,7 +430,8 @@ class CondaEnvironment:
 
 
 def materialize_conda_environment(system_metadata: Dict[str, Any]) -> CondaEnvironment:
-    """Create the conda environment described by ``system_metadata``.
+    """Create the conda environment described by ``system_metadata`` and return its
+    prefix, python binary and activate script.
 
     Also writes an ``activate`` script, for a host that runs a process inside the
     environment (for example, Triton's ``EXECUTION_ENV_PATH``).
