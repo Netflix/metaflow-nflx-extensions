@@ -28,6 +28,7 @@ from ..utils import (
     _safe_netloc,
     arch_id,
     channel_or_url,
+    constrain_pypi_deps,
     filter_user_reqs_by_markers,
     parse_explicit_url_conda,
     parse_explicit_url_pypi,
@@ -103,7 +104,9 @@ class CondaLockResolver(Resolver):
             # Write out the TOML file. It's easy enough that we don't use another tool
             # to write it out. We use TOML so that we can disable pypi if needed
 
-            pypi_deps = deps.get("pypi", [])
+            pypi_deps = constrain_pypi_deps(
+                deps.get("pypi", []), extras.get("pypi_constraints", [])
+            )
             conda_deps = list(chain(deps.get("conda", []), deps.get("npconda", [])))
 
             sys_overrides = split_into_dict(deps.get("sys", []))

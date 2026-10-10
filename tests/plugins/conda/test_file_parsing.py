@@ -9,7 +9,7 @@ passed to it, verifying the entire flow from file parsing through environment_cm
 import os
 import platform
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 from typing import Dict, List, Optional
@@ -19,6 +19,7 @@ from metaflow_extensions.netflixext.cmd.environment.environment_cmd import envir
 from metaflow_extensions.netflixext.plugins.conda.env_descr import EnvType
 from metaflow_extensions.netflixext.plugins.conda.utils import (
     arch_id,
+    clean_up_double_equal,
     dict_to_strlist,
     merge_dep_dicts,
     split_into_dict,
@@ -26,7 +27,6 @@ from metaflow_extensions.netflixext.plugins.conda.utils import (
 
 from metaflow.metaflow_config import DEFAULT_DATASTORE, get_pinned_conda_libs
 from metaflow_extensions.netflixext.plugins.conda.conda import Conda
-
 
 # Get the test data directory
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -441,6 +441,74 @@ def test_parse_only_src_yml(cli_runner, mock_resolver_add_environment):
         {},
         {},
     )
+
+
+@pytest.mark.parametrize(
+    "resolve_args, expected",
+    [
+        (["-r", os.path.join(ENV_DIR, "itsdangerous.txt"), "--python", "3.10"], True),
+        (
+            [
+                "-r",
+                os.path.join(ENV_DIR, "itsdangerous.txt"),
+                "--python",
+                "3.10",
+                "--skip-metaflow-deps",
+            ],
+            False,
+        ),
+        (["-f", os.path.join(ENV_DIR, "only-src.yml")], True),
+        (["-f", os.path.join(ENV_DIR, "itsdangerous.yml")], False),
+    ],
+    ids=["pypi-only", "skip-metaflow-deps", "mixed", "conda-only"],
+)
+def test_pypi_constraints_follow_environment_type_without_adding_dependencies(
+    cli_runner,
+    mock_resolver_add_environment,
+    resolve_args,
+    expected,
+):
+    runner, env_vars = cli_runner
+
+    with patch(
+        "metaflow_extensions.netflixext.cmd.environment.environment_cmd."
+        "pypi_constraint_extras",
+        return_value={"pypi_constraints": ["nflx-pyiceberg>=0.11.102"]},
+    ), patch.object(
+        Conda,
+        "virtual_packages",
+        new_callable=PropertyMock,
+        return_value={},
+    ), patch.object(
+        Conda,
+        "default_conda_channels",
+        new_callable=PropertyMock,
+        return_value=["conda-forge"],
+    ), patch.object(
+        Conda,
+        "default_pypi_sources",
+        new_callable=PropertyMock,
+        return_value=["https://pypi.netflix.net/simple"],
+    ), patch.object(
+        Conda,
+        "created_environments",
+        return_value={},
+    ):
+        result = runner.invoke(
+            environment,
+            ["resolve", *resolve_args, "--dry-run"],
+            env=env_vars,
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0, f"Command failed: {result.output}"
+    args, _ = mock_resolver_add_environment.add_environment.call_args
+    pypi_deps = clean_up_double_equal(args[1].get("pypi", []))
+
+    assert not any(dep.startswith("nflx-pyiceberg") for dep in pypi_deps)
+    assert (
+        "nflx-pyiceberg>=0.11.102" in args[3].get("pypi_constraints", [])
+    ) is expected
 
 
 def test_multiple_architectures(cli_runner, mock_resolver_add_environment):

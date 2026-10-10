@@ -51,6 +51,7 @@ from metaflow_extensions.netflixext.plugins.conda.utils import (
     channel_or_url,
     conda_deps_to_pypi_deps,
     dict_to_strlist,
+    pypi_constraint_extras,
     get_sys_packages,
     resolve_env_alias,
     plural_marker,
@@ -857,6 +858,12 @@ def resolve(
         dict_to_strlist({k: v for k, v in sys_pkgs.items() if k not in new_sys_deps})
     )
     deps["sys"] = sys_deps
+
+    if not skip_metaflow_deps and env_type != EnvType.CONDA_ONLY:
+        for category, constraints in pypi_constraint_extras(
+            base_env_python, obj.datastore_type
+        ).items():
+            new_extras.setdefault(category, []).extend(constraints)
 
     for cur_arch in archs:
         if not from_str and base_env_id:

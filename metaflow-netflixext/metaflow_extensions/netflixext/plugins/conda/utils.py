@@ -665,6 +665,90 @@ def merge_dep_dicts(
     return result
 
 
+def get_pypi_constraints(
+    python_version: Optional[str], datastore_type: str
+) -> Dict[str, str]:
+    """Collect constraints on optional PyPI packages, not install requirements."""
+    from metaflow.extension_support import get_modules
+
+    pins: Dict[str, str] = {}
+    for extension in get_modules("config"):
+        hook = getattr(extension.module, "get_pypi_constraints", None)
+        if hook is not None:
+            pins = merge_dep_dicts(
+                pins,
+                hook(python_version, datastore_type),
+            )
+    return pins
+
+
+def pypi_constraint_extras(
+    python_version: Optional[str], datastore_type: str
+) -> Dict[str, List[str]]:
+    constraints = get_pypi_constraints(python_version, datastore_type)
+    if not constraints:
+        return {}
+    return {"pypi_constraints": clean_up_double_equal(dict_to_strlist(constraints))}
+
+
+def pypi_constraints_satisfied(
+    packages: Iterable["PackageSpecification"], extras: Dict[str, List[str]]
+) -> bool:
+    from metaflow._vendor.packaging.utils import canonicalize_name
+
+    versions = {
+        canonicalize_name(p.package_name): p.package_version
+        for p in packages
+        if p.TYPE == "pypi"
+    }
+    for constraint in extras.get("pypi_constraints", []):
+        req = Requirement(constraint)
+        version = versions.get(canonicalize_name(req.name))
+        if version is not None and not req.specifier.contains(
+            version, prereleases=True
+        ):
+            return False
+    return True
+
+
+def validate_pypi_constraints(
+    packages: Iterable["PackageSpecification"], extras: Dict[str, List[str]]
+) -> None:
+    if not pypi_constraints_satisfied(packages, extras):
+        raise CondaException(
+            "Resolved PyPI packages violate extension constraints: %s. "
+            "Update the conflicting dependency pins or choose a compatible named environment."
+            % ", ".join(extras.get("pypi_constraints", []))
+        )
+
+
+def constrain_pypi_deps(deps: List[str], constraints: List[str]) -> List[str]:
+    """Intersect constraints with explicit requirements without adding packages.
+
+    Used by conda-lock, whose Poetry solver has no constraints-file interface.
+    Transitive packages are validated after resolution instead.
+    """
+    from metaflow._vendor.packaging.utils import canonicalize_name
+
+    by_name: Dict[str, List[str]] = {}
+    for constraint in constraints:
+        req = Requirement(constraint)
+        by_name.setdefault(canonicalize_name(req.name), []).append(str(req.specifier))
+    result = []
+    for dep in deps:
+        req = get_requirement(dep)
+        limits = by_name.get(canonicalize_name(req.name), [])
+        if not limits or req.url:
+            result.append(dep)
+            continue
+        name = req.name
+        if req.extras:
+            name += "[%s]" % ",".join(sorted(req.extras))
+        specifiers = ",".join(filter(None, [str(req.specifier)] + limits))
+        result.append("%s==%s" % (name, specifiers))
+    return result
+
+
 def reform_pypi_filename(
     name: str, version: Version, build: BuildTag, tags: FrozenSet[Tag]
 ) -> str:
@@ -1208,7 +1292,7 @@ def get_best_compatible_packages(
     supported_tags: List[Tag] = [],
 ) -> Dict[str, "PackageSpecification"]:
 
-    best_packages = dict()  # type:  Dict[str, "PackageSpecification"]
+    best_packages = dict()  # type: Dict[str, "PackageSpecification"]
 
     for key, package_list in grouped_packages.items():
         for t in supported_tags:

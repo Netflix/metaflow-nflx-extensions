@@ -47,6 +47,7 @@ from .utils import (
     channel_or_url,
     conda_deps_to_pypi_deps,
     get_conda_manifest_path,
+    pypi_constraint_extras,
     get_sys_packages,
     merge_dep_dicts,
     resolve_env_alias,
@@ -139,7 +140,7 @@ class CondaEnvironment(MetaflowEnvironment):
                 arch,
                 req.packages_as_str,
                 req.sources,
-                {},
+                req.extras,
                 req.file_paths,
                 step.name,
                 base_env,
@@ -618,11 +619,12 @@ class CondaEnvironment(MetaflowEnvironment):
         # env-type is mixed
 
         if env_type == EnvType.PYPI_ONLY:
+            pypi_pins = conda_deps_to_pypi_deps(
+                get_pinned_conda_libs(final_req.python, datastore_type)
+            )
             all_packages["pypi"] = merge_dep_dicts(
                 all_packages.get("pypi", {}),
-                conda_deps_to_pypi_deps(
-                    get_pinned_conda_libs(final_req.python, datastore_type)
-                ),
+                pypi_pins,
             )
         else:
             all_packages["conda"] = merge_dep_dicts(
@@ -681,19 +683,23 @@ class CondaEnvironment(MetaflowEnvironment):
         # to store the env_id here in case this is called from the CLI (ie: we need
         # to be able to get the req_id from steps even if init_environment is not called)
         # We could improve this though it is likely not a huge overhead.
+        extras = final_req.extras
+        if env_type != EnvType.CONDA_ONLY:
+            extras.update(pypi_constraint_extras(final_req.python, datastore_type))
+        final_req.extras = extras
         if from_env:
             _, env_id, _, _, _, _, _ = EnvsResolver.extract_info_from_base(
                 conda,
                 from_env,
                 final_req.packages_as_str,
                 final_req.sources,
-                {},
+                final_req.extras,
                 step_arch,
             )
         else:
             env_id = EnvID(
                 ResolvedEnvironment.get_req_id(
-                    final_req.packages_as_str, final_req.sources, {}
+                    final_req.packages_as_str, final_req.sources, final_req.extras
                 ),
                 "_default",
                 step_arch,
