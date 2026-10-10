@@ -184,6 +184,25 @@ for example, be passed to `metaflow environment resolve` using the `-r` or `-f` 
 respectively. They highlight some of the functionalities present. Note that the same
 environments can also be specified directly using the `@conda` or `@pip` decorators.
 
+##### Extension-provided PyPI constraints
+
+Config extensions may define `get_pypi_constraints(python_version, datastore_type)`
+and return a dictionary of package names to version constraints. Unlike package
+requirements, these constraints do not cause packages to be installed. They only
+restrict packages selected by the environment's direct or transitive dependencies.
+They apply to PyPI-only and mixed environment resolution, not Conda-only environments.
+
+Constraints are stored separately from requirements and participate in the
+environment's request ID. Cached and named environments are checked before reuse;
+an incompatible named environment must be derived or replaced, not modified in place.
+Already deployed tasks continue to use their recorded environment IDs.
+
+The pip resolver receives a constraints file. For mixed environments, conda-lock
+intersects constraints with explicit PyPI requirements and validates all selected
+PyPI packages after solving. Because conda-lock does not expose a constraints-file
+interface, an incompatible transitive dependency fails with an actionable error
+rather than automatically backtracking under the constraint.
+
 ##### Pure "pypi" environment with non-python Conda packages
 ```
 --conda-pkg ffmpeg

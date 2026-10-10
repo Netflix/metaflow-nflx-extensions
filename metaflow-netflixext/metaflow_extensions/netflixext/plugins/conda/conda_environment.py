@@ -47,7 +47,7 @@ from .utils import (
     channel_or_url,
     conda_deps_to_pypi_deps,
     get_conda_manifest_path,
-    get_pinned_pypi_libs,
+    pypi_constraint_extras,
     get_sys_packages,
     merge_dep_dicts,
     resolve_env_alias,
@@ -140,7 +140,7 @@ class CondaEnvironment(MetaflowEnvironment):
                 arch,
                 req.packages_as_str,
                 req.sources,
-                {},
+                req.extras,
                 req.file_paths,
                 step.name,
                 base_env,
@@ -622,9 +622,6 @@ class CondaEnvironment(MetaflowEnvironment):
             pypi_pins = conda_deps_to_pypi_deps(
                 get_pinned_conda_libs(final_req.python, datastore_type)
             )
-            extension_pins = get_pinned_pypi_libs(final_req.python, datastore_type)
-            if extension_pins:
-                pypi_pins = merge_dep_dicts(pypi_pins, extension_pins)
             all_packages["pypi"] = merge_dep_dicts(
                 all_packages.get("pypi", {}),
                 pypi_pins,
@@ -634,13 +631,6 @@ class CondaEnvironment(MetaflowEnvironment):
                 all_packages.get("conda", {}),
                 get_pinned_conda_libs(final_req.python, datastore_type),
             )
-        if env_type == EnvType.MIXED:
-            extension_pins = get_pinned_pypi_libs(final_req.python, datastore_type)
-            if extension_pins:
-                all_packages["pypi"] = merge_dep_dicts(
-                    all_packages.get("pypi", {}),
-                    extension_pins,
-                )
 
         # Add the system requirements and default channels.
         # The default channels go into the computation of the req ID so it is important
@@ -693,19 +683,23 @@ class CondaEnvironment(MetaflowEnvironment):
         # to store the env_id here in case this is called from the CLI (ie: we need
         # to be able to get the req_id from steps even if init_environment is not called)
         # We could improve this though it is likely not a huge overhead.
+        extras = final_req.extras
+        if env_type != EnvType.CONDA_ONLY:
+            extras.update(pypi_constraint_extras(final_req.python, datastore_type))
+        final_req.extras = extras
         if from_env:
             _, env_id, _, _, _, _, _ = EnvsResolver.extract_info_from_base(
                 conda,
                 from_env,
                 final_req.packages_as_str,
                 final_req.sources,
-                {},
+                final_req.extras,
                 step_arch,
             )
         else:
             env_id = EnvID(
                 ResolvedEnvironment.get_req_id(
-                    final_req.packages_as_str, final_req.sources, {}
+                    final_req.packages_as_str, final_req.sources, final_req.extras
                 ),
                 "_default",
                 step_arch,
