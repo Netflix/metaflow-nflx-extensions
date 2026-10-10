@@ -437,7 +437,7 @@ def resolve(
                     step_arch,
                     req.packages_as_str,
                     req.sources,
-                    {},
+                    req.extras,
                     {},
                     step.name,
                     base_env,
