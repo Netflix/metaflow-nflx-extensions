@@ -157,6 +157,8 @@ class PipResolver(Resolver):
             constraint_file = os.path.join(pypi_dir, "constraints.txt")
             with open(constraint_file, "w") as cf:
                 cf.write("setuptools<82\n")
+                for constraint in extras.get("pypi_constraints", []):
+                    cf.write(constraint + "\n")
             args.extend(["--constraint", constraint_file])
             # Also set PIP_CONSTRAINT env var so the constraint propagates to
             # pip's build isolation subprocesses (--constraint only applies to
