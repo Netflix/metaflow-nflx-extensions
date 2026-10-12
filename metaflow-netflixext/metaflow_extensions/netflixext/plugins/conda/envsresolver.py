@@ -55,10 +55,8 @@ from .utils import (
     get_builder_envs_dep,
     merge_dep_dicts,
     plural_marker,
-    pypi_constraints_satisfied,
     split_into_dict,
     tstr_to_dict,
-    validate_pypi_constraints,
 )
 
 if TYPE_CHECKING:
@@ -202,9 +200,6 @@ class EnvsResolver(object):
                 if not force
                 else None
             )
-
-        if resolved_env is not None:
-            validate_pypi_constraints(resolved_env.packages, extras_out)
 
         return (
             env_type,
@@ -978,7 +973,6 @@ class EnvsResolver(object):
                     env_type=resolved_env.env_type,
                     accurate_source=env_desc["base_accurate"],
                 )
-            validate_pypi_constraints(resolved_env.packages, env_desc["extras"])
             _system_logger.log_event(
                 level="info",
                 module="nflx.conda",
@@ -1131,7 +1125,7 @@ class EnvsResolver(object):
                     )
 
         for category, extra in base_extras.items():
-            extras[category] = list(dict.fromkeys(extras.get(category, []) + extra))
+            extras.setdefault(category, []).extend(extra)
 
         conda_deps = {
             p.package_name_with_channel(): p.package_version
@@ -1147,7 +1141,7 @@ class EnvsResolver(object):
         # Check if the incoming dependencies are already included and
         # compatible with the base environment. If so, we may be able to avoid
         # re-resolving the environment.
-        compatible_base_env = pypi_constraints_satisfied(base_env.packages, extras)
+        compatible_base_env = True
         debug.conda_exec(
             "Base sys deps: %s; User sys deps: %s" % (base_sys_deps, user_sys_deps)
         )

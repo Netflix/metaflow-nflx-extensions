@@ -28,6 +28,7 @@ from metaflow_extensions.netflixext.plugins.conda.utils import (
 from metaflow.metaflow_config import DEFAULT_DATASTORE, get_pinned_conda_libs
 from metaflow_extensions.netflixext.plugins.conda.conda import Conda
 
+
 # Get the test data directory
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_DIR = os.path.join(TEST_DIR, "..", "..", "environments", "env_specs")
@@ -462,7 +463,7 @@ def test_parse_only_src_yml(cli_runner, mock_resolver_add_environment):
     ],
     ids=["pypi-only", "skip-metaflow-deps", "mixed", "conda-only"],
 )
-def test_pypi_constraints_follow_environment_type_without_adding_dependencies(
+def test_pinned_pypi_libs_follow_environment_type(
     cli_runner,
     mock_resolver_add_environment,
     resolve_args,
@@ -472,8 +473,8 @@ def test_pypi_constraints_follow_environment_type_without_adding_dependencies(
 
     with patch(
         "metaflow_extensions.netflixext.cmd.environment.environment_cmd."
-        "pypi_constraint_extras",
-        return_value={"pypi_constraints": ["nflx-pyiceberg>=0.11.102"]},
+        "get_pinned_pypi_libs",
+        return_value={"nflx-pyiceberg": ">=0.11.102"},
     ), patch.object(
         Conda,
         "virtual_packages",
@@ -505,10 +506,7 @@ def test_pypi_constraints_follow_environment_type_without_adding_dependencies(
     args, _ = mock_resolver_add_environment.add_environment.call_args
     pypi_deps = clean_up_double_equal(args[1].get("pypi", []))
 
-    assert not any(dep.startswith("nflx-pyiceberg") for dep in pypi_deps)
-    assert (
-        "nflx-pyiceberg>=0.11.102" in args[3].get("pypi_constraints", [])
-    ) is expected
+    assert ("nflx-pyiceberg>=0.11.102" in pypi_deps) is expected
 
 
 def test_multiple_architectures(cli_runner, mock_resolver_add_environment):
