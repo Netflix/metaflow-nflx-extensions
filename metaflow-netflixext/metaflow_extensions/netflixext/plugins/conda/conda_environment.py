@@ -741,6 +741,9 @@ class CondaEnvironment(MetaflowEnvironment):
             None if from_env is None else from_env.env_type
         )
 
+        if from_env_env_type == EnvType.MIXED:
+            return EnvType.MIXED
+
         # Use the private variables directly to avoid deep copy on packages(), sources() properties.
         has_conda = len(final_req._packages.get("conda", {})) > 0
         has_pypi = len(final_req._packages.get("pypi", {})) > 0
