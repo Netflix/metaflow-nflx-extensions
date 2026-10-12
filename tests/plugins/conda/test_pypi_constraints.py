@@ -171,6 +171,10 @@ def test_cached_environment_cannot_bypass_constraints(mocker):
 
 def test_pip_resolver_passes_constraints_without_adding_requirements(mocker):
     from pathlib import Path
+    from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser
+    from metaflow_extensions.netflixext.plugins.conda.conda_step_decorator import (
+        PypiRequirementStepDecorator,
+    )
     from metaflow_extensions.netflixext.plugins.conda.resolvers.pip_resolver import (
         PipResolver,
     )
@@ -185,6 +189,11 @@ def test_pip_resolver_passes_constraints_without_adding_requirements(mocker):
     conda = mocker.Mock()
     conda.create_builder_env.return_value = "/unused-builder"
     captured = {}
+    decorator = PypiRequirementStepDecorator(
+        attributes=req_parser("--find-links https://example.com/wheels\npydantic<2")
+    )
+    extras = decorator.extras
+    extras["pypi_constraints"] = ["nflx-pyiceberg>=0.11.102"]
 
     def capture(args, **kwargs):
         path = args[args.index("--constraint") + 1]
@@ -199,12 +208,16 @@ def test_pip_resolver_passes_constraints_without_adding_requirements(mocker):
             "python==3.10.*",
             {"pypi": ["pydantic==<2"], "sys": ["__glibc==2.27=0"]},
             {"pypi": ["https://pypi.netflix.net/simple"]},
-            {"pypi_constraints": ["nflx-pyiceberg>=0.11.102"]},
+            extras,
             arch_id(),
             [builder],
         )
     assert "nflx-pyiceberg>=0.11.102\n" in captured["constraints"]
     assert "pydantic<2" in captured["args"]
+    assert captured["args"][captured["args"].index("--find-links") + 1] == (
+        "https://example.com/wheels"
+    )
+    assert "--pypi" not in captured["args"]
     assert not any("nflx-pyiceberg" in arg for arg in captured["args"])
 
 
