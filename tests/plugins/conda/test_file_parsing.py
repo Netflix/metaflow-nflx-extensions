@@ -753,6 +753,31 @@ def test_req_parser_with_extra_index_url():
     assert "pandas" in result["packages"]
 
 
+@pytest.mark.parametrize(
+    "option, expected",
+    [
+        (
+            "--find-links https://example.com/wheels",
+            "find-links https://example.com/wheels",
+        ),
+        ("-f https://example.com/wheels", "find-links https://example.com/wheels"),
+        ("--trusted-host example.com", "trusted-host example.com"),
+        ("--pre", "pre"),
+        ("--no-index", "no-index"),
+    ],
+)
+def test_req_parser_extras_round_trip_through_pypi_decorator(option, expected):
+    from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser
+    from metaflow_extensions.netflixext.plugins.conda.conda_step_decorator import (
+        PypiRequirementStepDecorator,
+    )
+
+    parsed = req_parser(option + "\npandas>=1.0")
+    assert parsed["extras"] == [expected]
+    decorator = PypiRequirementStepDecorator(attributes=parsed)
+    assert decorator.extras == {"pypi": ["--" + expected]}
+
+
 def test_req_parser_with_python_version():
     """Test that python version is correctly extracted from requirements."""
     from metaflow_extensions.netflixext.plugins.conda.parsers import req_parser
