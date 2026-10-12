@@ -32,7 +32,11 @@ def req_parser(config_value: str) -> Dict[str, Any]:
         result["python"] = python_version
 
     if extra_args:
-        result["extras"] = extra_args
+        # @pypi expects a list of options and adds the leading "--" itself.
+        result["extras"] = [
+            "find-links" + arg[2:] if arg.startswith("-f ") else arg.lstrip("-")
+            for arg in extra_args["pypi"]
+        ]
     if np_deps:
         result["conda_only"] = np_deps
     if sys_deps:
