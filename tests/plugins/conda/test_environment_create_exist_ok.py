@@ -98,3 +98,17 @@ def test_force_wins_over_exist_ok(conda, tmp_path):
     assert result.exit_code == 0, result.output
     conda.remove_for_name.assert_called_once_with("my_env")
     conda.create_for_name.assert_called_once()
+
+
+def test_arch_defaults_to_none(conda, tmp_path):
+    conda.created_environment.return_value = None
+    result, _ = _create(tmp_path)
+    assert result.exit_code == 0, result.output
+    assert conda.env_id_from_alias.call_args.args[1] is None
+
+
+def test_arch_is_passed_to_alias_lookup(conda, tmp_path):
+    conda.created_environment.return_value = None
+    result, _ = _create(tmp_path, "--arch", "linux-aarch64")
+    assert result.exit_code == 0, result.output
+    assert conda.env_id_from_alias.call_args.args[:2] == ("my/alias", "linux-aarch64")

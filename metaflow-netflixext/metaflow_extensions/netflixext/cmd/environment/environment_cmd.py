@@ -253,6 +253,12 @@ def environment(
     "environment. --force takes precedence.",
 )
 @click.option(
+    "--arch",
+    default=None,
+    show_default=False,
+    help="Architecture of the environment to create; defaults to this machine's",
+)
+@click.option(
     "--strict/--no-strict",
     default=True,
     is_flag=True,
@@ -288,6 +294,7 @@ def create(
     local_only: bool,
     force: bool,
     exist_ok: bool,
+    arch: Optional[str],
     strict: bool,
     into_dir: Optional[str],
     install_notebook: bool,
@@ -347,7 +354,7 @@ def create(
             )
 
     env_id_for_alias = cast(Conda, obj.conda).env_id_from_alias(
-        env_name, local_only=local_only
+        env_name, arch, local_only=local_only
     )
     if env_id_for_alias is None:
         raise CommandException(
