@@ -15,10 +15,6 @@ if TYPE_CHECKING:
 
 from metaflow.plugins.env_escape import generate_trampolines
 
-try:
-    from metaflow_extensions.netflixext.plugins.conda.conda import Conda  # type: ignore
-except ImportError:
-    from metaflow_extensions.netflix_ext.plugins.conda.conda import Conda  # type: ignore
 from metaflow_extensions.nflx.plugins.functions.debug import debug
 from metaflow_extensions.nflx.plugins.functions.utils import (
     is_s3,
@@ -413,6 +409,18 @@ def resolve_conda_environment(system_metadata: Dict[str, Any]) -> str:
 
     def no_echo(*args, **kwargs):
         pass
+
+    # Imported here, not at module scope: a serving environment has the serving
+    # stack but not the conda plugin, and a module-scope import made the local
+    # backend (local_backend -> abstract_backend -> this module) unimportable there.
+    try:
+        from metaflow_extensions.netflixext.plugins.conda.conda import (  # type: ignore
+            Conda,
+        )
+    except ImportError:
+        from metaflow_extensions.netflix_ext.plugins.conda.conda import (  # type: ignore
+            Conda,
+        )
 
     c = Conda(no_echo, "s3")
     if alias is None:
