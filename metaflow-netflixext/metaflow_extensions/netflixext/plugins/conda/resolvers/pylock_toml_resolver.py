@@ -268,6 +268,15 @@ class PylockTomlResolver(Resolver):
         }
         for dep in requirements:
             req = get_pypi_requirement(dep)
+            # UV includes the interpreter in user_deps_for_hash, alongside its
+            # PyPI requirements. Conda supplies Python; it is not a locked wheel.
+            if canonicalize_name(req.name) == "python":
+                if not req.specifier.contains(python_full_version, prereleases=True):
+                    raise CondaException(
+                        "UV/pylock environment does not satisfy Python requirement '%s' "
+                        "(resolved interpreter: %s)." % (req, python_full_version)
+                    )
+                continue
             version = locked.get(canonicalize_name(req.name))
             if version is None or not req.specifier.contains(version, prereleases=True):
                 raise CondaException(
