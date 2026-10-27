@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from metaflow.metaflow_config import CONDA_SYS_DEPENDENCIES
 from metaflow.metaflow_environment import InvalidEnvironmentException
 from metaflow._vendor.packaging.requirements import InvalidRequirement, Requirement
+from .utils import merge_pypi_dep_dicts
 
 
 REQ_SPLIT_LINE = re.compile(r"([^~<=>]*)([~<=>]+.*)?")
@@ -215,7 +216,12 @@ def parse_req_value(
                 if specifier:
                     python_version = specifier
             else:
-                deps[dep_name] = specifier
+                if dep_name in deps:
+                    merged = merge_pypi_dep_dicts(deps, {dep_name: specifier})
+                    deps.clear()
+                    deps.update(merged)
+                else:
+                    deps[dep_name] = specifier
     return python_version
 
 
@@ -358,7 +364,12 @@ def parse_toml_value(
             raise InvalidEnvironmentException(
                 "Python specification should be specified as 'requires-python'"
             )
-        deps[dep_name] = specifier
+        if dep_name in deps:
+            merged = merge_pypi_dep_dicts(deps, {dep_name: specifier})
+            deps.clear()
+            deps.update(merged)
+        else:
+            deps[dep_name] = specifier
 
     # Also parse poetry sources as extra indices
     poetry_sources = data.get("tool", {}).get("poetry", {}).get("source", [])
