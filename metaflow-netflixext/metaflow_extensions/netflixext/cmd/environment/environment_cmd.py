@@ -56,6 +56,7 @@ from metaflow_extensions.netflixext.plugins.conda.utils import (
     resolve_env_alias,
     plural_marker,
     merge_dep_dicts,
+    merge_pypi_dep_dicts,
     tstr_to_dict,
 )
 
@@ -823,7 +824,7 @@ def resolve(
             )
             extension_pins = get_pinned_pypi_libs(base_env_python, obj.datastore_type)
             if extension_pins:
-                pypi_deps = merge_dep_dicts(pypi_deps, extension_pins)
+                pypi_deps = merge_pypi_dep_dicts(pypi_deps, extension_pins)
 
             conda_deps = {}
         else:
@@ -835,7 +836,7 @@ def resolve(
             else:
                 pypi_deps = {}
 
-        pypi_deps = merge_dep_dicts(pypi_deps, new_pypi_deps)
+        pypi_deps = merge_pypi_dep_dicts(pypi_deps, new_pypi_deps)
         conda_deps = merge_dep_dicts(conda_deps, new_conda_deps)
 
         deps = {

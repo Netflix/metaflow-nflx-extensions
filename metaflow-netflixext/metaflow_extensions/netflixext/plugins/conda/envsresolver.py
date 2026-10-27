@@ -54,8 +54,10 @@ from .utils import (
     filter_user_reqs_by_markers,
     get_builder_envs_dep,
     merge_dep_dicts,
+    merge_pypi_dep_dicts,
     plural_marker,
     split_into_dict,
+    split_pypi_deps,
     tstr_to_dict,
 )
 
@@ -1057,7 +1059,7 @@ class EnvsResolver(object):
 
         incoming_conda_deps = split_into_dict(filtered_deps.get("conda", []))
         incoming_npconda_deps = split_into_dict(filtered_deps.get("npconda", []))
-        incoming_pypi_deps = split_into_dict(filtered_deps.get("pypi", []))
+        incoming_pypi_deps = split_pypi_deps(filtered_deps.get("pypi", []))
         incoming_sys_deps = split_into_dict(filtered_deps.get("sys", []))
 
         base_deps = tstr_to_dict(base_env.deps)
@@ -1068,8 +1070,8 @@ class EnvsResolver(object):
             split_into_dict(base_deps.get("conda", [])),
             incoming_conda_deps,
         )
-        user_pypi_deps = merge_dep_dicts(
-            split_into_dict(base_deps.get("pypi", [])),
+        user_pypi_deps = merge_pypi_dep_dicts(
+            split_pypi_deps(base_deps.get("pypi", [])),
             incoming_pypi_deps,
         )
         user_npconda_deps = merge_dep_dicts(
@@ -1187,7 +1189,7 @@ class EnvsResolver(object):
             conda_deps = merge_dep_dicts(
                 merge_dep_dicts(conda_deps, incoming_conda_deps), incoming_npconda_deps
             )
-            pypi_deps = merge_dep_dicts(pypi_deps, incoming_pypi_deps)
+            pypi_deps = merge_pypi_dep_dicts(pypi_deps, incoming_pypi_deps)
 
         # The dependencies we need to resolve for are:
         #  - the packages from the base environment

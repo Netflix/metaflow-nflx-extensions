@@ -23,6 +23,7 @@ from typing import (
     NamedTuple,
     Optional,
     Sequence,
+    Set,
     Tuple,
     Union,
     cast,
@@ -31,7 +32,7 @@ from urllib.parse import unquote, urlparse, urlunparse
 
 import metaflow.metaflow_config as mf_config
 from metaflow._vendor.packaging.markers import Marker, default_environment
-from metaflow._vendor.packaging.requirements import Requirement
+from metaflow._vendor.packaging.requirements import InvalidRequirement, Requirement
 from metaflow._vendor.packaging.specifiers import SpecifierSet
 from metaflow._vendor.packaging.tags import (
     Tag,
@@ -40,7 +41,11 @@ from metaflow._vendor.packaging.tags import (
     cpython_tags,
     mac_platforms,
 )
-from metaflow._vendor.packaging.utils import BuildTag, parse_wheel_filename
+from metaflow._vendor.packaging.utils import (
+    BuildTag,
+    canonicalize_name,
+    parse_wheel_filename,
+)
 from metaflow._vendor.packaging.version import Version, InvalidVersion
 from metaflow.debug import debug
 from metaflow.exception import MetaflowException
@@ -635,6 +640,15 @@ def clean_up_double_equal(deps: Iterable[str]) -> List[str]:
     return [_double_equal_match.sub("", d) for d in deps]
 
 
+def get_pypi_requirement(dep: str) -> Requirement:
+    # Unlike get_requirement, do not strip Conda build suffixes: that would
+    # also strip parts of valid PyPI names, versions, and URLs.
+    try:
+        return Requirement(dep)
+    except InvalidRequirement:
+        return Requirement(_double_equal_match.sub("", dep, count=1))
+
+
 def merge_dep_dicts(
     d1: Dict[str, str], d2: Dict[str, str], only_last_deps: bool = False
 ) -> Dict[str, str]:
@@ -665,6 +679,63 @@ def merge_dep_dicts(
     return result
 
 
+def merge_pypi_dep_dicts(d1: Dict[str, str], d2: Dict[str, str]) -> Dict[str, str]:
+    """Merge PyPI requirements without losing extras or conditional constraints.
+
+    Conditional requirements are stored as complete requirement keys with empty
+    values. This keeps independent markers representable in the existing dict
+    interface and round-trips through dict_to_strlist. They are combined with
+    unconditional requirements only after target-specific marker filtering.
+    """
+    grouped: Dict[
+        Tuple[str, Optional[str]], Tuple[Set[str], Dict[str, str], Optional[str]]
+    ] = {}
+    for dep in chain(dict_to_strlist(d1), dict_to_strlist(d2)):
+        req = get_pypi_requirement(dep)
+        name = canonicalize_name(req.name)
+        marker = str(req.marker) if req.marker else None
+        key = (name, marker)
+        extras, versions, url = grouped.get(key, (set(), {}, None))
+        if url and req.url and url != req.url:
+            raise InvalidEnvironmentException(
+                "Conflicting URLs for PyPI package %s" % name
+            )
+        version = str(req.specifier)
+        if (
+            version.startswith("==")
+            and not version.startswith("===")
+            and "," not in version
+        ):
+            version = version[2:]
+        versions = merge_dep_dicts(versions, {name: version})
+        url = url or req.url
+        if url and versions[name]:
+            raise InvalidEnvironmentException(
+                "Cannot combine a URL and version constraints for PyPI package %s"
+                % name
+            )
+        grouped[key] = (extras.union(req.extras), versions, url)
+
+    result: Dict[str, str] = {}
+    for (name, marker), (extras, versions, url) in grouped.items():
+        package = name + ("[%s]" % ",".join(sorted(extras)) if extras else "")
+        if url:
+            package += " @ " + url
+        if marker:
+            requirement = get_pypi_requirement(
+                dict_to_strlist({package: versions[name]})[0]
+            )
+            result["%s; %s" % (requirement, marker)] = ""
+        else:
+            result[package] = versions[name]
+    return result
+
+
+def split_pypi_deps(deps: Iterable[str]) -> Dict[str, str]:
+    """Parse requirements while preserving repeated names and distinct markers."""
+    return merge_pypi_dep_dicts({}, {dep: "" for dep in deps})
+
+
 def get_pinned_pypi_libs(
     python_version: Optional[str], datastore_type: str
 ) -> Dict[str, str]:
@@ -675,7 +746,7 @@ def get_pinned_pypi_libs(
     for extension in get_modules("config"):
         hook = getattr(extension.module, "get_pinned_pypi_libs", None)
         if hook is not None:
-            pins = merge_dep_dicts(
+            pins = merge_pypi_dep_dicts(
                 pins,
                 hook(python_version, datastore_type),
             )
@@ -1260,6 +1331,24 @@ def compute_target_envs(
     )
 
     if arch != arch_id():
+        # Supply the standard target fields even when no custom system markers
+        # are configured. Never evaluate a macOS lock against Linux host markers.
+        target_systems = {
+            "linux-64": ("linux", "Linux", "x86_64"),
+            "linux-aarch64": ("linux", "Linux", "aarch64"),
+            "osx-64": ("darwin", "Darwin", "x86_64"),
+            "osx-arm64": ("darwin", "Darwin", "arm64"),
+        }
+        if arch in target_systems:
+            sys_platform, platform_system, platform_machine = target_systems[arch]
+            target_env.update(
+                {
+                    "sys_platform": sys_platform,
+                    "platform_system": platform_system,
+                    "platform_machine": platform_machine,
+                    "os_name": "posix",
+                }
+            )
         target_env.update(CONDA_SYS_MARKERS.get(arch, {}))
 
     # Workaround issue with platform_release not being clean enough for our packaged
@@ -1445,7 +1534,11 @@ def filter_user_reqs_by_markers(
                 new_deps[dep_type].append(dep)
                 continue
 
-            req = get_requirement(dep)
+            req = (
+                get_pypi_requirement(dep)
+                if dep_type == "pypi"
+                else get_requirement(dep)
+            )
             if evaluate_marker(req.marker, target_envs):
                 new_deps[dep_type].append(dep.split(";")[0])  # Remove the marker part
             else:
@@ -1454,6 +1547,13 @@ def filter_user_reqs_by_markers(
                     % dep.split(";")[0]
                 )
                 continue
+    if "pypi" in new_deps:
+        names = [
+            canonicalize_name(get_pypi_requirement(dep).name)
+            for dep in new_deps["pypi"]
+        ]
+        if len(set(names)) != len(names):
+            new_deps["pypi"] = dict_to_strlist(split_pypi_deps(new_deps["pypi"]))
     return new_deps
 
 
