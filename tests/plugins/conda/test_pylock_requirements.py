@@ -70,6 +70,30 @@ def test_pylock_accepts_compatible_required_package(resolve_locked_environment):
     )
 
 
+@pytest.mark.parametrize("requirement", ["python==3.10.14", "python==>=3.10,<3.11"])
+def test_pylock_checks_python_requirement_against_conda_interpreter(
+    resolve_locked_environment, requirement
+):
+    env = resolve_locked_environment(
+        "0.11.102", [requirement, "nflx-pyiceberg==>=0.11.102"]
+    )
+    assert any(p.package_name == "python" and p.TYPE == "conda" for p in env.packages)
+
+
+def test_pylock_rejects_incompatible_interpreter(resolve_locked_environment):
+    with pytest.raises(CondaException, match="resolved interpreter: 3.10.14"):
+        resolve_locked_environment(None, ["python==>=3.11"])
+
+
+def test_pylock_still_rejects_missing_package_with_compatible_interpreter(
+    resolve_locked_environment,
+):
+    with pytest.raises(CondaException, match="nflx-pyiceberg.*locked version: missing"):
+        resolve_locked_environment(
+            None, ["python==3.10.14", "nflx-pyiceberg==>=0.11.102"]
+        )
+
+
 def test_pylock_rejects_conflicting_user_pin_with_extras(resolve_locked_environment):
     with pytest.raises(CondaException, match="does not satisfy"):
         resolve_locked_environment(
