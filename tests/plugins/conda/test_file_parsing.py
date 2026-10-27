@@ -334,9 +334,9 @@ def test_parse_corner_cases_txt(cli_runner, mock_resolver_add_environment):
         {
             "conda": ["python==3.10"],
             "pypi": [
-                "clip@git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6",
+                "clip @ git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6",
                 "outlier-detector==0.0.3",
-                "foo@file:///tmp/build_foo_pkg",
+                "foo @ file:///tmp/build_foo_pkg",
             ],
             "npconda": [],
         },
