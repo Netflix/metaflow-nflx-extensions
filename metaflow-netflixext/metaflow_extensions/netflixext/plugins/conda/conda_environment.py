@@ -50,6 +50,7 @@ from .utils import (
     get_pinned_pypi_libs,
     get_sys_packages,
     merge_dep_dicts,
+    merge_pypi_dep_dicts,
     resolve_env_alias,
     sanitize_python_version,
 )
@@ -624,8 +625,8 @@ class CondaEnvironment(MetaflowEnvironment):
             )
             extension_pins = get_pinned_pypi_libs(final_req.python, datastore_type)
             if extension_pins:
-                pypi_pins = merge_dep_dicts(pypi_pins, extension_pins)
-            all_packages["pypi"] = merge_dep_dicts(
+                pypi_pins = merge_pypi_dep_dicts(pypi_pins, extension_pins)
+            all_packages["pypi"] = merge_pypi_dep_dicts(
                 all_packages.get("pypi", {}),
                 pypi_pins,
             )
@@ -637,7 +638,7 @@ class CondaEnvironment(MetaflowEnvironment):
         if env_type == EnvType.MIXED:
             extension_pins = get_pinned_pypi_libs(final_req.python, datastore_type)
             if extension_pins:
-                all_packages["pypi"] = merge_dep_dicts(
+                all_packages["pypi"] = merge_pypi_dep_dicts(
                     all_packages.get("pypi", {}),
                     extension_pins,
                 )

@@ -11,6 +11,8 @@ from ..pypi_package_builder import PackageToBuild, build_pypi_packages
 from ..utils import (
     correct_splitext,
     filter_packages_by_markers,
+    filter_user_reqs_by_markers,
+    get_pypi_requirement,
     get_best_compatible_packages,
     get_maximum_glibc_version,
     get_python_full_version_from_builder_envs,
@@ -25,6 +27,7 @@ from metaflow._vendor.packaging.tags import (
 )
 
 from metaflow.debug import debug
+from metaflow._vendor.packaging.utils import canonicalize_name
 from ..utils import CondaException
 
 from . import Resolver
@@ -237,10 +240,42 @@ class PylockTomlResolver(Resolver):
                 full_id_unique_keys=full_id_unique_keys,
             )
 
+        self._validate_locked_requirements(
+            deps, list(resolved_env.packages), python_full_version, architecture
+        )
         debug.conda_exec(
             "Resolved environment with %d packages" % len(list(resolved_env.packages))
         )
         return (resolved_env, builder_envs)
+
+    @staticmethod
+    def _validate_locked_requirements(
+        deps: Dict[str, List[str]],
+        packages: List[PackageSpecification],
+        python_full_version: str,
+        architecture: str,
+    ) -> None:
+        """A lock is authoritative; recording a requirement cannot install it."""
+        requirements = filter_user_reqs_by_markers(
+            {"pypi": deps.get("pypi", [])},
+            "python==" + python_full_version,
+            architecture,
+        )["pypi"]
+        locked = {
+            canonicalize_name(p.package_name): p.package_version
+            for p in packages
+            if p.TYPE == "pypi"
+        }
+        for dep in requirements:
+            req = get_pypi_requirement(dep)
+            version = locked.get(canonicalize_name(req.name))
+            if version is None or not req.specifier.contains(version, prereleases=True):
+                raise CondaException(
+                    "UV/pylock environment does not satisfy PyPI requirement '%s' "
+                    "(locked version: %s). Add the requirement to the UV project "
+                    "inputs and regenerate the lockfile before resolving the environment."
+                    % (req, version or "missing")
+                )
 
     """
     Supported package formats in pylock.toml (https://peps.python.org/pep-0751/):

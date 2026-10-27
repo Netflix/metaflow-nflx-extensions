@@ -56,7 +56,7 @@ from metaflow_extensions.netflixext.plugins.conda.utils import (
     resolve_env_alias,
     plural_marker,
     merge_dep_dicts,
-    merge_pypi_deps,
+    merge_pypi_dep_dicts,
     tstr_to_dict,
 )
 
@@ -246,21 +246,6 @@ def environment(
     "if it exists",
 )
 @click.option(
-    "--exist-ok/--no-exist-ok",
-    default=False,
-    is_flag=True,
-    show_default=True,
-    help="If an environment with this name already exists and holds the requested "
-    "environment, reuse it instead of failing. Fails if it holds a different "
-    "environment. --force takes precedence.",
-)
-@click.option(
-    "--arch",
-    default=None,
-    show_default=False,
-    help="Architecture of the environment to create; defaults to this machine's",
-)
-@click.option(
     "--strict/--no-strict",
     default=True,
     is_flag=True,
@@ -295,8 +280,6 @@ def create(
     name: Optional[str],
     local_only: bool,
     force: bool,
-    exist_ok: bool,
-    arch: Optional[str],
     strict: bool,
     into_dir: Optional[str],
     install_notebook: bool,
@@ -356,7 +339,7 @@ def create(
             )
 
     env_id_for_alias = cast(Conda, obj.conda).env_id_from_alias(
-        env_name, arch, local_only=local_only
+        env_name, local_only=local_only
     )
     if env_id_for_alias is None:
         raise CommandException(
@@ -436,21 +419,13 @@ def create(
 
     name = name or "metaflowtmp_%s_%s" % (env.env_id.req_id, env.env_id.full_id)
 
-    existing = obj.conda.created_environment(name)
-    if existing:
-        if force:
-            obj.conda.remove_for_name(name)
-        elif not exist_ok:
+    if obj.conda.created_environment(name):
+        if not force:
             raise CommandException(
                 "Environment '%s' already exists; use --force to force recreating"
                 % name
             )
-        elif existing[0] != env.env_id:
-            raise CommandException(
-                "Environment '%s' already exists but holds a different environment "
-                "(%s); use --force to force recreating" % (name, existing[0])
-            )
-        # Otherwise, create_for_name below finds the environment and reuses it.
+        obj.conda.remove_for_name(name)
 
     python_bin = None  # type: Optional[str]
     if into_dir:
@@ -849,7 +824,7 @@ def resolve(
             )
             extension_pins = get_pinned_pypi_libs(base_env_python, obj.datastore_type)
             if extension_pins:
-                pypi_deps = merge_dep_dicts(pypi_deps, extension_pins)
+                pypi_deps = merge_pypi_dep_dicts(pypi_deps, extension_pins)
 
             conda_deps = {}
         else:
@@ -861,7 +836,7 @@ def resolve(
             else:
                 pypi_deps = {}
 
-        pypi_deps = merge_pypi_deps(pypi_deps, new_pypi_deps)
+        pypi_deps = merge_pypi_dep_dicts(pypi_deps, new_pypi_deps)
         conda_deps = merge_dep_dicts(conda_deps, new_conda_deps)
 
         deps = {
