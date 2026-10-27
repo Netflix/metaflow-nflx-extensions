@@ -151,3 +151,50 @@ def test_named_environment_pypi_pins_follow_base_type(base_type, monkeypatch, mo
     else:
         assert req.packages["pypi"]["nflx-pyiceberg"] == ">=0.11.102"
         hook.assert_called_once_with("3.10.14", "local")
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_named_environment_reuses_unversioned_hyphenated_pypi_dependency(
+    installed, monkeypatch, mocker
+):
+    from metaflow_extensions.netflixext.plugins.conda.env_descr import (
+        CondaPackageSpecification,
+        EnvType,
+        PypiPackageSpecification,
+        ResolvedEnvironment,
+    )
+    from metaflow_extensions.netflixext.plugins.conda.envsresolver import EnvsResolver
+
+    monkeypatch.setattr(
+        "metaflow_extensions.netflixext.plugins.conda.envsresolver.CONDA_SYS_DEFAULT_PACKAGES",
+        {},
+    )
+    packages = [
+        CondaPackageSpecification(
+            "python-3.10.14-0", "https://example.com/python-3.10.14-0.conda"
+        )
+    ]
+    if installed:
+        packages.append(
+            PypiPackageSpecification(
+                "nflx_python_eureq-2.1.2-py3-none-any",
+                "https://example.com/nflx_python_eureq-2.1.2-py3-none-any.whl",
+            )
+        )
+    base = ResolvedEnvironment(
+        user_dependencies={"conda": ["python==3.10.14"]},
+        user_sources={},
+        user_extra_args={},
+        arch="linux-64",
+        all_packages=packages,
+        env_type=EnvType.PYPI_ONLY,
+    )
+    result = EnvsResolver.extract_info_from_base(
+        mocker.Mock(default_conda_channels=[], default_pypi_sources=[]),
+        base,
+        {"pypi": ["nflx-python-eureq"]},
+        {},
+        {},
+        "linux-64",
+    )
+    assert result[-1] is installed
