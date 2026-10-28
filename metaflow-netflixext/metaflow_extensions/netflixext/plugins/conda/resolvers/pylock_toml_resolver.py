@@ -28,6 +28,7 @@ from metaflow.debug import debug
 from ..utils import CondaException
 
 from . import Resolver
+from ..conditional_pypi import validate_conditional_requirements
 from typing import Callable, Dict, Iterable, List, Any, Optional, Tuple
 import hashlib
 import os
@@ -237,6 +238,7 @@ class PylockTomlResolver(Resolver):
                 full_id_unique_keys=full_id_unique_keys,
             )
 
+        validate_conditional_requirements(resolved_env, self._conda._datastore_type)
         debug.conda_exec(
             "Resolved environment with %d packages" % len(list(resolved_env.packages))
         )

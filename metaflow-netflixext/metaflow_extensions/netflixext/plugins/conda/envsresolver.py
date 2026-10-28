@@ -45,6 +45,13 @@ from .env_descr import (
 )
 
 from .resolvers import Resolver
+from .conditional_pypi import (
+    conditional_requirements,
+    constrained_dependencies,
+    unsatisfied_requirements,
+    validate_conditional_requirements,
+    pypi_requirement,
+)
 from .utils import (
     CondaException,
     channel_or_url,
@@ -200,6 +207,16 @@ class EnvsResolver(object):
                 if not force
                 else None
             )
+
+        if resolved_env is not None:
+            try:
+                validate_conditional_requirements(resolved_env, conda._datastore_type)
+            except CondaException:
+                # Cached and named environments must not bypass current policy.
+                # Keep the original request ID: compliant caches remain reusable,
+                # and environments without a trigger retain their identities.
+                resolved_env = None
+                compatible_base_env = False
 
         return (
             env_type,
@@ -946,7 +963,50 @@ class EnvsResolver(object):
                 env_desc["full_id_unique_keys"],
             )
 
-            if env_desc["base"]:
+            # Discover transitive native packages before activating requirements.
+            # Re-resolving at this shared layer also supports mixed solvers that
+            # cannot express optional constraints themselves. Never modify a lock.
+            active_requirements = {}
+            solve_deps = env_desc["deps"]
+            for _ in range(10):
+                for req in conditional_requirements(
+                    resolved_env, self._conda._datastore_type
+                ):
+                    active_requirements[str(req)] = req
+                missing = unsatisfied_requirements(
+                    resolved_env, list(active_requirements.values())
+                )
+                if not missing:
+                    break
+                if "pylock_toml" in resolver.TYPES:
+                    validate_conditional_requirements(
+                        resolved_env, self._conda._datastore_type
+                    )
+                new_deps = constrained_dependencies(
+                    env_desc["deps"], list(active_requirements.values()), resolved_env
+                )
+                if new_deps == solve_deps:
+                    raise CondaException(
+                        "Unable to satisfy conditional PyPI requirements: %s"
+                        % ", ".join(map(str, missing))
+                    )
+                solve_deps = new_deps
+                resolved_env, builder_envs = resolver.resolve(
+                    env_type,
+                    python_version_requested,
+                    solve_deps,
+                    env_desc["sources"],
+                    env_desc["extras"],
+                    env_id.arch,
+                    builder_envs,
+                    env_desc["base"],
+                    env_desc["file_paths"],
+                    env_desc["full_id_unique_keys"],
+                )
+            else:
+                raise CondaException("Conditional PyPI requirements did not converge")
+
+            if env_desc["base"] or active_requirements:
                 # We try to copy things over from the base environment as it contains
                 # potential caching information we don't need to rebuild. This also
                 # properly sets the user dependencies to what we want as opposed to
@@ -954,7 +1014,7 @@ class EnvsResolver(object):
                 merged_packages = []  # type: List[PackageSpecification]
                 base_packages = {
                     p.filename: p.to_dict()
-                    for p in cast(ResolvedEnvironment, env_desc["base"]).packages
+                    for p in (env_desc["base"].packages if env_desc["base"] else [])
                 }
                 for p in resolved_env.packages:
                     existing_info = base_packages.get(p.filename)
@@ -971,7 +1031,12 @@ class EnvsResolver(object):
                     env_id.arch,
                     all_packages=merged_packages,
                     env_type=resolved_env.env_type,
-                    accurate_source=env_desc["base_accurate"],
+                    accurate_source=(
+                        env_desc["base_accurate"]
+                        if env_desc["base"]
+                        else resolved_env.is_info_accurate
+                    ),
+                    full_id_unique_keys=env_desc["full_id_unique_keys"],
                 )
             _system_logger.log_event(
                 level="info",
@@ -1042,6 +1107,9 @@ class EnvsResolver(object):
             raise CondaException(
                 "Mismatched architecture when extending an environment"
             )
+        # A named base is an explicit package set. Reject an incompatible native
+        # graph before deployment rather than silently rewriting that environment.
+        validate_conditional_requirements(base_env, conda._datastore_type)
         # We form the new list of dependencies based on the ones we have in cur_env
         # and the new ones.
         # We need to split things up and reform
@@ -1157,7 +1225,11 @@ class EnvsResolver(object):
                     continue  # These are the system deps
 
                 for dep_req in incoming_deps_per_type:
-                    req = get_requirement(dep_req)
+                    req = (
+                        pypi_requirement(dep_req)
+                        if dep_type == "pypi"
+                        else get_requirement(dep_req)
+                    )
                     if req.name not in dep_dict or (
                         len(req.specifier) != 0  # Make sure we have a version
                         and not req.specifier.contains(dep_dict[req.name])
