@@ -201,7 +201,7 @@ def parse_req_value(
                 raise InvalidEnvironmentException("Could not parse '%s'" % line) from ex
             dep_name = parsed_req.name
             if parsed_req.extras:
-                dep_name += "[%s]" % ",".join(parsed_req.extras)
+                dep_name += "[%s]" % ",".join(sorted(parsed_req.extras))
             if parsed_req.url:
                 dep_name += "@%s" % parsed_req.url
             specifier = str(parsed_req.specifier).lstrip(" =")
@@ -343,7 +343,7 @@ def parse_toml_value(
 
         dep_name = parsed_req.name
         if parsed_req.extras:
-            dep_name += "[%s]" % ",".join(parsed_req.extras)
+            dep_name += "[%s]" % ",".join(sorted(parsed_req.extras))
         if parsed_req.url:
             dep_name += "@%s" % parsed_req.url
         specifier = str(parsed_req.specifier).lstrip(" =")
