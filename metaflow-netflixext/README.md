@@ -184,6 +184,38 @@ for example, be passed to `metaflow environment resolve` using the `-r` or `-f` 
 respectively. They highlight some of the functionalities present. Note that the same
 environments can also be specified directly using the `@conda` or `@pip` decorators.
 
+##### Conditional extension-provided PyPI requirements
+
+Config extensions may define `get_conditional_pypi_libs(python_version,
+datastore_type)` and return bundles keyed by a native PyPI distribution:
+
+```python
+def get_conditional_pypi_libs(python_version, datastore_type):
+    return {"example-native": {"example-native": ">=2", "example-adapter": ""}}
+```
+
+The hook receives the resolved Conda interpreter version. Trigger and requirement
+keys must be plain distribution names; values are PEP 440 version specifiers.
+All extensions' active requirements are combined, preserving user constraints.
+
+A bundle is activated only if its trigger appears in the selected native PyPI
+graph, including transitive dependencies. The resolver first discovers that graph
+and, if necessary, resolves again with the active requirements. It never installs
+the trigger into an environment where it was absent. Conda packages and escaped
+imports do not activate bundles.
+
+UV/pylock files are authoritative: only active bundles are validated, and an
+incompatible lock fails during resolution with instructions to update its inputs
+and regenerate it. Named bases are similarly checked before reuse. Other cached
+environments are rechecked against current policy and re-resolved if necessary.
+User request IDs remain unchanged; the selected packages determine the full ID.
+Already deployed tasks retain their recorded environments. Environments without
+an active bundle keep their existing resolution and cache behavior.
+
+This is experimental: affected unlocked environments may need an additional
+solver pass. Conflicting requirements, including explicit incompatible user pins
+or direct URLs, fail resolution instead of overriding the user's dependency.
+
 ##### Pure "pypi" environment with non-python Conda packages
 ```
 --conda-pkg ffmpeg
