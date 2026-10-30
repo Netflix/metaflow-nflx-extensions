@@ -679,27 +679,40 @@ def merge_dep_dicts(
     return result
 
 
-def merge_pypi_dep_dicts(d1: Dict[str, str], d2: Dict[str, str]) -> Dict[str, str]:
-    """Merge PyPI requirements without losing extras or conditional constraints.
+def merge_pypi_pins(
+    requirements: Dict[str, str], pins: Dict[str, str]
+) -> Dict[str, str]:
+    """Add hook pins while preserving extras and independent markers.
 
-    Conditional requirements are stored as complete requirement keys with empty
-    values. This keeps independent markers representable in the existing dict
-    interface and round-trips through dict_to_strlist. They are combined with
-    unconditional requirements only after target-specific marker filtering.
+    Only requirements for packages named by the hook are combined. Other
+    dependencies retain the existing representation and merging behavior.
     """
-    grouped: Dict[
-        Tuple[str, Optional[str]], Tuple[Set[str], Dict[str, str], Optional[str]]
-    ] = {}
-    for dep in chain(dict_to_strlist(d1), dict_to_strlist(d2)):
-        req = get_pypi_requirement(dep)
+    if not pins:
+        return dict(requirements)
+
+    pinned_requirements = [get_pypi_requirement(dep) for dep in dict_to_strlist(pins)]
+    pinned_names = {canonicalize_name(req.name) for req in pinned_requirements}
+    result: Dict[str, str] = {}
+    matching = []
+    for key, value in requirements.items():
+        req = get_pypi_requirement(dict_to_strlist({key: value})[0])
+        if canonicalize_name(req.name) in pinned_names:
+            matching.append(req)
+        else:
+            result[key] = value
+    matching.extend(pinned_requirements)
+    url_names = {canonicalize_name(req.name) for req in matching if req.url}
+    grouped: Dict[Tuple[str, Optional[str]], Tuple[Set[str], Dict[str, str]]] = {}
+    for req in matching:
         name = canonicalize_name(req.name)
+        if name in url_names:
+            # Keep direct references and constraints as separate requirements,
+            # retaining the existing resolver handling of direct references.
+            result[str(req)] = ""
+            continue
         marker = str(req.marker) if req.marker else None
         key = (name, marker)
-        extras, versions, url = grouped.get(key, (set(), {}, None))
-        if url and req.url and url != req.url:
-            raise InvalidEnvironmentException(
-                "Conflicting URLs for PyPI package %s" % name
-            )
+        extras, versions = grouped.get(key, (set(), {}))
         version = str(req.specifier)
         if (
             version.startswith("==")
@@ -708,32 +721,17 @@ def merge_pypi_dep_dicts(d1: Dict[str, str], d2: Dict[str, str]) -> Dict[str, st
         ):
             version = version[2:]
         versions = merge_dep_dicts(versions, {name: version})
-        url = url or req.url
-        if url and versions[name]:
-            raise InvalidEnvironmentException(
-                "Cannot combine a URL and version constraints for PyPI package %s"
-                % name
-            )
-        grouped[key] = (extras.union(req.extras), versions, url)
+        grouped[key] = (extras.union(req.extras), versions)
 
-    result: Dict[str, str] = {}
-    for (name, marker), (extras, versions, url) in grouped.items():
+    for (name, marker), (extras, versions) in grouped.items():
         package = name + ("[%s]" % ",".join(sorted(extras)) if extras else "")
-        if url:
-            package += " @ " + url
+        version = versions[name]
         if marker:
-            requirement = get_pypi_requirement(
-                dict_to_strlist({package: versions[name]})[0]
-            )
+            requirement = get_pypi_requirement(dict_to_strlist({package: version})[0])
             result["%s; %s" % (requirement, marker)] = ""
         else:
-            result[package] = versions[name]
+            result[package] = version
     return result
-
-
-def split_pypi_deps(deps: Iterable[str]) -> Dict[str, str]:
-    """Parse requirements while preserving repeated names and distinct markers."""
-    return merge_pypi_dep_dicts({}, {dep: "" for dep in deps})
 
 
 def get_pinned_pypi_libs(
@@ -746,7 +744,7 @@ def get_pinned_pypi_libs(
     for extension in get_modules("config"):
         hook = getattr(extension.module, "get_pinned_pypi_libs", None)
         if hook is not None:
-            pins = merge_pypi_dep_dicts(
+            pins = merge_pypi_pins(
                 pins,
                 hook(python_version, datastore_type),
             )
@@ -1331,24 +1329,6 @@ def compute_target_envs(
     )
 
     if arch != arch_id():
-        # Supply the standard target fields even when no custom system markers
-        # are configured. Never evaluate a macOS lock against Linux host markers.
-        target_systems = {
-            "linux-64": ("linux", "Linux", "x86_64"),
-            "linux-aarch64": ("linux", "Linux", "aarch64"),
-            "osx-64": ("darwin", "Darwin", "x86_64"),
-            "osx-arm64": ("darwin", "Darwin", "arm64"),
-        }
-        if arch in target_systems:
-            sys_platform, platform_system, platform_machine = target_systems[arch]
-            target_env.update(
-                {
-                    "sys_platform": sys_platform,
-                    "platform_system": platform_system,
-                    "platform_machine": platform_machine,
-                    "os_name": "posix",
-                }
-            )
         target_env.update(CONDA_SYS_MARKERS.get(arch, {}))
 
     # Workaround issue with platform_release not being clean enough for our packaged
@@ -1547,13 +1527,6 @@ def filter_user_reqs_by_markers(
                     % dep.split(";")[0]
                 )
                 continue
-    if "pypi" in new_deps:
-        names = [
-            canonicalize_name(get_pypi_requirement(dep).name)
-            for dep in new_deps["pypi"]
-        ]
-        if len(set(names)) != len(names):
-            new_deps["pypi"] = dict_to_strlist(split_pypi_deps(new_deps["pypi"]))
     return new_deps
 
 
