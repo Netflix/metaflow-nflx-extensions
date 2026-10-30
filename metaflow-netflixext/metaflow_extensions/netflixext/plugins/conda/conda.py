@@ -727,14 +727,10 @@ class Conda(object):
         if env:
             return env
 
-        # We never have a "_default" remotely so save time and don't go try to
-        # look for one UNLESS the user configured to use the latest as the default
-        # or the environment is pinned by a lock file (it has full_id_unique_keys,
-        # for example @resolved_uv or @resolved_req). In the latter case, the unique
-        # keys identify the resolved content so any remote environment for this
-        # req_id with the same keys is equivalent and can be reused. Without this,
-        # every run on a host without a local cache would re-resolve the environment
-        # and pick up whatever builder packages are current, changing the full_id.
+        # We never have a "_default" remotely so only look for the latest one if
+        # use_latest is not ":none:" or the environment is lock-pinned
+        # (full_id_unique_keys is set by @resolved_uv/@resolved_req and hashes the
+        # lock file, so any remote environment with the same keys can be reused).
         if not local_only and self._storage:
             if env_id.full_id != "_default":
                 env_list = self._remote_env_fetch([env_id])
