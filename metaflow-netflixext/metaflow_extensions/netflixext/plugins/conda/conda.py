@@ -727,14 +727,16 @@ class Conda(object):
         if env:
             return env
 
-        # We never have a "_default" remotely so save time and don't go try to
-        # look for one UNLESS the user configured to use the latest as the default
+        # We never have a "_default" remotely so only look for the latest one if
+        # use_latest is not ":none:" or the environment is lock-pinned
+        # (full_id_unique_keys is set by @resolved_uv/@resolved_req and hashes the
+        # lock file, so any remote environment with the same keys can be reused).
         if not local_only and self._storage:
             if env_id.full_id != "_default":
                 env_list = self._remote_env_fetch([env_id])
                 # Index 0 is always for current architecture.
                 env = env_list[0] if env_list else None
-            elif use_latest != ":none:":
+            elif use_latest != ":none:" or full_id_unique_keys:
                 # Here we fetch all the environments first and sort them so most
                 # recent (biggest date) is first
                 all_environments = self.environments(env_id.req_id, env_id.arch)
@@ -742,7 +744,8 @@ class Conda(object):
                 if use_latest == ":username:":
                     current_user = cast(str, get_username())
                     filter_func = lambda x: x[1].resolved_by == current_user
-                elif use_latest == ":any:":
+                elif use_latest in (":any:", ":none:"):
+                    # We only get here with ":none:" for lock-pinned environments
                     filter_func = lambda x: True
                 else:
                     allowed_usernames = list(
@@ -752,6 +755,16 @@ class Conda(object):
                         )
                     )
                     filter_func = lambda x: x in allowed_usernames
+
+                if full_id_unique_keys:
+                    # Only consider environments resolved from the same lock file
+                    # contents instead of picking the latest and then rejecting it
+                    # if its unique keys do not match.
+                    user_filter_func = filter_func
+                    filter_func = lambda x: (
+                        user_filter_func(x)
+                        and x[1]._full_id_unique_keys == full_id_unique_keys
+                    )
 
                 filtered_envs = list(
                     filter(
