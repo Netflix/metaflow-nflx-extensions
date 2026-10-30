@@ -8,10 +8,12 @@ from datetime import datetime, timedelta
 # importing plugin modules directly.
 import metaflow
 from metaflow_extensions.netflixext.plugins.conda.conda import Conda
+from metaflow_extensions.netflixext.plugins.conda.envsresolver import EnvsResolver
 from metaflow_extensions.netflixext.plugins.conda.env_descr import (
     CachedEnvironmentInfo,
     EnvID,
     EnvType,
+    PypiCachePackage,
     PypiPackageSpecification,
     ResolvedEnvironment,
 )
@@ -62,10 +64,14 @@ class _FakeStorage:
 
 def _make_env(numpy_patch, keys, resolved_on):
     filename = "numpy-1.26.%s-cp311-cp311-manylinux_2_17_x86_64" % numpy_patch
-    pkg = PypiPackageSpecification(
-        filename,
-        "https://example.com/%s.whl" % filename,
-        url_format=".whl",
+    url = "https://example.com/%s.whl" % filename
+    pkg = PypiPackageSpecification(filename, url, url_format=".whl")
+    # Environments stored remotely have their packages cached as well
+    pkg.add_cached_version(
+        ".whl",
+        PypiCachePackage(
+            PypiCachePackage.make_cache_url(url, filename, ".whl", "0" * 64)
+        ),
     )
     env = ResolvedEnvironment(
         DEPS,
@@ -157,3 +163,37 @@ def test_lock_pinned_local_only_does_not_go_remote(storage):
         full_id_unique_keys=KEYS_A,
     )
     assert env is None
+
+
+@pytest.mark.parametrize(
+    "keys, expect_found",
+    [(KEYS_A, True), ({"requirements_txt_content_hash": "cccc"}, False), (None, False)],
+)
+def test_resolver_add_environment_fresh_host(storage, keys, expect_found):
+    # Mirrors what a flow run does on a host with an empty local manifest (for
+    # example a scheduled run in a fresh container): add the step's environment
+    # to the resolver with the default use_latest (":none:").
+    s, env_a, _ = storage
+    conda = _make_conda(s)
+    resolver = EnvsResolver(conda)
+    resolver.add_environment(
+        ARCH,
+        DEPS,
+        {},
+        {},
+        {"pylock_toml": ["/unused/pylock.toml"]} if keys else {},
+        "start",
+        use_latest=":none:",
+        full_id_unique_keys=keys,
+    )
+    (req,) = resolver._requested_envs.values()
+    if expect_found:
+        # The lock-pinned environment is reused as is: nothing to resolve or cache
+        # so the builder environment is never solved and the full_id is unchanged.
+        assert req["resolved"] is not None
+        assert req["resolved"].env_id == env_a.env_id
+        assert not req["need_caching"]
+        assert list(resolver.need_caching_environments()) == []
+    else:
+        assert req["resolved"] is None
+        assert req["need_caching"]
