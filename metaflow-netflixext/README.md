@@ -198,12 +198,12 @@ the flow does not otherwise depend on them. Requirements participate in the
 environment request ID; already deployed tasks continue to use their recorded
 environment IDs.
 
-PyPI merging preserves extras and independent environment markers. Active
-requirements for the same normalized package name are combined after evaluating
-markers for the target environment. UV/pylock environments must already contain
-packages satisfying the requested dependencies, including extension-provided
-requirements; a missing or incompatible locked package raises an error asking
-you to update the UV project inputs and regenerate the lockfile.
+When adding hook requirements, extras and independent environment markers are
+preserved for the affected packages. Other dependencies use the existing merging
+behavior. UV/pylock environments continue to install the contents of their lock;
+the hook does not add missing packages to a lock or introduce additional lock
+validation. Include the hook dependencies in the project inputs and regenerate
+the lock to install them in a locked environment.
 
 ##### Pure "pypi" environment with non-python Conda packages
 ```

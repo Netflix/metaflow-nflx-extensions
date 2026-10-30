@@ -9,7 +9,7 @@ from metaflow.unbounded_foreach import UBF_CONTROL, UBF_TASK
 
 from metaflow._vendor.packaging.utils import canonicalize_version
 
-from .utils import dict_to_strlist, merge_dep_dicts, merge_pypi_dep_dicts
+from .utils import dict_to_strlist, merge_dep_dicts
 
 
 class StepRequirementIface:
@@ -299,12 +299,7 @@ class StepRequirement(StepRequirementIface):
         other_packages = other.packages
 
         for category, packages in other_packages.items():
-            category_merge = (
-                merge_pypi_dep_dicts
-                if category == "pypi" and merge_func is merge_dep_dicts
-                else merge_func
-            )
-            self._packages[category] = category_merge(
+            self._packages[category] = merge_func(
                 self._packages.get(category, {}), packages
             )
 
