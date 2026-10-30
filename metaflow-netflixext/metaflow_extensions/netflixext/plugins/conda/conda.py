@@ -729,12 +729,18 @@ class Conda(object):
 
         # We never have a "_default" remotely so save time and don't go try to
         # look for one UNLESS the user configured to use the latest as the default
+        # or the environment is pinned by a lock file (it has full_id_unique_keys,
+        # for example @resolved_uv or @resolved_req). In the latter case, the unique
+        # keys identify the resolved content so any remote environment for this
+        # req_id with the same keys is equivalent and can be reused. Without this,
+        # every run on a host without a local cache would re-resolve the environment
+        # and pick up whatever builder packages are current, changing the full_id.
         if not local_only and self._storage:
             if env_id.full_id != "_default":
                 env_list = self._remote_env_fetch([env_id])
                 # Index 0 is always for current architecture.
                 env = env_list[0] if env_list else None
-            elif use_latest != ":none:":
+            elif use_latest != ":none:" or full_id_unique_keys:
                 # Here we fetch all the environments first and sort them so most
                 # recent (biggest date) is first
                 all_environments = self.environments(env_id.req_id, env_id.arch)
@@ -742,7 +748,8 @@ class Conda(object):
                 if use_latest == ":username:":
                     current_user = cast(str, get_username())
                     filter_func = lambda x: x[1].resolved_by == current_user
-                elif use_latest == ":any:":
+                elif use_latest in (":any:", ":none:"):
+                    # We only get here with ":none:" for lock-pinned environments
                     filter_func = lambda x: True
                 else:
                     allowed_usernames = list(
@@ -752,6 +759,16 @@ class Conda(object):
                         )
                     )
                     filter_func = lambda x: x in allowed_usernames
+
+                if full_id_unique_keys:
+                    # Only consider environments resolved from the same lock file
+                    # contents instead of picking the latest and then rejecting it
+                    # if its unique keys do not match.
+                    user_filter_func = filter_func
+                    filter_func = lambda x: (
+                        user_filter_func(x)
+                        and x[1]._full_id_unique_keys == full_id_unique_keys
+                    )
 
                 filtered_envs = list(
                     filter(
