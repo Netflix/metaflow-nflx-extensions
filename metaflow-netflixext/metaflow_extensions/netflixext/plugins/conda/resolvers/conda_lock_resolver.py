@@ -246,6 +246,8 @@ class CondaLockResolver(Resolver):
                     "-k",
                     "explicit",
                     "--strip-auth",
+                    "--pypi_to_conda_lookup_file",
+                    "https://raw.githubusercontent.com/conda-forge/conda-forge-bot-data/main/mappings/pypi/grayskull_pypi_mapping.json",
                     "--conda",
                 ]
                 #                if "micromamba_server" in self._conda._bins:
