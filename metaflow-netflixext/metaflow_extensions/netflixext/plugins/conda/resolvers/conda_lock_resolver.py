@@ -11,6 +11,8 @@ from metaflow.debug import debug
 # Consider re-adding if resolving fails weirdly.
 # from metaflow.exception import retry_exp_backoff
 
+from metaflow._vendor.packaging.requirements import Requirement
+
 from ..env_descr import (
     CondaPackageSpecification,
     EnvType,
@@ -174,9 +176,7 @@ class CondaLockResolver(Resolver):
             # dependency multiple times. We keep just the URL one in this case
             pypi_dep_lines = {}  # type: Dict[str, Dict[str, str]]
             for d in pypi_deps:
-                # Marker filtering also combines active constraints and extras
-                # by normalized package name before generating Poetry entries.
-                parsed_req = get_pypi_requirement(d)
+                splits = d.split("==", 1)
                 # Here we re-parse the requirement. It will be one of the four options:
                 #  - <package_name>
                 #  - <package_name>[extras]
@@ -185,23 +185,28 @@ class CondaLockResolver(Resolver):
 
                 # We first check if we recorded an external URL for this package --
                 # if so, we need to indicate that to conda-lock
-                external_url = external_packages.get(parsed_req.name, None)
+                external_url = external_packages.get(splits[0], None)
                 if external_url:
-                    pypi_dep_lines.setdefault(parsed_req.name, {}).update(
+                    pypi_dep_lines.setdefault(splits[0], {}).update(
                         {"url": external_url, "url_extras": ""}
                     )
                     continue
 
                 # If not external URL, parse the requirement according to cases above
+                parsed_req = Requirement(splits[0])
                 if parsed_req.extras:
                     extra_part = "extras = [%s]," % ", ".join(
-                        ['"%s"' % e for e in sorted(parsed_req.extras)]
+                        ['"%s"' % e for e in parsed_req.extras]
                     )
                 else:
                     extra_part = ""
 
-                version_str = str(parsed_req.specifier) or "*"
+                version_str = str(get_pypi_requirement(d).specifier) or "*"
                 if parsed_req.url:
+                    if len(splits) == 2:
+                        raise CondaException(
+                            "Unexpected version on URL requirement %s" % splits[0]
+                        )
                     pypi_dep_lines.setdefault(parsed_req.name, {}).update(
                         {"url": parsed_req.url, "url_extras": extra_part}
                     )
