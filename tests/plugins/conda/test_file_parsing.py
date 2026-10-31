@@ -9,7 +9,7 @@ passed to it, verifying the entire flow from file parsing through environment_cm
 import os
 import platform
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 from typing import Dict, List, Optional
@@ -19,6 +19,7 @@ from metaflow_extensions.netflixext.cmd.environment.environment_cmd import envir
 from metaflow_extensions.netflixext.plugins.conda.env_descr import EnvType
 from metaflow_extensions.netflixext.plugins.conda.utils import (
     arch_id,
+    clean_up_double_equal,
     dict_to_strlist,
     merge_dep_dicts,
     split_into_dict,
@@ -1247,3 +1248,134 @@ def test_parse_yml_with_empty_lines(cli_runner, mock_resolver_add_environment):
     # Verify all dependencies are parsed despite empty lines
     assert any("pandas" in d for d in conda_deps), f"pandas not found in {conda_deps}"
     assert any("numpy" in d for d in conda_deps), f"numpy not found in {conda_deps}"
+
+
+@pytest.mark.parametrize(
+    "resolve_args, expected",
+    [
+        (["-r", os.path.join(ENV_DIR, "itsdangerous.txt"), "--python", "3.10"], True),
+        (
+            [
+                "-r",
+                os.path.join(ENV_DIR, "itsdangerous.txt"),
+                "--python",
+                "3.10",
+                "--skip-metaflow-deps",
+            ],
+            False,
+        ),
+        (["-f", os.path.join(ENV_DIR, "only-src.yml")], True),
+        (["-f", os.path.join(ENV_DIR, "itsdangerous.yml")], False),
+    ],
+    ids=["pypi-only", "skip-metaflow-deps", "mixed", "conda-only"],
+)
+def test_pinned_pypi_libs_follow_environment_type(
+    cli_runner,
+    mock_resolver_add_environment,
+    resolve_args,
+    expected,
+):
+    runner, env_vars = cli_runner
+
+    with patch(
+        "metaflow_extensions.netflixext.cmd.environment.environment_cmd."
+        "get_pinned_pypi_libs",
+        return_value={"nflx-pyiceberg": ">=0.11.102"},
+    ), patch.object(
+        Conda,
+        "virtual_packages",
+        new_callable=PropertyMock,
+        return_value={},
+    ), patch.object(
+        Conda,
+        "default_conda_channels",
+        new_callable=PropertyMock,
+        return_value=["conda-forge"],
+    ), patch.object(
+        Conda,
+        "default_pypi_sources",
+        new_callable=PropertyMock,
+        return_value=["https://pypi.netflix.net/simple"],
+    ), patch.object(
+        Conda,
+        "created_environments",
+        return_value={},
+    ):
+        result = runner.invoke(
+            environment,
+            ["resolve", *resolve_args, "--dry-run"],
+            env=env_vars,
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0, f"Command failed: {result.output}"
+    args, _ = mock_resolver_add_environment.add_environment.call_args
+    pypi_deps = clean_up_double_equal(args[1].get("pypi", []))
+
+    assert ("nflx-pyiceberg>=0.11.102" in pypi_deps) is expected
+
+
+@pytest.mark.parametrize(
+    "user_requirement",
+    [
+        "nflx-pyiceberg[pyarrow]==0.11.101",
+        'nflx-pyiceberg>=0.11.102; python_version >= "3.10"',
+    ],
+)
+def test_cli_preserves_user_requirements_when_adding_pypi_pins(
+    cli_runner,
+    mock_resolver_add_environment,
+    tmp_path,
+    user_requirement,
+):
+    from metaflow_extensions.netflixext.plugins.conda.utils import (
+        filter_user_reqs_by_markers,
+        get_pypi_requirement,
+    )
+
+    runner, env_vars = cli_runner
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text(user_requirement + "\n")
+    with patch(
+        "metaflow_extensions.netflixext.cmd.environment.environment_cmd.get_pinned_pypi_libs",
+        return_value={"nflx-pyiceberg": ">=0.11.102"},
+    ), patch.object(
+        Conda, "virtual_packages", new_callable=PropertyMock, return_value={}
+    ), patch.object(
+        Conda,
+        "default_conda_channels",
+        new_callable=PropertyMock,
+        return_value=["conda-forge"],
+    ), patch.object(
+        Conda,
+        "default_pypi_sources",
+        new_callable=PropertyMock,
+        return_value=["https://pypi.netflix.net/simple"],
+    ), patch.object(
+        Conda, "created_environments", return_value={}
+    ):
+        result = runner.invoke(
+            environment,
+            [
+                "resolve",
+                "-r",
+                str(requirements),
+                "--python",
+                "3.10.14",
+                "--dry-run",
+            ],
+            env=env_vars,
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0, result.output
+    deps = mock_resolver_add_environment.add_environment.call_args.args[1]
+    active = filter_user_reqs_by_markers(deps, "python==3.10.14", arch_id())
+    reqs = [get_pypi_requirement(dep) for dep in active["pypi"]]
+    reqs = [r for r in reqs if r.name == "nflx-pyiceberg"]
+    assert reqs
+    assert not all(req.specifier.contains("0.11.101") for req in reqs)
+    if "pyarrow" in user_requirement:
+        assert set().union(*(req.extras for req in reqs)) == {"pyarrow"}
+        assert not all(req.specifier.contains("0.11.102") for req in reqs)
+    else:
+        assert all(req.specifier.contains("0.11.102") for req in reqs)

@@ -23,6 +23,7 @@ from typing import (
     NamedTuple,
     Optional,
     Sequence,
+    Set,
     Tuple,
     Union,
     cast,
@@ -31,7 +32,7 @@ from urllib.parse import unquote, urlparse, urlunparse
 
 import metaflow.metaflow_config as mf_config
 from metaflow._vendor.packaging.markers import Marker, default_environment
-from metaflow._vendor.packaging.requirements import Requirement
+from metaflow._vendor.packaging.requirements import InvalidRequirement, Requirement
 from metaflow._vendor.packaging.specifiers import SpecifierSet
 from metaflow._vendor.packaging.tags import (
     Tag,
@@ -40,7 +41,11 @@ from metaflow._vendor.packaging.tags import (
     cpython_tags,
     mac_platforms,
 )
-from metaflow._vendor.packaging.utils import BuildTag, parse_wheel_filename
+from metaflow._vendor.packaging.utils import (
+    BuildTag,
+    canonicalize_name,
+    parse_wheel_filename,
+)
 from metaflow._vendor.packaging.version import Version, InvalidVersion
 from metaflow.debug import debug
 from metaflow.exception import MetaflowException
@@ -635,6 +640,15 @@ def clean_up_double_equal(deps: Iterable[str]) -> List[str]:
     return [_double_equal_match.sub("", d) for d in deps]
 
 
+def get_pypi_requirement(dep: str) -> Requirement:
+    # Unlike get_requirement, do not strip Conda build suffixes: that would
+    # also strip parts of valid PyPI names, versions, and URLs.
+    try:
+        return Requirement(dep)
+    except InvalidRequirement:
+        return Requirement(_double_equal_match.sub("", dep, count=1))
+
+
 def merge_dep_dicts(
     d1: Dict[str, str], d2: Dict[str, str], only_last_deps: bool = False
 ) -> Dict[str, str]:
@@ -663,6 +677,78 @@ def merge_dep_dicts(
             ]
         result[key] = ",".join(resulting_versions)
     return result
+
+
+def merge_pypi_pins(
+    requirements: Dict[str, str], pins: Dict[str, str]
+) -> Dict[str, str]:
+    """Add hook pins while preserving extras and independent markers.
+
+    Only requirements for packages named by the hook are combined. Other
+    dependencies retain the existing representation and merging behavior.
+    """
+    if not pins:
+        return dict(requirements)
+
+    pinned_requirements = [get_pypi_requirement(dep) for dep in dict_to_strlist(pins)]
+    pinned_names = {canonicalize_name(req.name) for req in pinned_requirements}
+    result: Dict[str, str] = {}
+    matching = []
+    for key, value in requirements.items():
+        req = get_pypi_requirement(dict_to_strlist({key: value})[0])
+        if canonicalize_name(req.name) in pinned_names:
+            matching.append(req)
+        else:
+            result[key] = value
+    matching.extend(pinned_requirements)
+    url_names = {canonicalize_name(req.name) for req in matching if req.url}
+    grouped: Dict[Tuple[str, Optional[str]], Tuple[Set[str], Dict[str, str]]] = {}
+    for req in matching:
+        name = canonicalize_name(req.name)
+        if name in url_names:
+            # Keep direct references and constraints as separate requirements,
+            # retaining the existing resolver handling of direct references.
+            result[str(req)] = ""
+            continue
+        marker = str(req.marker) if req.marker else None
+        key = (name, marker)
+        extras, versions = grouped.get(key, (set(), {}))
+        version = str(req.specifier)
+        if (
+            version.startswith("==")
+            and not version.startswith("===")
+            and "," not in version
+        ):
+            version = version[2:]
+        versions = merge_dep_dicts(versions, {name: version})
+        grouped[key] = (extras.union(req.extras), versions)
+
+    for (name, marker), (extras, versions) in grouped.items():
+        package = name + ("[%s]" % ",".join(sorted(extras)) if extras else "")
+        version = versions[name]
+        if marker:
+            requirement = get_pypi_requirement(dict_to_strlist({package: version})[0])
+            result["%s; %s" % (requirement, marker)] = ""
+        else:
+            result[package] = version
+    return result
+
+
+def get_pinned_pypi_libs(
+    python_version: Optional[str], datastore_type: str
+) -> Dict[str, str]:
+    """Collect and merge pinned PyPI dependencies from config extensions."""
+    from metaflow.extension_support import get_modules
+
+    pins: Dict[str, str] = {}
+    for extension in get_modules("config"):
+        hook = getattr(extension.module, "get_pinned_pypi_libs", None)
+        if hook is not None:
+            pins = merge_pypi_pins(
+                pins,
+                hook(python_version, datastore_type),
+            )
+    return pins
 
 
 def reform_pypi_filename(
@@ -1229,6 +1315,46 @@ def get_best_compatible_packages(
     return best_packages
 
 
+def validate_pypi_pins(
+    pins: Dict[str, str],
+    packages: Iterable["PackageSpecification"],
+    python_full_version: str,
+    architecture: str,
+) -> None:
+    """Check extension requirements against packages selected from a frozen lock.
+
+    Only the new PyPI hook's requirements belong here. Existing Conda pins and
+    user requirements retain their existing resolver behavior.
+    """
+    if not pins:
+        return
+    target_envs = compute_target_envs(
+        default_environment(), [python_full_version], architecture
+    )
+    installed = {
+        canonicalize_name(pkg.package_name): pkg.package_version
+        for pkg in packages
+        if pkg.TYPE == "pypi"
+    }
+    failures = []
+    for dep in dict_to_strlist(pins):
+        req = get_pypi_requirement(dep)
+        if not evaluate_marker(req.marker, target_envs):
+            continue
+        version = installed.get(canonicalize_name(req.name))
+        if version is None or not req.specifier.contains(version, prereleases=True):
+            failures.append("%s (locked version: %s)" % (req, version or "missing"))
+    if failures:
+        raise CondaException(
+            "The locked environment does not satisfy extension PyPI requirements "
+            "for Python %s on %s: %s. "
+            "Add or update the package that provides these dependencies in your "
+            "project inputs and regenerate the UV/pylock lockfile before deploying. "
+            "The lockfile is not modified automatically."
+            % (python_full_version, architecture, "; ".join(failures))
+        )
+
+
 def compute_target_envs(
     target_env: Dict[str, str],
     python_versions: List[str],
@@ -1428,7 +1554,11 @@ def filter_user_reqs_by_markers(
                 new_deps[dep_type].append(dep)
                 continue
 
-            req = get_requirement(dep)
+            req = (
+                get_pypi_requirement(dep)
+                if dep_type == "pypi"
+                else get_requirement(dep)
+            )
             if evaluate_marker(req.marker, target_envs):
                 new_deps[dep_type].append(dep.split(";")[0])  # Remove the marker part
             else:

@@ -29,6 +29,7 @@ from ..utils import (
     arch_id,
     channel_or_url,
     filter_user_reqs_by_markers,
+    get_pypi_requirement,
     parse_explicit_url_conda,
     parse_explicit_url_pypi,
     pypi_tags_from_arch,
@@ -200,7 +201,7 @@ class CondaLockResolver(Resolver):
                 else:
                     extra_part = ""
 
-                version_str = splits[1] if len(splits) == 2 else "*"
+                version_str = str(get_pypi_requirement(d).specifier) or "*"
                 if parsed_req.url:
                     if len(splits) == 2:
                         raise CondaException(

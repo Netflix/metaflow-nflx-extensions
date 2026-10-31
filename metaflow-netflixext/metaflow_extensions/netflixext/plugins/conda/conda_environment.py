@@ -47,8 +47,10 @@ from .utils import (
     channel_or_url,
     conda_deps_to_pypi_deps,
     get_conda_manifest_path,
+    get_pinned_pypi_libs,
     get_sys_packages,
     merge_dep_dicts,
+    merge_pypi_pins,
     resolve_env_alias,
     sanitize_python_version,
 )
@@ -629,6 +631,13 @@ class CondaEnvironment(MetaflowEnvironment):
                 all_packages.get("conda", {}),
                 get_pinned_conda_libs(final_req.python, datastore_type),
             )
+        if env_type in (EnvType.PYPI_ONLY, EnvType.MIXED):
+            extension_pins = get_pinned_pypi_libs(final_req.python, datastore_type)
+            if extension_pins:
+                all_packages["pypi"] = merge_pypi_pins(
+                    all_packages.get("pypi", {}),
+                    extension_pins,
+                )
 
         # Add the system requirements and default channels.
         # The default channels go into the computation of the req ID so it is important
@@ -728,6 +737,9 @@ class CondaEnvironment(MetaflowEnvironment):
         from_env_env_type: Optional[EnvType] = (
             None if from_env is None else from_env.env_type
         )
+
+        if from_env_env_type == EnvType.MIXED:
+            return EnvType.MIXED
 
         # Use the private variables directly to avoid deep copy on packages(), sources() properties.
         has_conda = len(final_req._packages.get("conda", {})) > 0

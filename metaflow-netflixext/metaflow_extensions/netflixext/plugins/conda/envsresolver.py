@@ -50,9 +50,13 @@ from .utils import (
     channel_or_url,
     arch_id,
     get_requirement,
+    get_pypi_requirement,
     dict_to_strlist,
     filter_user_reqs_by_markers,
     get_builder_envs_dep,
+    get_pinned_pypi_libs,
+    get_python_full_version_from_builder_envs,
+    validate_pypi_pins,
     merge_dep_dicts,
     plural_marker,
     split_into_dict,
@@ -396,6 +400,24 @@ class EnvsResolver(object):
                     )
             if len(need_resolution):
                 self._resolve_environments(echo, need_resolution)
+            # Frozen UV/pylock exports cannot incorporate injected requirements.
+            # Check the final selected packages, including cached environments,
+            # so deployment fails before an incompatible environment is used.
+            for env_id, req in self._requested_envs.items():
+                if not req.get("file_paths", {}).get("pylock_toml"):
+                    continue
+                resolved = cast(ResolvedEnvironment, req["resolved"])
+                python_version = get_python_full_version_from_builder_envs(
+                    [resolved], env_id.arch
+                )
+                if python_version is None:
+                    raise CondaException("Locked environment has no Python interpreter")
+                validate_pypi_pins(
+                    get_pinned_pypi_libs(python_version, self._conda._datastore_type),
+                    resolved.packages,
+                    python_version,
+                    env_id.arch,
+                )
             # NOTE: Co-resolved environments allow you to resolve a bunch of "equivalent"
             # environments for different platforms. This is great as it can allow you to
             # run code on Linux and then instantiate an environment to look at it on Mac.
@@ -1157,7 +1179,11 @@ class EnvsResolver(object):
                     continue  # These are the system deps
 
                 for dep_req in incoming_deps_per_type:
-                    req = get_requirement(dep_req)
+                    req = (
+                        get_pypi_requirement(dep_req)
+                        if dep_type == "pypi"
+                        else get_requirement(dep_req)
+                    )
                     if req.name not in dep_dict or (
                         len(req.specifier) != 0  # Make sure we have a version
                         and not req.specifier.contains(dep_dict[req.name])

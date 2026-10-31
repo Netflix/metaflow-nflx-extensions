@@ -184,6 +184,31 @@ for example, be passed to `metaflow environment resolve` using the `-r` or `-f` 
 respectively. They highlight some of the functionalities present. Note that the same
 environments can also be specified directly using the `@conda` or `@pip` decorators.
 
+##### Extension-provided PyPI dependencies
+
+Config extensions may define `get_pinned_pypi_libs(python_version, datastore_type)`
+and return a dictionary of package names to version requirements. These packages
+are merged with user requirements before resolving PyPI-only and mixed flow
+environments, including environments resolved through the environment CLI.
+They are not added to Conda-only environments. Conflicting requirements fail
+dependency resolution rather than overriding user pins.
+
+Unlike constraints, these requirements install the specified packages even when
+the flow does not otherwise depend on them. Requirements participate in the
+environment request ID; already deployed tasks continue to use their recorded
+environment IDs.
+
+When adding hook requirements, extras and independent environment markers are
+preserved for the affected packages. Other dependencies use the existing merging
+behavior. UV/pylock environments continue to install the contents of their lock.
+At environment resolution, including cached environment reuse, the hook requirements
+are checked against the packages selected for the target Python and platform.
+Missing or incompatible hook packages fail before deployment; existing Conda-hook
+and user requirements do not gain additional lock validation. The lock is never
+modified automatically. Add or update the package that supplies the hook dependencies
+in the project inputs and regenerate the lock. Transitive dependencies count, so
+users do not need to declare every hook dependency individually.
+
 ##### Pure "pypi" environment with non-python Conda packages
 ```
 --conda-pkg ffmpeg
