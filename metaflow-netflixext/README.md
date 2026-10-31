@@ -200,10 +200,14 @@ environment IDs.
 
 When adding hook requirements, extras and independent environment markers are
 preserved for the affected packages. Other dependencies use the existing merging
-behavior. UV/pylock environments continue to install the contents of their lock;
-the hook does not add missing packages to a lock or introduce additional lock
-validation. Include the hook dependencies in the project inputs and regenerate
-the lock to install them in a locked environment.
+behavior. UV/pylock environments continue to install the contents of their lock.
+At environment resolution, including cached environment reuse, the hook requirements
+are checked against the packages selected for the target Python and platform.
+Missing or incompatible hook packages fail before deployment; existing Conda-hook
+and user requirements do not gain additional lock validation. The lock is never
+modified automatically. Add or update the package that supplies the hook dependencies
+in the project inputs and regenerate the lock. Transitive dependencies count, so
+users do not need to declare every hook dependency individually.
 
 ##### Pure "pypi" environment with non-python Conda packages
 ```

@@ -1315,6 +1315,46 @@ def get_best_compatible_packages(
     return best_packages
 
 
+def validate_pypi_pins(
+    pins: Dict[str, str],
+    packages: Iterable["PackageSpecification"],
+    python_full_version: str,
+    architecture: str,
+) -> None:
+    """Check extension requirements against packages selected from a frozen lock.
+
+    Only the new PyPI hook's requirements belong here. Existing Conda pins and
+    user requirements retain their existing resolver behavior.
+    """
+    if not pins:
+        return
+    target_envs = compute_target_envs(
+        default_environment(), [python_full_version], architecture
+    )
+    installed = {
+        canonicalize_name(pkg.package_name): pkg.package_version
+        for pkg in packages
+        if pkg.TYPE == "pypi"
+    }
+    failures = []
+    for dep in dict_to_strlist(pins):
+        req = get_pypi_requirement(dep)
+        if not evaluate_marker(req.marker, target_envs):
+            continue
+        version = installed.get(canonicalize_name(req.name))
+        if version is None or not req.specifier.contains(version, prereleases=True):
+            failures.append("%s (locked version: %s)" % (req, version or "missing"))
+    if failures:
+        raise CondaException(
+            "The locked environment does not satisfy extension PyPI requirements "
+            "for Python %s on %s: %s. "
+            "Add or update the package that provides these dependencies in your "
+            "project inputs and regenerate the UV/pylock lockfile before deploying. "
+            "The lockfile is not modified automatically."
+            % (python_full_version, architecture, "; ".join(failures))
+        )
+
+
 def compute_target_envs(
     target_env: Dict[str, str],
     python_versions: List[str],
