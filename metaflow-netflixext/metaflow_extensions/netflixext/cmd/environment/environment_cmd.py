@@ -831,7 +831,9 @@ def resolve(
                 get_pinned_conda_libs(base_env_python, obj.datastore_type)
             )
             if new_pypi_deps or (base_env and base_env.env_type != EnvType.CONDA_ONLY):
-                extension_pins = get_pinned_pypi_libs(base_env_python, obj.datastore_type)
+                extension_pins = get_pinned_pypi_libs(
+                    base_env_python, obj.datastore_type
+                )
             pypi_deps = {}
 
         pypi_deps = merge_dep_dicts(pypi_deps, new_pypi_deps)
