@@ -160,11 +160,11 @@ def test_named_environment_reuses_unversioned_hyphenated_pypi_dependency(
         "metaflow_extensions.netflixext.plugins.conda.envsresolver.CONDA_SYS_DEFAULT_PACKAGES",
         {},
     )
-    packages = {"nflx_python_eureq": "2.1.2"} if installed else {}
+    packages = {"example_helper_package": "2.1.2"} if installed else {}
     result = EnvsResolver.extract_info_from_base(
         conda,
         _base_environment(EnvType.PYPI_ONLY, packages),
-        {"pypi": ["nflx-python-eureq"]},
+        {"pypi": ["example-helper-package"]},
         {},
         {},
         "linux-64",

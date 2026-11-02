@@ -24,21 +24,21 @@ def _package(name, version):
 @pytest.mark.parametrize(
     "pins, version, error",
     [
-        ({"nflx-pyiceberg": ">=0.11.102", "nflx-python-eureq": ""}, version, None)
-        for version in ("0.11.102", "0.11.104", "0.12.0rc1")
+        ({"example-package": ">=1.2.0", "example-helper-package": ""}, version, None)
+        for version in ("1.2.0", "1.2.1", "1.3.0rc1")
     ]
     + [
-        ({"nflx-pyiceberg": ">=0.11.102"}, None, "locked version: missing"),
-        ({"nflx-pyiceberg": ">=0.11.102"}, "0.11.101", "locked version: 0.11.101"),
+        ({"example-package": ">=1.2.0"}, None, "locked version: missing"),
+        ({"example-package": ">=1.2.0"}, "1.1.0", "locked version: 1.1.0"),
         ({"missing-package": ""}, None, "missing-package"),
         ({}, None, None),
     ],
 )
 def test_locked_packages_satisfy_hook_requirements(pins, version, error):
     # Final package sets include transitive dependencies, regardless of their origin.
-    packages = [_package("nflx_python_eureq", "1.0")]
+    packages = [_package("example_helper_package", "1.0")]
     if version:
-        packages.append(_package("nflx_pyiceberg", version))
+        packages.append(_package("example_package", version))
     with (
         pytest.raises(CondaException, match=error) if error else nullcontext()
     ) as result:
@@ -75,9 +75,9 @@ def test_locked_validation_evaluates_target_markers(python, arch, error, monkeyp
 @pytest.mark.parametrize(
     "locked, version, error",
     [
-        (True, None, "nflx-pyiceberg"),
-        (True, "0.11.101", "nflx-pyiceberg"),
-        (True, "0.11.104", None),
+        (True, None, "example-package"),
+        (True, "1.1.0", "example-package"),
+        (True, "1.2.1", None),
         (False, None, None),
     ],
 )
@@ -91,7 +91,7 @@ def test_resolution_validates_only_frozen_hook_requirements(
         )
     ]
     if version:
-        packages.append(_package("nflx_pyiceberg", version))
+        packages.append(_package("example_package", version))
     resolved = SimpleNamespace(
         env_id=env_id, packages=packages, is_cached=lambda formats: True
     )
@@ -114,7 +114,7 @@ def test_resolution_validates_only_frozen_hook_requirements(
     )
     hook = mocker.patch(
         "metaflow_extensions.netflixext.plugins.conda.envsresolver.get_pinned_pypi_libs",
-        return_value={"nflx-pyiceberg": ">=0.11.102"},
+        return_value={"example-package": ">=1.2.0"},
     )
     with pytest.raises(CondaException, match=error) if error else nullcontext():
         resolver.resolve_environments(lambda *args: None)
