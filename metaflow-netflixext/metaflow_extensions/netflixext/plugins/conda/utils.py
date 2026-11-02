@@ -649,17 +649,23 @@ def get_pypi_requirement(dep: str) -> Requirement:
 
 
 def merge_pypi_deps(d1: Dict[str, str], d2: Dict[str, str]) -> Dict[str, str]:
-    """Keep independently marked requirements separate when adding defaults.
+    """Combine requirements for the same PyPI package when adding defaults.
 
-    Packages without markers retain the existing representation and merging
-    behavior, including the inputs used to compute environment request IDs.
+    Keep independently marked requirements separate and union extras within
+    each marker group. Packages needing neither marker grouping nor key
+    normalization retain the existing representation used for request IDs.
     """
-    marked_names = {
-        canonicalize_name(get_pypi_requirement(dep).name)
-        for dep in chain(dict_to_strlist(d1), dict_to_strlist(d2))
-        if ";" in dep
-    }
-    if not marked_names:
+    package_keys: Dict[str, Set[str]] = {}
+    grouped_names: Set[str] = set()
+    for deps in (d1, d2):
+        for key, value in deps.items():
+            req = get_pypi_requirement(dict_to_strlist({key: value})[0])
+            name = canonicalize_name(req.name)
+            package_keys.setdefault(name, set()).add(key)
+            if req.marker:
+                grouped_names.add(name)
+    grouped_names.update(name for name, keys in package_keys.items() if len(keys) > 1)
+    if not grouped_names:
         return merge_dep_dicts(d1, d2)
 
     unaffected: List[Dict[str, str]] = [{}, {}]
@@ -669,7 +675,7 @@ def merge_pypi_deps(d1: Dict[str, str], d2: Dict[str, str]) -> Dict[str, str]:
         for key, value in deps.items():
             req = get_pypi_requirement(dict_to_strlist({key: value})[0])
             name = canonicalize_name(req.name)
-            if name not in marked_names:
+            if name not in grouped_names:
                 unaffected[index][key] = value
                 continue
             if req.url:

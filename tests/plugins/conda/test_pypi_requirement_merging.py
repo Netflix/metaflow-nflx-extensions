@@ -58,6 +58,40 @@ def test_matching_markers_combine_versions_and_extras():
     assert req.specifier == SpecifierSet(">=1,<3")
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    "user_package, default_package, expected_extras",
+    [
+        ("requests[socks]", "requests", {"socks"}),
+        ("My_Package[first]", "my-package[second]", {"first", "second"}),
+        ("My_Package", "my-package", set()),
+    ],
+)
+def test_unmarked_package_aliases_combine_constraints_and_extras(
+    reverse, user_package, default_package, expected_extras
+):
+    user = {user_package: ">=1"}
+    default = {default_package: "<3", "unrelated": "2.0"}
+    deps = merge_pypi_deps(*((default, user) if reverse else (user, default)))
+    requirements = [
+        req for req in _active_requirements(deps) if req.name != "unrelated"
+    ]
+    (req,) = requirements
+    assert req.name == default_package.split("[")[0]
+    assert req.extras == expected_extras
+    assert req.specifier == SpecifierSet(">=1,<3")
+    assert deps["unrelated"] == "2.0"
+
+
+def test_unmarked_exact_pin_with_extras_keeps_conflicting_default():
+    deps = merge_pypi_deps({"example[extra]": "1.0"}, {"example": ">=2"})
+    (req,) = _active_requirements(deps)
+    assert req.extras == {"extra"}
+    assert req.specifier == SpecifierSet("==1.0,>=2")
+    assert not req.specifier.contains("1.0")
+    assert not req.specifier.contains("2.0")
+
+
 def test_marked_exact_version_keeps_its_equality_constraint():
     deps = merge_pypi_deps(
         {"example": '2.0; python_version >= "3.10"'}, {"example": ">=1"}
@@ -191,7 +225,12 @@ class ResolutionReached(Exception):
 
 @pytest.mark.parametrize("python", ["3.9.20", "3.10.21"])
 @pytest.mark.parametrize("user_version", ["<2", "<3,==2.0"])
-def test_conda_lock_receives_every_active_constraint_and_extra(python, user_version):
+@pytest.mark.parametrize("marked", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("merge_before_resolving", [False, True])
+def test_conda_lock_receives_every_active_constraint_and_extra(
+    python, user_version, marked, reverse, merge_before_resolving
+):
     conda = Mock(
         default_pypi_sources=["https://pypi.netflix.net/simple"],
         default_conda_channels=[],
@@ -205,38 +244,49 @@ def test_conda_lock_receives_every_active_constraint_and_extra(python, user_vers
         raise ResolutionReached
 
     conda.call_binary.side_effect = capture_input
-    deps = merge_pypi_deps(
-        {"example[first]": user_version + '; python_version < "3.10"'},
-        {"example[second]": ">=2"},
-    )
+    user = {
+        "example[first]": user_version + ('; python_version < "3.10"' if marked else "")
+    }
+    default = {"example[second]": ">=2"}
+    inputs = (default, user) if reverse else (user, default)
+    if merge_before_resolving:
+        deps = dict_to_strlist(merge_pypi_deps(*inputs))
+    else:
+        deps = [dep for requirement in inputs for dep in dict_to_strlist(requirement)]
     with pytest.raises(ResolutionReached):
         CondaLockResolver(conda).resolve(
             env_type=EnvType.MIXED,
             python_version_requested="python==" + python,
-            deps={"pypi": dict_to_strlist(deps)},
+            deps={"pypi": deps},
             sources={},
             extras={},
             architecture="linux-64",
         )
     entry = captured["tool"]["poetry"]["dependencies"]["example"]
+    user_active = not marked or python.startswith("3.9")
     assert SpecifierSet(entry["version"]) == SpecifierSet(
-        ">=2," + user_version if python.startswith("3.9") else ">=2"
+        ">=2," + user_version if user_active else ">=2"
     )
-    assert set(entry["extras"]) == (
-        {"first", "second"} if python.startswith("3.9") else {"second"}
-    )
+    assert set(entry["extras"]) == ({"first", "second"} if user_active else {"second"})
 
 
-def test_flow_default_dependency_merge_preserves_user_marker(monkeypatch, mocker):
+@pytest.mark.parametrize(
+    "user_packages, expected_extras",
+    [
+        ({"requests": '>=2.30; python_version >= "3.10"'}, set()),
+        ({"requests[socks]": ">=2.30"}, {"socks"}),
+    ],
+)
+def test_flow_default_dependency_merge_preserves_user_requirements(
+    monkeypatch, mocker, user_packages, expected_extras
+):
     from metaflow import FlowSpec, pypi, step
     from metaflow_extensions.netflixext.plugins.conda.conda_environment import (
         CondaEnvironment,
     )
 
     class MarkedDependencyFlow(FlowSpec):
-        @pypi(
-            python="3.10.21", packages={"requests": '>=2.30; python_version >= "3.10"'}
-        )
+        @pypi(python="3.10.21", packages=user_packages)
         @step
         def start(self):
             self.next(self.end)
@@ -264,14 +314,24 @@ def test_flow_default_dependency_merge_preserves_user_marker(monkeypatch, mocker
         ">=2.21.0",
         ">=2.30",
     }
+    assert set().union(*(req.extras for req in active)) == expected_extras
 
 
-def test_cli_default_dependency_merge_preserves_user_marker(tmp_path, mocker):
+@pytest.mark.parametrize(
+    "user_requirement, expected_extras",
+    [
+        ('requests>=2.30; python_version >= "3.10"', set()),
+        ("requests[socks]>=2.30", {"socks"}),
+    ],
+)
+def test_cli_default_dependency_merge_preserves_user_requirements(
+    tmp_path, mocker, user_requirement, expected_extras
+):
     from metaflow_extensions.netflixext.cmd.environment.environment_cmd import resolve
 
     module = "metaflow_extensions.netflixext.cmd.environment.environment_cmd"
     requirements = tmp_path / "requirements.txt"
-    requirements.write_text('requests>=2.30; python_version >= "3.10"\n')
+    requirements.write_text(user_requirement + "\n")
     resolver = mocker.patch(module + ".EnvsResolver").return_value
     resolver.add_environment.side_effect = ResolutionReached
     mocker.patch(
@@ -292,3 +352,4 @@ def test_cli_default_dependency_merge_preserves_user_marker(tmp_path, mocker):
         ">=2.21.0",
         ">=2.30",
     }
+    assert set().union(*(req.extras for req in active)) == expected_extras
