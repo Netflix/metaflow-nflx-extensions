@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -20,38 +21,41 @@ def _package(name, version):
     return PypiPackageSpecification(filename, "https://example.org/%s.whl" % filename)
 
 
-@pytest.mark.parametrize("version", ["0.11.102", "0.11.104", "0.12.0rc1"])
-def test_locked_transitive_packages_satisfy_extension_pins(version):
-    # No distinction between direct and transitive dependencies in the final set.
-    validate_pypi_pins(
-        {"nflx-pyiceberg": ">=0.11.102", "nflx-python-eureq": ""},
-        [_package("nflx_pyiceberg", version), _package("nflx_python_eureq", "1.0")],
-        "3.10.21",
-        "linux-64",
-    )
+@pytest.mark.parametrize(
+    "pins, version, error",
+    [
+        ({"nflx-pyiceberg": ">=0.11.102", "nflx-python-eureq": ""}, version, None)
+        for version in ("0.11.102", "0.11.104", "0.12.0rc1")
+    ]
+    + [
+        ({"nflx-pyiceberg": ">=0.11.102"}, None, "locked version: missing"),
+        ({"nflx-pyiceberg": ">=0.11.102"}, "0.11.101", "locked version: 0.11.101"),
+        ({"missing-package": ""}, None, "missing-package"),
+        ({}, None, None),
+    ],
+)
+def test_locked_packages_satisfy_hook_requirements(pins, version, error):
+    # Final package sets include transitive dependencies, regardless of their origin.
+    packages = [_package("nflx_python_eureq", "1.0")]
+    if version:
+        packages.append(_package("nflx_pyiceberg", version))
+    with (
+        pytest.raises(CondaException, match=error) if error else nullcontext()
+    ) as result:
+        validate_pypi_pins(pins, packages, "3.10.21", "linux-64")
+    if error:
+        assert "regenerate the UV/pylock lockfile" in str(result.value)
 
 
 @pytest.mark.parametrize(
-    "packages, expected",
+    "python, arch, error",
     [
-        ([], "locked version: missing"),
-        ([_package("nflx_pyiceberg", "0.11.101")], "locked version: 0.11.101"),
+        ("3.10.21", "osx-arm64", None),
+        ("3.10.21", "linux-64", "linux-only"),
+        ("3.10.22", "osx-arm64", "new-python"),
     ],
 )
-def test_locked_missing_or_outdated_extension_package_fails(packages, expected):
-    with pytest.raises(CondaException, match=expected) as error:
-        validate_pypi_pins(
-            {"nflx-pyiceberg": ">=0.11.102"}, packages, "3.10.21", "linux-64"
-        )
-    assert "regenerate the UV/pylock lockfile" in str(error.value)
-
-
-def test_locked_unversioned_extension_package_is_required():
-    with pytest.raises(CondaException, match="nflx-python-eureq"):
-        validate_pypi_pins({"nflx-python-eureq": ""}, [], "3.10.21", "linux-64")
-
-
-def test_locked_validation_evaluates_target_python_and_platform_markers(monkeypatch):
+def test_locked_validation_evaluates_target_markers(python, arch, error, monkeypatch):
     monkeypatch.setattr(
         "metaflow_extensions.netflixext.plugins.conda.utils.CONDA_SYS_MARKERS",
         {
@@ -63,19 +67,23 @@ def test_locked_validation_evaluates_target_python_and_platform_markers(monkeypa
         'linux-only; sys_platform == "linux"': "",
         'new-python; python_full_version >= "3.10.22"': "",
     }
-    validate_pypi_pins(pins, [], "3.10.21", "osx-arm64")
-    with pytest.raises(CondaException, match="linux-only"):
-        validate_pypi_pins(pins, [], "3.10.21", "linux-64")
-    with pytest.raises(CondaException, match="new-python"):
-        validate_pypi_pins(pins, [], "3.10.22", "osx-arm64")
+    with pytest.raises(CondaException, match=error) if error else nullcontext():
+        validate_pypi_pins(pins, [], python, arch)
 
 
 @pytest.mark.parametrize("cached", [False, True])
-@pytest.mark.parametrize("version", [None, "0.11.101", "0.11.104"])
-def test_fresh_and_cached_locked_environments_validate_hook_pins(
-    cached, version, mocker
+@pytest.mark.parametrize(
+    "locked, version, error",
+    [
+        (True, None, "nflx-pyiceberg"),
+        (True, "0.11.101", "nflx-pyiceberg"),
+        (True, "0.11.104", None),
+        (False, None, None),
+    ],
+)
+def test_resolution_validates_only_frozen_hook_requirements(
+    cached, locked, version, error, mocker
 ):
-    module = "metaflow_extensions.netflixext.plugins.conda.envsresolver"
     env_id = EnvID("request", "full", "linux-64")
     packages = [
         CondaPackageSpecification(
@@ -90,7 +98,7 @@ def test_fresh_and_cached_locked_environments_validate_hook_pins(
     resolver = EnvsResolver(SimpleNamespace(_datastore_type="s3"))
     resolver._non_step_envs = True
     req = {
-        "file_paths": {"pylock_toml": ["fixture.toml"]},
+        "file_paths": {"pylock_toml": ["fixture.toml"]} if locked else {},
         "resolved": resolved if cached else None,
         "need_caching": False,
         "conda_format": ["_any"],
@@ -105,31 +113,13 @@ def test_fresh_and_cached_locked_environments_validate_hook_pins(
         resolver, "_resolve_environments", side_effect=resolve
     )
     hook = mocker.patch(
-        module + ".get_pinned_pypi_libs", return_value={"nflx-pyiceberg": ">=0.11.102"}
+        "metaflow_extensions.netflixext.plugins.conda.envsresolver.get_pinned_pypi_libs",
+        return_value={"nflx-pyiceberg": ">=0.11.102"},
     )
-    if version == "0.11.104":
+    with pytest.raises(CondaException, match=error) if error else nullcontext():
         resolver.resolve_environments(lambda *args: None)
+    if locked:
+        hook.assert_called_once_with("3.10.21", "s3")
     else:
-        with pytest.raises(CondaException, match="nflx-pyiceberg"):
-            resolver.resolve_environments(lambda *args: None)
-    hook.assert_called_once_with("3.10.21", "s3")
+        hook.assert_not_called()
     assert resolution.call_count == (0 if cached else 1)
-
-
-def test_ordinary_resolution_does_not_apply_frozen_lock_validation(mocker):
-    resolver = EnvsResolver(SimpleNamespace())
-    resolver._non_step_envs = True
-    resolver._requested_envs[EnvID("request", "full", "linux-64")] = {
-        "resolved": SimpleNamespace(is_cached=lambda formats: True),
-        "need_caching": False,
-        "conda_format": ["_any"],
-    }
-    hook = mocker.patch(
-        "metaflow_extensions.netflixext.plugins.conda.envsresolver.get_pinned_pypi_libs"
-    )
-    resolver.resolve_environments(lambda *args: None)
-    hook.assert_not_called()
-
-
-def test_no_pypi_hook_pins_preserves_existing_lock_behavior():
-    validate_pypi_pins({}, [], "3.10.21", "linux-64")
