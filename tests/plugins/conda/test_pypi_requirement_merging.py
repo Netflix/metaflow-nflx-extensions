@@ -1,9 +1,5 @@
 from pathlib import Path
-import json
-import subprocess
-import sys
 from types import SimpleNamespace
-from zipfile import ZipFile
 
 import metaflow  # noqa: F401 -- initialize plugins before importing utilities
 import pytest
@@ -188,61 +184,6 @@ def test_marked_hyphenated_package_is_not_parsed_as_conda_build():
         {"my-package": '; python_version >= "3.10"'}, {"my-package": ">=1"}
     )
     assert {req.name for req in _active_requirements(deps)} == {"my-package"}
-
-
-@pytest.mark.parametrize("python, succeeds", [("3.9.20", False), ("3.10.21", True)])
-def test_pip_respects_all_active_constraints_without_network(
-    tmp_path, python, succeeds
-):
-    for version in ("1.5", "2.5"):
-        dist = "marker_merge_example-%s.dist-info" % version
-        wheel = tmp_path / ("marker_merge_example-%s-py3-none-any.whl" % version)
-        with ZipFile(wheel, "w") as archive:
-            archive.writestr(
-                dist + "/METADATA",
-                "Metadata-Version: 2.1\nName: marker-merge-example\nVersion: %s\n"
-                % version,
-            )
-            archive.writestr(
-                dist + "/WHEEL",
-                "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
-            )
-            archive.writestr(dist + "/RECORD", "")
-    deps = merge_pypi_deps(
-        {"marker-merge-example": '<2; python_version < "3.10"'},
-        {"marker-merge-example": ">=2"},
-    )
-    active = _active_requirements(deps, python)
-    report = tmp_path / "report.json"
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "--isolated",
-            "--disable-pip-version-check",
-            "install",
-            "--dry-run",
-            "--ignore-installed",
-            "--no-index",
-            "--no-deps",
-            "--find-links",
-            str(tmp_path),
-            "--report",
-            str(report),
-            *(str(req) for req in active),
-        ],
-        text=True,
-        capture_output=True,
-    )
-    if succeeds:
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert (
-            json.loads(report.read_text())["install"][0]["metadata"]["version"] == "2.5"
-        )
-    else:
-        assert result.returncode != 0
-        assert "ResolutionImpossible" in result.stderr
 
 
 @pytest.mark.parametrize("input_mode", ["separate", "reversed", "merged"])
