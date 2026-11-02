@@ -33,19 +33,11 @@ print(json.dumps(sorted(parser(sys.argv[2])["packages"])))
 
 
 @pytest.mark.parametrize(
-    "parser, content",
-    [(req_parser, REQ_CONTENT), (toml_parser, TOML_CONTENT)],
-)
-def test_extras_are_sorted(parser, content):
-    packages = parser(content)["packages"]
-    assert "nflx-metaflow[fastdata,functions,serving,stubs]" in packages
-
-
-@pytest.mark.parametrize(
     "parser_name, content",
     [("req", REQ_CONTENT), ("toml", TOML_CONTENT)],
 )
 def test_extras_order_independent_of_hash_seed(parser_name, content):
+    # Same requirements parse to the same sorted dependency string in every process.
     results = set()
     for seed in range(8):
         env = dict(os.environ, PYTHONHASHSEED=str(seed))
@@ -57,4 +49,4 @@ def test_extras_order_independent_of_hash_seed(parser_name, content):
             text=True,
         ).stdout
         results.add(tuple(json.loads(out.strip().splitlines()[-1])))
-    assert len(results) == 1, results
+    assert results == {("nflx-metaflow[fastdata,functions,serving,stubs]", "numpy")}
