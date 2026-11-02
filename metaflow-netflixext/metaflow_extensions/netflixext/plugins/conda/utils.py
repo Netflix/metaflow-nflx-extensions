@@ -641,12 +641,62 @@ def clean_up_double_equal(deps: Iterable[str]) -> List[str]:
 
 
 def get_pypi_requirement(dep: str) -> Requirement:
-    # Unlike get_requirement, do not strip Conda build suffixes: that would
-    # also strip parts of valid PyPI names, versions, and URLs.
+    """Parse PyPI requirements, including our legacy ``name==>=version`` form."""
     try:
         return Requirement(dep)
     except InvalidRequirement:
         return Requirement(_double_equal_match.sub("", dep, count=1))
+
+
+def merge_pypi_deps(d1: Dict[str, str], d2: Dict[str, str]) -> Dict[str, str]:
+    """Combine requirements for the same PyPI package when adding defaults.
+
+    Keep independently marked requirements separate and union extras within
+    each marker group. Packages needing neither marker grouping nor key
+    normalization retain the existing representation used for request IDs.
+    """
+    package_keys: Dict[str, Set[str]] = {}
+    grouped_names: Set[str] = set()
+    for deps in (d1, d2):
+        for key, value in deps.items():
+            req = get_pypi_requirement(dict_to_strlist({key: value})[0])
+            name = canonicalize_name(req.name)
+            package_keys.setdefault(name, set()).add(key)
+            if req.marker:
+                grouped_names.add(name)
+    grouped_names.update(name for name, keys in package_keys.items() if len(keys) > 1)
+    if not grouped_names:
+        return merge_dep_dicts(d1, d2)
+
+    unaffected: List[Dict[str, str]] = [{}, {}]
+    grouped: Dict[Tuple[str, Optional[str]], Tuple[Set[str], Dict[str, str]]] = {}
+    references: Dict[str, str] = {}
+    for index, deps in enumerate((d1, d2)):
+        for key, value in deps.items():
+            req = get_pypi_requirement(dict_to_strlist({key: value})[0])
+            name = canonicalize_name(req.name)
+            if name not in grouped_names:
+                unaffected[index][key] = value
+                continue
+            if req.url:
+                references[str(req)] = ""
+                continue
+            marker = str(req.marker) if req.marker else None
+            group = (name, marker)
+            extras, versions = grouped.get(group, (set(), {}))
+            version = str(req.specifier)
+            versions = merge_dep_dicts(versions, {name: version})
+            grouped[group] = (extras.union(req.extras), versions)
+
+    result = merge_dep_dicts(unaffected[0], unaffected[1])
+    result.update(references)
+    for (name, marker), (extras, versions) in grouped.items():
+        package = name + ("[%s]" % ",".join(sorted(extras)) if extras else "")
+        requirement = str(Requirement(package + versions[name]))
+        if marker:
+            requirement += "; " + marker
+        result[requirement] = ""
+    return result
 
 
 def merge_dep_dicts(
@@ -690,47 +740,19 @@ def merge_pypi_pins(
     if not pins:
         return dict(requirements)
 
-    pinned_requirements = [get_pypi_requirement(dep) for dep in dict_to_strlist(pins)]
-    pinned_names = {canonicalize_name(req.name) for req in pinned_requirements}
+    pinned_names = {
+        canonicalize_name(get_pypi_requirement(dep).name)
+        for dep in dict_to_strlist(pins)
+    }
     result: Dict[str, str] = {}
-    matching = []
+    matching: Dict[str, str] = {}
     for key, value in requirements.items():
         req = get_pypi_requirement(dict_to_strlist({key: value})[0])
         if canonicalize_name(req.name) in pinned_names:
-            matching.append(req)
+            matching[key] = value
         else:
             result[key] = value
-    matching.extend(pinned_requirements)
-    url_names = {canonicalize_name(req.name) for req in matching if req.url}
-    grouped: Dict[Tuple[str, Optional[str]], Tuple[Set[str], Dict[str, str]]] = {}
-    for req in matching:
-        name = canonicalize_name(req.name)
-        if name in url_names:
-            # Keep direct references and constraints as separate requirements,
-            # retaining the existing resolver handling of direct references.
-            result[str(req)] = ""
-            continue
-        marker = str(req.marker) if req.marker else None
-        key = (name, marker)
-        extras, versions = grouped.get(key, (set(), {}))
-        version = str(req.specifier)
-        if (
-            version.startswith("==")
-            and not version.startswith("===")
-            and "," not in version
-        ):
-            version = version[2:]
-        versions = merge_dep_dicts(versions, {name: version})
-        grouped[key] = (extras.union(req.extras), versions)
-
-    for (name, marker), (extras, versions) in grouped.items():
-        package = name + ("[%s]" % ",".join(sorted(extras)) if extras else "")
-        version = versions[name]
-        if marker:
-            requirement = get_pypi_requirement(dict_to_strlist({package: version})[0])
-            result["%s; %s" % (requirement, marker)] = ""
-        else:
-            result[package] = version
+    result.update(merge_pypi_deps(matching, pins))
     return result
 
 
