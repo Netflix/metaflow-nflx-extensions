@@ -23,6 +23,7 @@ from typing import (
     NamedTuple,
     Optional,
     Sequence,
+    Set,
     Tuple,
     Union,
     cast,
@@ -31,7 +32,7 @@ from urllib.parse import unquote, urlparse, urlunparse
 
 import metaflow.metaflow_config as mf_config
 from metaflow._vendor.packaging.markers import Marker, default_environment
-from metaflow._vendor.packaging.requirements import Requirement
+from metaflow._vendor.packaging.requirements import InvalidRequirement, Requirement
 from metaflow._vendor.packaging.specifiers import SpecifierSet
 from metaflow._vendor.packaging.tags import (
     Tag,
@@ -40,7 +41,11 @@ from metaflow._vendor.packaging.tags import (
     cpython_tags,
     mac_platforms,
 )
-from metaflow._vendor.packaging.utils import BuildTag, parse_wheel_filename
+from metaflow._vendor.packaging.utils import (
+    BuildTag,
+    canonicalize_name,
+    parse_wheel_filename,
+)
 from metaflow._vendor.packaging.version import Version, InvalidVersion
 from metaflow.debug import debug
 from metaflow.exception import MetaflowException
@@ -633,6 +638,59 @@ def get_requirement(dep_str: str) -> Requirement:
 
 def clean_up_double_equal(deps: Iterable[str]) -> List[str]:
     return [_double_equal_match.sub("", d) for d in deps]
+
+
+def get_pypi_requirement(dep: str) -> Requirement:
+    """Parse PyPI requirements, including our legacy ``name==>=version`` form."""
+    try:
+        return Requirement(dep)
+    except InvalidRequirement:
+        return Requirement(_double_equal_match.sub("", dep, count=1))
+
+
+def merge_pypi_deps(d1: Dict[str, str], d2: Dict[str, str]) -> Dict[str, str]:
+    """Keep independently marked requirements separate when adding defaults.
+
+    Packages without markers retain the existing representation and merging
+    behavior, including the inputs used to compute environment request IDs.
+    """
+    marked_names = {
+        canonicalize_name(get_pypi_requirement(dep).name)
+        for dep in chain(dict_to_strlist(d1), dict_to_strlist(d2))
+        if ";" in dep
+    }
+    if not marked_names:
+        return merge_dep_dicts(d1, d2)
+
+    unaffected: List[Dict[str, str]] = [{}, {}]
+    grouped: Dict[Tuple[str, Optional[str]], Tuple[Set[str], Dict[str, str]]] = {}
+    references: Dict[str, str] = {}
+    for index, deps in enumerate((d1, d2)):
+        for key, value in deps.items():
+            req = get_pypi_requirement(dict_to_strlist({key: value})[0])
+            name = canonicalize_name(req.name)
+            if name not in marked_names:
+                unaffected[index][key] = value
+                continue
+            if req.url:
+                references[str(req)] = ""
+                continue
+            marker = str(req.marker) if req.marker else None
+            group = (name, marker)
+            extras, versions = grouped.get(group, (set(), {}))
+            version = str(req.specifier)
+            versions = merge_dep_dicts(versions, {name: version})
+            grouped[group] = (extras.union(req.extras), versions)
+
+    result = merge_dep_dicts(unaffected[0], unaffected[1])
+    result.update(references)
+    for (name, marker), (extras, versions) in grouped.items():
+        package = name + ("[%s]" % ",".join(sorted(extras)) if extras else "")
+        requirement = str(Requirement(package + versions[name]))
+        if marker:
+            requirement += "; " + marker
+        result[requirement] = ""
+    return result
 
 
 def merge_dep_dicts(
@@ -1428,7 +1486,11 @@ def filter_user_reqs_by_markers(
                 new_deps[dep_type].append(dep)
                 continue
 
-            req = get_requirement(dep)
+            req = (
+                get_pypi_requirement(dep)
+                if dep_type == "pypi"
+                else get_requirement(dep)
+            )
             if evaluate_marker(req.marker, target_envs):
                 new_deps[dep_type].append(dep.split(";")[0])  # Remove the marker part
             else:
