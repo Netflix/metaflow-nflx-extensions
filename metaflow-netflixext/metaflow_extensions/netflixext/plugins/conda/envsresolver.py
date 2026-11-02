@@ -231,6 +231,7 @@ class EnvsResolver(object):
         force: bool = False,
         force_co_resolve: bool = False,
         full_id_unique_keys: Optional[Dict[str, str]] = None,
+        enforce_pypi_pins: bool = False,
     ):
         """
         Add an environment to resolve to this EnvsResolver. The EnvsResolver will resolve
@@ -270,6 +271,9 @@ class EnvsResolver(object):
             by default False
         force_co_resolve : bool, optional
             True if we should force co-resolution, by default False
+        enforce_pypi_pins : bool, optional
+            Validate extension PyPI requirements against final packages. Callers
+            that inject these requirements enable this unless dependencies are skipped.
         """
         self._non_step_envs = True
 
@@ -363,6 +367,7 @@ class EnvsResolver(object):
                 ),
                 "env_type": env_type,
                 "force": force,
+                "enforce_pypi_pins": enforce_pypi_pins,
             }
 
             debug.conda_exec(
@@ -370,6 +375,7 @@ class EnvsResolver(object):
             )
         else:
             self._requested_envs[env_id]["steps"].append(step_name)
+            self._requested_envs[env_id]["enforce_pypi_pins"] |= enforce_pypi_pins
             debug.conda_exec(
                 "Environment '%s' is also needed by '%s'" % (env_id, step_name)
             )
@@ -400,23 +406,29 @@ class EnvsResolver(object):
                     )
             if len(need_resolution):
                 self._resolve_environments(echo, need_resolution)
-            # Frozen UV/pylock exports cannot incorporate injected requirements.
-            # Check the final selected packages, including cached environments,
-            # so deployment fails before an incompatible environment is used.
+            # Solvers and base reuse can bypass injected constraints (for example,
+            # when choosing a direct URL). Check final packages before deployment,
+            # including frozen locks and cached environments.
             for env_id, req in self._requested_envs.items():
-                if not req.get("file_paths", {}).get("pylock_toml"):
+                if (
+                    not req.get("enforce_pypi_pins")
+                    or req["env_type"] == EnvType.CONDA_ONLY
+                ):
                     continue
                 resolved = cast(ResolvedEnvironment, req["resolved"])
                 python_version = get_python_full_version_from_builder_envs(
                     [resolved], env_id.arch
                 )
                 if python_version is None:
-                    raise CondaException("Locked environment has no Python interpreter")
+                    raise CondaException(
+                        "Resolved environment has no Python interpreter"
+                    )
                 validate_pypi_pins(
                     get_pinned_pypi_libs(python_version, self._conda._datastore_type),
                     resolved.packages,
                     python_version,
                     env_id.arch,
+                    locked=bool(req.get("file_paths", {}).get("pylock_toml")),
                 )
             # NOTE: Co-resolved environments allow you to resolve a bunch of "equivalent"
             # environments for different platforms. This is great as it can allow you to
