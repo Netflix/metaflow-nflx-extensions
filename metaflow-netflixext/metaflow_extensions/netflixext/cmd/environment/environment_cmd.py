@@ -954,6 +954,7 @@ def resolve(
             local_only=local_only,
             force=force,
             force_co_resolve=len(archs) > 1,
+            enforce_pypi_pins=not skip_metaflow_deps and not from_str,
         )
 
     has_something = False

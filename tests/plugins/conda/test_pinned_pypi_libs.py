@@ -1,4 +1,5 @@
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,7 @@ from metaflow_extensions.netflixext.plugins.conda.utils import (
     get_pinned_pypi_libs,
     get_pypi_requirement,
     merge_pypi_pins,
+    CondaException,
 )
 
 CLI_MODULE = "metaflow_extensions.netflixext.cmd.environment.environment_cmd"
@@ -152,24 +154,40 @@ def test_named_environment_pypi_pins_follow_base_type(
         hook.assert_called_once_with("3.10.21", "local")
 
 
-@pytest.mark.parametrize("installed", [True, False])
-def test_named_environment_reuses_unversioned_hyphenated_pypi_dependency(
-    installed, conda, monkeypatch
-):
-    monkeypatch.setattr(
-        "metaflow_extensions.netflixext.plugins.conda.envsresolver.CONDA_SYS_DEFAULT_PACKAGES",
-        {},
+@pytest.mark.parametrize("version", ["1.1.0", "1.2.1"])
+def test_reused_direct_url_package_cannot_bypass_hook_pin(version, conda, mocker):
+    selected = _base_environment(EnvType.MIXED, {"example_package": version})
+    conda.environment.return_value = selected
+    conda._datastore_type = "s3"
+    module = SimpleNamespace(
+        get_pinned_pypi_libs=lambda python, datastore: {"example-package": ">=1.2.0"}
     )
-    packages = {"example_helper_package": "2.1.2"} if installed else {}
-    result = EnvsResolver.extract_info_from_base(
-        conda,
-        _base_environment(EnvType.PYPI_ONLY, packages),
-        {"pypi": ["example-helper-package"]},
-        {},
-        {},
+    mocker.patch(
+        "metaflow.extension_support.get_modules",
+        return_value=[SimpleNamespace(module=module)],
+    )
+    resolver = EnvsResolver(conda)
+    resolver.add_environment(
         "linux-64",
+        {
+            "conda": ["python==3.10.21"],
+            "pypi": [
+                "example-package @ https://example.org/example_package-%s-py3-none-any.whl"
+                % version
+            ],
+        },
+        {},
+        {},
+        enforce_pypi_pins=True,
     )
-    assert result[-1] is installed
+    resolution = mocker.patch.object(resolver, "_resolve_environments")
+    with (
+        pytest.raises(CondaException, match="example-package>=1.2.0")
+        if version == "1.1.0"
+        else nullcontext()
+    ):
+        resolver.resolve_environments(lambda *args: None)
+    resolution.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -237,6 +255,7 @@ def test_cli_hook_requirements_follow_target_and_options(
         obj=SimpleNamespace(conda=conda, datastore_type="local"),
     )
     assert isinstance(result.exception, ResolutionReached), result.output
+    assert resolver.add_environment.call_args.kwargs["enforce_pypi_pins"] is (not skip)
     deps = resolver.add_environment.call_args.args[1]
     active = filter_user_reqs_by_markers(deps, "python==" + python, "linux-64")
     reqs = [get_pypi_requirement(dep) for dep in active["pypi"]]

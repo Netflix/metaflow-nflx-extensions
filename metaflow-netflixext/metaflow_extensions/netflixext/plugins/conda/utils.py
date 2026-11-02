@@ -1342,8 +1342,9 @@ def validate_pypi_pins(
     packages: Iterable["PackageSpecification"],
     python_full_version: str,
     architecture: str,
+    locked: bool = False,
 ) -> None:
-    """Check extension requirements against packages selected from a frozen lock.
+    """Check extension package presence and versions against final packages.
 
     Only the new PyPI hook's requirements belong here. Existing Conda pins and
     user requirements retain their existing resolver behavior.
@@ -1365,15 +1366,29 @@ def validate_pypi_pins(
             continue
         version = installed.get(canonicalize_name(req.name))
         if version is None or not req.specifier.contains(version, prereleases=True):
-            failures.append("%s (locked version: %s)" % (req, version or "missing"))
+            failures.append(
+                "%s (%s version: %s)"
+                % (req, "locked" if locked else "resolved", version or "missing")
+            )
     if failures:
-        raise CondaException(
-            "The locked environment does not satisfy extension PyPI requirements "
-            "for Python %s on %s: %s. "
+        remedy = (
             "Add or update the package that provides these dependencies in your "
             "project inputs and regenerate the UV/pylock lockfile before deploying. "
             "The lockfile is not modified automatically."
-            % (python_full_version, architecture, "; ".join(failures))
+            if locked
+            else "Update your requirements or base environment and resolve again before deploying."
+        )
+        raise CondaException(
+            "The %s environment does not satisfy extension PyPI requirements "
+            "for Python %s on %s: %s. "
+            "%s"
+            % (
+                "locked" if locked else "resolved",
+                python_full_version,
+                architecture,
+                "; ".join(failures),
+                remedy,
+            )
         )
 
 

@@ -148,6 +148,7 @@ class CondaEnvironment(MetaflowEnvironment):
                 base_env,
                 base_from_full_id=base_from_full_id,
                 full_id_unique_keys=req.full_id_unique_keys,
+                enforce_pypi_pins=True,
             )
 
         resolver.resolve_environments(echo)

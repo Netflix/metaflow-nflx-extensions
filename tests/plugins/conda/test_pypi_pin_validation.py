@@ -7,6 +7,7 @@ import metaflow  # noqa: F401 -- initialize plugins before importing utilities
 from metaflow_extensions.netflixext.plugins.conda.env_descr import (
     CondaPackageSpecification,
     EnvID,
+    EnvType,
     PypiPackageSpecification,
 )
 from metaflow_extensions.netflixext.plugins.conda.envsresolver import EnvsResolver
@@ -28,13 +29,13 @@ def _package(name, version):
         for version in ("1.2.0", "1.2.1", "1.3.0rc1")
     ]
     + [
-        ({"example-package": ">=1.2.0"}, None, "locked version: missing"),
-        ({"example-package": ">=1.2.0"}, "1.1.0", "locked version: 1.1.0"),
+        ({"example-package": ">=1.2.0"}, None, "version: missing"),
+        ({"example-package": ">=1.2.0"}, "1.1.0", "version: 1.1.0"),
         ({"missing-package": ""}, None, "missing-package"),
         ({}, None, None),
     ],
 )
-def test_locked_packages_satisfy_hook_requirements(pins, version, error):
+def test_final_packages_satisfy_hook_requirements(pins, version, error):
     # Final package sets include transitive dependencies, regardless of their origin.
     packages = [_package("example_helper_package", "1.0")]
     if version:
@@ -44,7 +45,7 @@ def test_locked_packages_satisfy_hook_requirements(pins, version, error):
     ) as result:
         validate_pypi_pins(pins, packages, "3.10.21", "linux-64")
     if error:
-        assert "regenerate the UV/pylock lockfile" in str(result.value)
+        assert "resolve again" in str(result.value)
 
 
 @pytest.mark.parametrize(
@@ -55,7 +56,7 @@ def test_locked_packages_satisfy_hook_requirements(pins, version, error):
         ("3.10.22", "osx-arm64", "new-python"),
     ],
 )
-def test_locked_validation_evaluates_target_markers(python, arch, error, monkeypatch):
+def test_pin_validation_evaluates_target_markers(python, arch, error, monkeypatch):
     monkeypatch.setattr(
         "metaflow_extensions.netflixext.plugins.conda.utils.CONDA_SYS_MARKERS",
         {
@@ -72,16 +73,12 @@ def test_locked_validation_evaluates_target_markers(python, arch, error, monkeyp
 
 
 @pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("locked", [False, True])
 @pytest.mark.parametrize(
-    "locked, version, error",
-    [
-        (True, None, "example-package"),
-        (True, "1.1.0", "example-package"),
-        (True, "1.2.1", None),
-        (False, None, None),
-    ],
+    "version, error",
+    [(None, "example-package"), ("1.1.0", "example-package"), ("1.2.1", None)],
 )
-def test_resolution_validates_only_frozen_hook_requirements(
+def test_resolution_validates_fresh_and_reused_hook_requirements(
     cached, locked, version, error, mocker
 ):
     env_id = EnvID("request", "full", "linux-64")
@@ -100,6 +97,8 @@ def test_resolution_validates_only_frozen_hook_requirements(
     req = {
         "file_paths": {"pylock_toml": ["fixture.toml"]} if locked else {},
         "resolved": resolved if cached else None,
+        "env_type": EnvType.PYPI_ONLY,
+        "enforce_pypi_pins": True,
         "need_caching": False,
         "conda_format": ["_any"],
     }
@@ -116,10 +115,35 @@ def test_resolution_validates_only_frozen_hook_requirements(
         "metaflow_extensions.netflixext.plugins.conda.envsresolver.get_pinned_pypi_libs",
         return_value={"example-package": ">=1.2.0"},
     )
-    with pytest.raises(CondaException, match=error) if error else nullcontext():
+    with (
+        pytest.raises(CondaException, match=error) if error else nullcontext()
+    ) as result:
         resolver.resolve_environments(lambda *args: None)
-    if locked:
-        hook.assert_called_once_with("3.10.21", "s3")
-    else:
-        hook.assert_not_called()
+    if error:
+        remedy = "regenerate the UV/pylock lockfile" if locked else "resolve again"
+        assert remedy in str(result.value)
+    hook.assert_called_once_with("3.10.21", "s3")
     assert resolution.call_count == (0 if cached else 1)
+
+
+@pytest.mark.parametrize(
+    "env_type, enforce",
+    [(EnvType.CONDA_ONLY, True), (EnvType.PYPI_ONLY, False)],
+    ids=["conda-only", "dependencies-skipped"],
+)
+def test_resolution_does_not_enforce_pypi_pins_when_excluded(env_type, enforce, mocker):
+    env_id = EnvID("request", "full", "linux-64")
+    resolver = EnvsResolver(SimpleNamespace(_datastore_type="s3"))
+    resolver._non_step_envs = True
+    resolver._requested_envs[env_id] = {
+        "resolved": SimpleNamespace(env_id=env_id, is_cached=lambda formats: True),
+        "env_type": env_type,
+        "enforce_pypi_pins": enforce,
+        "need_caching": False,
+        "conda_format": ["_any"],
+    }
+    hook = mocker.patch(
+        "metaflow_extensions.netflixext.plugins.conda.envsresolver.get_pinned_pypi_libs"
+    )
+    resolver.resolve_environments(lambda *args: None)
+    hook.assert_not_called()
