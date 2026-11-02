@@ -50,6 +50,7 @@ from .utils import (
     channel_or_url,
     arch_id,
     get_requirement,
+    get_pypi_requirement,
     dict_to_strlist,
     filter_user_reqs_by_markers,
     get_builder_envs_dep,
@@ -1053,7 +1054,9 @@ class EnvsResolver(object):
         python_version = python_package.package_version if python_package else None
         if python_version is None:
             raise CondaException("Python package not found in base environment")
-        filtered_deps = filter_user_reqs_by_markers(deps, python_version, architecture)
+        filtered_deps = filter_user_reqs_by_markers(
+            deps, "python==%s" % python_version, architecture
+        )
 
         incoming_conda_deps = split_into_dict(filtered_deps.get("conda", []))
         incoming_npconda_deps = split_into_dict(filtered_deps.get("npconda", []))
@@ -1157,7 +1160,11 @@ class EnvsResolver(object):
                     continue  # These are the system deps
 
                 for dep_req in incoming_deps_per_type:
-                    req = get_requirement(dep_req)
+                    req = (
+                        get_pypi_requirement(dep_req)
+                        if dep_type == "pypi"
+                        else get_requirement(dep_req)
+                    )
                     if req.name not in dep_dict or (
                         len(req.specifier) != 0  # Make sure we have a version
                         and not req.specifier.contains(dep_dict[req.name])
