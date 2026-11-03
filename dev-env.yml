@@ -12,10 +12,11 @@ dependencies:
   - wheel
   - mamba
   - conda
-  - conda-lock
+  - pip
   - conda-package-handling
   - coverage
   - pandas
   - uv
   - pip:
     - sh
+    - conda-lock==4.0.4
