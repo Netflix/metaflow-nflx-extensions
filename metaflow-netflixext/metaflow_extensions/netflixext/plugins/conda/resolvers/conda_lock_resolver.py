@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING, cast  # noqa
 
 from urllib.parse import urlparse
 from metaflow.debug import debug
+from metaflow._vendor.packaging.version import parse as parse_version
 from metaflow.metaflow_config import CONDA_LOCK_PYPI_TO_CONDA_LOOKUP
 
 # Consider re-adding if resolving fails weirdly.
@@ -248,7 +249,14 @@ class CondaLockResolver(Resolver):
                     "explicit",
                     "--strip-auth",
                 ]
-                if CONDA_LOCK_PYPI_TO_CONDA_LOOKUP:
+                # Circumvent the dead regro mapping URL that conda-lock 4.0.3 and
+                # older default to; leave newer conda-lock on its own default.
+                conda_lock_version = self._conda.conda_lock_version
+                if (
+                    CONDA_LOCK_PYPI_TO_CONDA_LOOKUP
+                    and conda_lock_version
+                    and parse_version(conda_lock_version) < parse_version("4.0.4")
+                ):
                     args.extend(
                         ["--pypi_to_conda_lookup_file", CONDA_LOCK_PYPI_TO_CONDA_LOOKUP]
                     )

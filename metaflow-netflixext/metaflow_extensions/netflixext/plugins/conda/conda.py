@@ -180,6 +180,7 @@ class Conda(object):
         self._mode = mode
         self._bins = None  # type: Optional[Dict[str, Optional[str]]]
         self._conda_executable_type = None  # type: Optional[str]
+        self._conda_lock_version = None  # type: Optional[str]
         # True when using micromamba or mamba 2.0+ which doesn't wrap
         # conda anymore
         self.is_non_conda_exec = False  # type: bool
@@ -236,6 +237,12 @@ class Conda(object):
         if not self._found_binaries:
             self._find_conda_binary()
         return self._conda_executable_type
+
+    @property
+    def conda_lock_version(self) -> Optional[str]:
+        if not self._found_binaries:
+            self._find_conda_binary()
+        return self._conda_lock_version
 
     @property
     def default_conda_channels(self) -> List[str]:
@@ -2243,6 +2250,8 @@ class Conda(object):
                     "is required) --ignoring"
                 )
                 del self._bins["conda-lock"]
+            else:
+                self._conda_lock_version = conda_lock_version
         if self._bins is not None and "pip" in self._bins:
             pip_version = self.call_binary(["--version"], binary="pip").split(b" ", 2)[
                 1

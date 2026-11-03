@@ -99,9 +99,10 @@ CONDA_MIXED_DEPENDENCY_RESOLVER = from_conf(
     get_validate_choice_fn(["conda-lock", "none"]),
 )
 
-# PyPI to conda name mapping passed to conda-lock. conda-lock 4.0.3 and older
-# default to a URL that no longer exists, and conda-forge only builds newer
-# versions for Python 3.11+, so set it explicitly. Set to "" to use conda-lock's default.
+# PyPI to conda name mapping passed to conda-lock 4.0.3 and older only. Their
+# default (regro/cf-graph-countyfair) now returns 404, and conda-forge builds newer
+# conda-lock only for Python 3.11+, so Python 3.10 environments still hit it.
+# Newer conda-lock keeps its own default, which may change. Set to "" to disable.
 CONDA_LOCK_PYPI_TO_CONDA_LOOKUP = from_conf(
     "CONDA_LOCK_PYPI_TO_CONDA_LOOKUP",
     "https://raw.githubusercontent.com/conda-forge/conda-forge-bot-data/main/"
