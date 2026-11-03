@@ -1,3 +1,8 @@
+"""
+Tests that requirement extras are written in a stable order, so the same
+requirements give the same req_id in every process.
+"""
+
 import json
 import os
 import subprocess
@@ -35,6 +40,7 @@ print(json.dumps(sorted(parser(sys.argv[2])["packages"])))
 @pytest.mark.parametrize(
     "parser_name, content",
     [("req", REQ_CONTENT), ("toml", TOML_CONTENT)],
+    ids=["requirements.in", "pyproject.toml"],
 )
 def test_extras_order_independent_of_hash_seed(parser_name, content):
     # Same requirements parse to the same sorted dependency string in every process.
