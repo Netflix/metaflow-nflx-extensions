@@ -99,6 +99,15 @@ CONDA_MIXED_DEPENDENCY_RESOLVER = from_conf(
     get_validate_choice_fn(["conda-lock", "none"]),
 )
 
+# PyPI to conda name mapping passed to conda-lock. conda-lock 4.0.3 and older
+# default to a URL that no longer exists, and conda-forge only builds newer
+# versions for Python 3.11+, so set it explicitly. Set to "" to use conda-lock's default.
+CONDA_LOCK_PYPI_TO_CONDA_LOOKUP = from_conf(
+    "CONDA_LOCK_PYPI_TO_CONDA_LOOKUP",
+    "https://raw.githubusercontent.com/conda-forge/conda-forge-bot-data/main/"
+    "mappings/pypi/grayskull_pypi_mapping.json",
+)
+
 # Timeout trying to acquire the lock to create environments
 CONDA_LOCK_TIMEOUT = from_conf("CONDA_LOCK_TIMEOUT", 3600)
 

@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING, cast  # noqa
 
 from urllib.parse import urlparse
 from metaflow.debug import debug
+from metaflow.metaflow_config import CONDA_LOCK_PYPI_TO_CONDA_LOOKUP
 
 # Consider re-adding if resolving fails weirdly.
 # from metaflow.exception import retry_exp_backoff
@@ -246,8 +247,12 @@ class CondaLockResolver(Resolver):
                     "-k",
                     "explicit",
                     "--strip-auth",
-                    "--conda",
                 ]
+                if CONDA_LOCK_PYPI_TO_CONDA_LOOKUP:
+                    args.extend(
+                        ["--pypi_to_conda_lookup_file", CONDA_LOCK_PYPI_TO_CONDA_LOOKUP]
+                    )
+                args.append("--conda")
                 #                if "micromamba_server" in self._conda._bins:
                 #                    args.extend([self._bins["micromamba_server"], "--micromamba"])
                 #                else:
