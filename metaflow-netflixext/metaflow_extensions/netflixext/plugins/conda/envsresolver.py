@@ -58,6 +58,7 @@ from .utils import (
     get_python_full_version_from_builder_envs,
     validate_pypi_pins,
     merge_dep_dicts,
+    merge_pypi_deps,
     plural_marker,
     split_into_dict,
     tstr_to_dict,
@@ -1093,7 +1094,12 @@ class EnvsResolver(object):
 
         incoming_conda_deps = split_into_dict(filtered_deps.get("conda", []))
         incoming_npconda_deps = split_into_dict(filtered_deps.get("npconda", []))
-        incoming_pypi_deps = split_into_dict(filtered_deps.get("pypi", []))
+        # Removing active markers can leave multiple constraints for one package.
+        # Accumulate them so none is overwritten when extending the base.
+        incoming_pypi_deps: Dict[str, str] = {}
+        for dep in filtered_deps.get("pypi", []):
+            req = get_pypi_requirement(dep)
+            incoming_pypi_deps = merge_pypi_deps(incoming_pypi_deps, {str(req): ""})
         incoming_sys_deps = split_into_dict(filtered_deps.get("sys", []))
 
         base_deps = tstr_to_dict(base_env.deps)
