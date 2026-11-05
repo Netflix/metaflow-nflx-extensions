@@ -197,6 +197,8 @@ def test_named_environment_retains_active_user_and_hook_constraints(
         )
     else:
         assert result.returncode != 0, "The user's active constraint was discarded"
-        assert (
-            "No matching distribution found for marker-merge-example" in result.stderr
-        )
+        assert {
+            str(specifier)
+            for dep in deps["pypi"]
+            for specifier in get_pypi_requirement(dep).specifier
+        } == {"==1.5", "==2.5"}
