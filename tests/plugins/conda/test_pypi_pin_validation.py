@@ -17,7 +17,12 @@ from metaflow_extensions.netflixext.plugins.conda.utils import (
 )
 
 
-def _package(name, version):
+def _package(name, version, kind="pypi"):
+    if kind == "conda":
+        filename = "%s-%s-0" % (name.replace("_", "-"), version)
+        return CondaPackageSpecification(
+            filename, "https://example.org/%s.conda" % filename
+        )
     filename = "%s-%s-py3-none-any" % (name, version)
     return PypiPackageSpecification(filename, "https://example.org/%s.whl" % filename)
 
@@ -35,17 +40,39 @@ def _package(name, version):
         ({}, None, None),
     ],
 )
-def test_final_packages_satisfy_hook_requirements(pins, version, error):
+@pytest.mark.parametrize("kind", ["conda", "pypi"])
+def test_final_packages_satisfy_hook_requirements(pins, version, error, kind):
     # Final package sets include transitive dependencies, regardless of their origin.
-    packages = [_package("example_helper_package", "1.0")]
+    packages = [_package("example_helper_package", "1.0", kind)]
     if version:
-        packages.append(_package("example_package", version))
+        packages.append(_package("example_package", version, kind))
     with (
         pytest.raises(CondaException, match=error) if error else nullcontext()
     ) as result:
         validate_pypi_pins(pins, packages, "3.10.21", "linux-64")
     if error:
         assert "resolve again" in str(result.value)
+
+
+@pytest.mark.parametrize(
+    "conda_version, pypi_version, error",
+    [("1.1.0", "1.2.1", None), ("1.2.1", "1.1.0", "version: 1.1.0")],
+    ids=["compatible-pypi", "incompatible-pypi"],
+)
+def test_pypi_version_takes_precedence_over_conda_record(
+    conda_version, pypi_version, error
+):
+    # Record order must not affect precedence; packages may be an iterator.
+    packages = iter(
+        [
+            _package("example_package", pypi_version),
+            _package("example_package", conda_version, "conda"),
+        ]
+    )
+    with pytest.raises(CondaException, match=error) if error else nullcontext():
+        validate_pypi_pins(
+            {"example-package": ">=1.2.0"}, packages, "3.10.21", "linux-64"
+        )
 
 
 @pytest.mark.parametrize(
