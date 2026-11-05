@@ -729,6 +729,50 @@ def merge_dep_dicts(
     return result
 
 
+def merge_pypi_pins(
+    requirements: Dict[str, str], pins: Dict[str, str]
+) -> Dict[str, str]:
+    """Add hook pins while preserving extras and independent markers.
+
+    Only requirements for packages named by the hook are combined. Other
+    dependencies retain the existing representation and merging behavior.
+    """
+    if not pins:
+        return dict(requirements)
+
+    pinned_names = {
+        canonicalize_name(get_pypi_requirement(dep).name)
+        for dep in dict_to_strlist(pins)
+    }
+    result: Dict[str, str] = {}
+    matching: Dict[str, str] = {}
+    for key, value in requirements.items():
+        req = get_pypi_requirement(dict_to_strlist({key: value})[0])
+        if canonicalize_name(req.name) in pinned_names:
+            matching[key] = value
+        else:
+            result[key] = value
+    result.update(merge_pypi_deps(matching, pins))
+    return result
+
+
+def get_pinned_pypi_libs(
+    python_version: Optional[str], datastore_type: str
+) -> Dict[str, str]:
+    """Collect and merge pinned PyPI dependencies from config extensions."""
+    from metaflow.extension_support import get_modules
+
+    pins: Dict[str, str] = {}
+    for extension in get_modules("config"):
+        hook = getattr(extension.module, "get_pinned_pypi_libs", None)
+        if hook is not None:
+            pins = merge_pypi_pins(
+                pins,
+                hook(python_version, datastore_type),
+            )
+    return pins
+
+
 def reform_pypi_filename(
     name: str, version: Version, build: BuildTag, tags: FrozenSet[Tag]
 ) -> str:
@@ -1291,6 +1335,64 @@ def get_best_compatible_packages(
             break
 
     return best_packages
+
+
+def validate_pypi_pins(
+    pins: Dict[str, str],
+    packages: Iterable["PackageSpecification"],
+    python_full_version: str,
+    architecture: str,
+    locked: bool = False,
+) -> None:
+    """Check extension package presence and versions against final packages.
+
+    Only the new PyPI hook's requirements belong here. Existing Conda pins and
+    user requirements retain their existing resolver behavior.
+    """
+    if not pins:
+        return
+    target_envs = compute_target_envs(
+        default_environment(), [python_full_version], architecture
+    )
+    packages = list(packages)
+    installed = {}
+    # PyPI packages are installed after Conda packages, so their versions win
+    # when both package records remain in the resolved environment.
+    for kind in ("conda", "pypi"):
+        for pkg in packages:
+            if pkg.TYPE == kind:
+                installed[canonicalize_name(pkg.package_name)] = pkg.package_version
+    failures = []
+    for dep in dict_to_strlist(pins):
+        req = get_pypi_requirement(dep)
+        if not evaluate_marker(req.marker, target_envs):
+            continue
+        version = installed.get(canonicalize_name(req.name))
+        if version is None or not req.specifier.contains(version, prereleases=True):
+            failures.append(
+                "%s (%s version: %s)"
+                % (req, "locked" if locked else "resolved", version or "missing")
+            )
+    if failures:
+        remedy = (
+            "Add or update the package that provides these dependencies in your "
+            "project inputs and regenerate the UV/pylock lockfile before deploying. "
+            "The lockfile is not modified automatically."
+            if locked
+            else "Update your requirements or base environment and resolve again before deploying."
+        )
+        raise CondaException(
+            "The %s environment does not satisfy extension PyPI requirements "
+            "for Python %s on %s: %s. "
+            "%s"
+            % (
+                "locked" if locked else "resolved",
+                python_full_version,
+                architecture,
+                "; ".join(failures),
+                remedy,
+            )
+        )
 
 
 def compute_target_envs(
