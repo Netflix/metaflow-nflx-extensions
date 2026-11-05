@@ -49,6 +49,7 @@ from .utils import (
     get_conda_manifest_path,
     get_sys_packages,
     merge_dep_dicts,
+    merge_pypi_deps,
     resolve_env_alias,
     sanitize_python_version,
 )
@@ -618,7 +619,7 @@ class CondaEnvironment(MetaflowEnvironment):
         # env-type is mixed
 
         if env_type == EnvType.PYPI_ONLY:
-            all_packages["pypi"] = merge_dep_dicts(
+            all_packages["pypi"] = merge_pypi_deps(
                 all_packages.get("pypi", {}),
                 conda_deps_to_pypi_deps(
                     get_pinned_conda_libs(final_req.python, datastore_type)
