@@ -268,3 +268,67 @@ def test_cli_hook_requirements_follow_target_and_options(
         hook.assert_called_once_with(python, "local")
     else:
         hook.assert_not_called()
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["fresh", "cached"])
+@pytest.mark.parametrize("version, succeeds", [("1.1.0", False), ("1.2.1", True)])
+def test_flow_environment_cli_enforces_hook_requirements(
+    cached, version, succeeds, conda, mocker
+):
+    from metaflow_extensions.netflixext.plugins import environment_cli
+
+    selected = _base_environment(EnvType.MIXED, {"example_package": version})
+    conda.environment.return_value = selected if cached else None
+    conda._datastore_type = "local"
+    mocker.patch.object(selected, "is_cached", return_value=True)
+    mocker.patch.object(environment_cli, "Conda", return_value=conda)
+    mocker.patch.object(environment_cli, "_compute_local_instances")
+    mocker.patch.object(environment_cli, "_all_local_instances", {})
+    req = SimpleNamespace(
+        is_disabled=False,
+        is_fetch_at_exec=False,
+        from_env_name=None,
+        packages_as_str={
+            "conda": ["python==3.10.21"],
+            "pypi": [
+                "example-package @ https://example.org/example_package-%s-py3-none-any.whl"
+                % version
+            ],
+        },
+        sources={},
+    )
+    mocker.patch.object(
+        environment_cli.CondaEnvironment,
+        "extract_merged_reqs_for_step",
+        return_value=(EnvType.MIXED, "linux-64", req, None),
+    )
+    mocker.patch(
+        "metaflow_extensions.netflixext.plugins.conda.envsresolver.get_pinned_pypi_libs",
+        return_value={"example-package": ">=1.2.0"},
+    )
+
+    def resolve(resolver, echo, env_ids):
+        for env_id in env_ids:
+            resolver._requested_envs[env_id]["resolved"] = selected
+
+    resolution = mocker.patch.object(
+        EnvsResolver, "_resolve_environments", autospec=True, side_effect=resolve
+    )
+    validation = mocker.spy(EnvsResolver, "resolve_environments")
+    result = CliRunner().invoke(
+        environment_cli.resolve,
+        ["--dry-run", "start"],
+        obj=SimpleNamespace(
+            echo=mocker.Mock(),
+            flow_datastore=SimpleNamespace(TYPE="local"),
+            flow=[SimpleNamespace(name="start")],
+            is_quiet=False,
+        ),
+    )
+    assert validation.call_count == 1
+    assert resolution.call_count == (0 if cached else 1)
+    if succeeds:
+        assert result.exit_code == 0, result.output
+    else:
+        assert isinstance(result.exception, CondaException), result.output
+        assert "example-package>=1.2.0" in str(result.exception)
