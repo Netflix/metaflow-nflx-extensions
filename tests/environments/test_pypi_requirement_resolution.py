@@ -14,6 +14,7 @@ from metaflow_extensions.netflixext.plugins.conda.utils import (
     filter_user_reqs_by_markers,
     get_pypi_requirement,
     merge_pypi_deps,
+    merge_pypi_pins,
 )
 
 
@@ -135,6 +136,67 @@ def test_config_hook_reaches_flow_dependency_resolution(
         )
     else:
         assert result.returncode != 0
+        assert (
+            "No matching distribution found for marker-merge-example" in result.stderr
+        )
+
+
+@pytest.mark.parametrize(
+    "user_version, marker, succeeds",
+    [
+        ("1.5", 'python_version >= "3.10"', False),
+        ("2.5", 'python_version >= "3.10"', True),
+        ("1.5", 'python_version < "3.10"', True),
+    ],
+    ids=["active-conflict", "active-compatible", "inactive-constraint"],
+)
+def test_named_environment_retains_active_user_and_hook_constraints(
+    wheelhouse, user_version, marker, succeeds
+):
+    from metaflow_extensions.netflixext.plugins.conda.env_descr import (
+        CondaPackageSpecification,
+        EnvType,
+        PypiPackageSpecification,
+        ResolvedEnvironment,
+    )
+    from metaflow_extensions.netflixext.plugins.conda.envsresolver import EnvsResolver
+
+    base = ResolvedEnvironment(
+        {"pypi": ["marker-merge-example==2.5"]},
+        {},
+        {},
+        "linux-64",
+        all_packages=[
+            CondaPackageSpecification(
+                "python-3.10.21-0", "https://example.org/python-3.10.21-0.conda"
+            ),
+            PypiPackageSpecification(
+                "marker_merge_example-2.5-py3-none-any",
+                (wheelhouse / "marker_merge_example-2.5-py3-none-any.whl").as_uri(),
+            ),
+        ],
+        env_type=EnvType.PYPI_ONLY,
+    )
+    incoming = merge_pypi_pins(
+        {"marker-merge-example": "%s; %s" % (user_version, marker)},
+        {"marker-merge-example": "2.5"},
+    )
+    _, _, _, _, deps, _, _ = EnvsResolver.extract_info_from_base(
+        SimpleNamespace(default_conda_channels=[], default_pypi_sources=[]),
+        base,
+        {"pypi": dict_to_strlist(incoming)},
+        {},
+        {},
+        "linux-64",
+    )
+    result, report = _resolve_with_pip(wheelhouse, deps["pypi"])
+    if succeeds:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (
+            json.loads(report.read_text())["install"][0]["metadata"]["version"] == "2.5"
+        )
+    else:
+        assert result.returncode != 0, "The user's active constraint was discarded"
         assert (
             "No matching distribution found for marker-merge-example" in result.stderr
         )
