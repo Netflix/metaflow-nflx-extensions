@@ -1354,11 +1354,14 @@ def validate_pypi_pins(
     target_envs = compute_target_envs(
         default_environment(), [python_full_version], architecture
     )
-    installed = {
-        canonicalize_name(pkg.package_name): pkg.package_version
-        for pkg in packages
-        if pkg.TYPE == "pypi"
-    }
+    packages = list(packages)
+    installed = {}
+    # PyPI packages are installed after Conda packages, so their versions win
+    # when both package records remain in the resolved environment.
+    for kind in ("conda", "pypi"):
+        for pkg in packages:
+            if pkg.TYPE == kind:
+                installed[canonicalize_name(pkg.package_name)] = pkg.package_version
     failures = []
     for dep in dict_to_strlist(pins):
         req = get_pypi_requirement(dep)
