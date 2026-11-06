@@ -63,6 +63,29 @@ if TYPE_CHECKING:
     from .conda import Conda
 
 
+def _merge_conda_dep_dicts(
+    base: Dict[str, str], incoming: Dict[str, str]
+) -> Dict[str, str]:
+    """Merge named-base constraints without duplicating channel-qualified packages."""
+    merged = merge_dep_dicts(base, incoming)
+    qualified_names = {}  # type: Dict[str, List[str]]
+    for name in merged:
+        if "::" in name:
+            qualified_names.setdefault(name.split("::", 1)[1], []).append(name)
+
+    # A solver may treat `channel::name` and `name` as separate inputs and lose
+    # one of their constraints. Keep the channel and intersect both constraints
+    # under that key instead. Leave distinct explicit channels to the solver.
+    for name, channel_names in qualified_names.items():
+        if name in merged:
+            constraint = merged.pop(name)
+            for channel_name in channel_names:
+                merged[channel_name] = merge_dep_dicts(
+                    {channel_name: merged[channel_name]}, {channel_name: constraint}
+                )[channel_name]
+    return merged
+
+
 class EnvsResolver(object):
     def __init__(self, conda: "Conda", defer_pypi_sdist_build: bool = False):
         # key: EnvID; value: dict containing:
@@ -1064,7 +1087,7 @@ class EnvsResolver(object):
         base_sources = tstr_to_dict(base_env.sources)
         base_extras = tstr_to_dict(base_env.extras)
 
-        user_conda_deps = merge_dep_dicts(
+        user_conda_deps = _merge_conda_dep_dicts(
             split_into_dict(base_deps.get("conda", [])),
             incoming_conda_deps,
         )
@@ -1072,7 +1095,7 @@ class EnvsResolver(object):
             split_into_dict(base_deps.get("pypi", [])),
             incoming_pypi_deps,
         )
-        user_npconda_deps = merge_dep_dicts(
+        user_npconda_deps = _merge_conda_dep_dicts(
             split_into_dict(base_deps.get("npconda", [])),
             incoming_npconda_deps,
         )
@@ -1132,6 +1155,17 @@ class EnvsResolver(object):
             for p in base_env.packages
             if p.TYPE == "conda"
         }
+        # Solver inputs retain channels, but an unqualified requirement can be
+        # satisfied by a package from any channel. Explicit channel requirements
+        # must still match the installed package's channel.
+        installed_conda_deps = dict(conda_deps)
+        installed_conda_deps.update(
+            {
+                p.package_name: p.package_version
+                for p in base_env.packages
+                if p.TYPE == "conda"
+            }
+        )
 
         pypi_deps = {
             p.package_name: p.package_version
@@ -1150,7 +1184,7 @@ class EnvsResolver(object):
         else:
             for dep_type, incoming_deps_per_type in filtered_deps.items():
                 if dep_type in ("conda", "npconda"):
-                    dep_dict = conda_deps
+                    dep_dict = installed_conda_deps
                 elif dep_type == "pypi":
                     dep_dict = pypi_deps
                 else:
@@ -1158,22 +1192,25 @@ class EnvsResolver(object):
 
                 for dep_req in incoming_deps_per_type:
                     req = get_requirement(dep_req)
-                    if req.name not in dep_dict or (
+                    dep_name = req.name
+                    if dep_type in ("conda", "npconda") and "::" in dep_req:
+                        dep_name = "%s::%s" % (dep_req.split("::", 1)[0], req.name)
+                    if dep_name not in dep_dict or (
                         len(req.specifier) != 0  # Make sure we have a version
-                        and not req.specifier.contains(dep_dict[req.name])
+                        and not req.specifier.contains(dep_dict[dep_name])
                     ):
                         if len(req.specifier) == 0:
                             debug.conda_exec(
                                 "Dependency %s prevents compatible base (not found)"
-                                % req.name
+                                % dep_name
                             )
                         else:
                             debug.conda_exec(
                                 "Dependency %s prevents compatible base "
                                 "(%s incompatible with requested version %s)"
                                 % (
-                                    req.name,
-                                    dep_dict.get(req.name, "<not present>"),
+                                    dep_name,
+                                    dep_dict.get(dep_name, "<not present>"),
                                     str(req.specifier),
                                 )
                             )
@@ -1184,8 +1221,9 @@ class EnvsResolver(object):
 
         if not compatible_base_env:
             # If envs are compatible, the deps are the same so we don't change.
-            conda_deps = merge_dep_dicts(
-                merge_dep_dicts(conda_deps, incoming_conda_deps), incoming_npconda_deps
+            conda_deps = _merge_conda_dep_dicts(
+                _merge_conda_dep_dicts(conda_deps, incoming_conda_deps),
+                incoming_npconda_deps,
             )
             pypi_deps = merge_dep_dicts(pypi_deps, incoming_pypi_deps)
 
