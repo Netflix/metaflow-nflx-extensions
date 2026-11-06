@@ -11,7 +11,8 @@ def pytest_configure(config):
     before metaflow modules read it.
 
     These tests specifically test the resolve code path, so they should use :none:
-    to ensure environments are resolved locally rather than fetched remotely.
+    to ensure environments are resolved locally rather than fetched remotely
+    (lock-pinned @resolved_uv/@resolved_req environments are still fetched remotely).
     """
     os.environ["METAFLOW_CONDA_USE_REMOTE_LATEST"] = ":none:"
     import tempfile

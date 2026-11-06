@@ -1015,11 +1015,16 @@ instead.
 
 To do so, you can set the `METAFLOW_CONDA_USE_REMOTE_LATEST` environment variable, it takes one of the following
 values:
-- ":none:" (the default value): do not look for remote environments when resolving
+- ":none:" (the default value): do not look for remote environments when resolving, except
+for `@resolved_uv` and `@resolved_req` environments (see below)
 - ":username:": look for the latest environment the current user resolved (maybe from another machine)
 - ":any:" look for the latest environment resolved by any user
 - comma separated list of names: look for the latest environment resolved by any of the users in
 the list.
+
+Environments from `@resolved_uv` and `@resolved_req` are pinned by their lock file, so they are
+always looked up remotely, whatever this is set to, and the latest environment resolved from the
+same lock file contents is reused.
 
 ### Delaying Environment Fetching
 

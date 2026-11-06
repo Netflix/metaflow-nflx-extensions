@@ -708,10 +708,16 @@ class Conda(object):
             If True, does not look in the remote cache for resolved environments,
             by default False
         use_latest : str, default METAFLOW_CONDA_USE_REMOTE_LATEST
-            For default environments, determine if we allow fetching the latest environment
-            remotely resolved. If ":none:", we don't fetch anything. If ":username:", we
-            fetch the latest environment resolved by the current user. If ":any:", we fetch
-            the latest environment resolved by any user.
+            For default environments (full_id "_default") not known locally, which
+            remotely resolved environment to use: ":none:" fetches nothing,
+            ":username:" the latest resolved by the current user, ":any:" the latest
+            resolved by anyone, and a comma separated list of names the latest resolved
+            by one of those users. Lock-pinned environments (full_id_unique_keys set)
+            are looked up remotely even with ":none:", as if it were ":any:".
+        full_id_unique_keys : Optional[Dict[str, str]], optional
+            Hash of the lock file for lock-pinned environments (set by @resolved_uv and
+            @resolved_req). Only environments with the same keys are returned, by
+            default None
 
         Returns
         -------
