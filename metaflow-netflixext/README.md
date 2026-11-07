@@ -111,9 +111,8 @@ The useful configuration values are listed below:
   will be re-resolved. You can also set it to `:username:`, `:any:` or a comma separated
   list of usernames to tell Metaflow to go check if there is a cached environment that matches
   the requested specification that has been resolved previously by either the current user,
-  any user or the set of users. Environments from `@resolved_uv` and `@resolved_req` are
-  always looked up remotely, even with `:none:`, and reused if they were resolved from the
-  same lock file.
+  any user or the set of users. For `@resolved_uv` and `@resolved_req`, only environments
+  resolved from the same lock file are reused, and `:none:` behaves like `:any:`.
 
 
 ##### Azure specific setup
