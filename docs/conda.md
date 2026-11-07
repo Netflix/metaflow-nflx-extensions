@@ -1009,17 +1009,16 @@ Workflow starting (run-id 145), see it in the UI at https://mfui.net/CondaTestFl
 
 ### Using Remotely Resolved Environments
 
-If you have never resolved an environment locally before, Metaflow will resolve it for you. You can, however,
-also tell Metaflow to check if someone else has resolved the same environment before and use that directly
-instead.
+If an environment is not known on this machine (for example, the first time you use it here), Metaflow
+resolves it. Set `METAFLOW_CONDA_USE_REMOTE_LATEST` to instead reuse a matching environment that was already
+resolved and stored remotely:
+- `:none:` (default): do not reuse remote environments.
+- `:username:`: reuse the latest one you resolved, possibly on another machine.
+- `:any:`: reuse the latest one resolved by anyone.
+- comma-separated user names: reuse the latest one resolved by any of those users.
 
-To do so, you can set the `METAFLOW_CONDA_USE_REMOTE_LATEST` environment variable, it takes one of the following
-values:
-- ":none:" (the default value): do not look for remote environments when resolving
-- ":username:": look for the latest environment the current user resolved (maybe from another machine)
-- ":any:" look for the latest environment resolved by any user
-- comma separated list of names: look for the latest environment resolved by any of the users in
-the list.
+For `@resolved_uv` and `@resolved_req`, only environments resolved from the same lock file are reused, and
+`:none:` behaves like `:any:`.
 
 ### Delaying Environment Fetching
 

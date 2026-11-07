@@ -13,5 +13,6 @@ def pytest_configure(config):
     any modules that may initialize Metaflow config.
 
     These tests specifically test the resolve code path, so they should use :none:
-    to ensure environments are resolved locally rather than fetched remotely.
+    to ensure environments are resolved locally rather than fetched remotely
+    (lock-pinned @resolved_uv/@resolved_req environments are still fetched remotely).
     """
