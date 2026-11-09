@@ -279,7 +279,8 @@ class RunnerCLI(object):
             steps will be returned.
         local_only : bool, default False
             If True, will only list environments as known if they are locally known. This
-            primarily affects named environments or if you have
+            primarily affects named environments, lock-pinned environments
+            (@resolved_uv, @resolved_req) or if you have
             METAFLOW_CONDA_USE_REMOTE_LATEST set to something different than ":none:".
         timeout : int, default 60
             Timeout in seconds for this call.
@@ -443,6 +444,7 @@ def resolve(
                     base_env,
                     base_from_full_id=base_from_full_id,
                     force=force,
+                    enforce_pypi_pins=True,
                 )
 
     per_req_id = {}  # type: Dict[str, Set[str]]
@@ -459,6 +461,8 @@ def resolve(
         per_req_id.setdefault(env_id.req_id, set()).update(steps)
 
     if len(per_req_id) == 0 and aliases is None:
+        # Reused environments still need validation, even when no work is pending.
+        resolver.resolve_environments(obj.echo)
         obj.echo("No environments to resolve/cache, use --force to force re-resolution")
         _write_out_environments()
         return

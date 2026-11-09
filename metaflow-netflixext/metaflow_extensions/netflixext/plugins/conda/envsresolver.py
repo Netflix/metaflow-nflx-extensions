@@ -53,10 +53,15 @@ from .utils import (
     clean_up_double_equal,
     arch_id,
     get_requirement,
+    get_pypi_requirement,
     dict_to_strlist,
     filter_user_reqs_by_markers,
     get_builder_envs_dep,
+    get_pinned_pypi_libs,
+    get_python_full_version_from_builder_envs,
+    validate_pypi_pins,
     merge_dep_dicts,
+    merge_pypi_deps,
     plural_marker,
     split_into_dict,
     tstr_to_dict,
@@ -271,6 +276,7 @@ class EnvsResolver(object):
         force: bool = False,
         force_co_resolve: bool = False,
         full_id_unique_keys: Optional[Dict[str, str]] = None,
+        enforce_pypi_pins: bool = False,
     ):
         """
         Add an environment to resolve to this EnvsResolver. The EnvsResolver will resolve
@@ -301,15 +307,22 @@ class EnvsResolver(object):
             True if we should only look for resolved environments locally and not
             remotely, by default False
         use_latest : str, default METAFLOW_CONDA_USE_REMOTE_LATEST
-            For default environments, determine if we allow fetching the latest environment
-            remotely resolved. If ":none:", we don't fetch anything. If ":username:", we
-            fetch the latest environment resolved by the current user. If ":any:", we fetch
-            the latest environment resolved by any user.
+            For default environments not known locally, which remotely resolved
+            environment to use (see `Conda.environment`). ":none:" fetches nothing,
+            except for lock-pinned environments (full_id_unique_keys set), which are
+            looked up remotely as if it were ":any:".
         force : bool, optional
             True if we should force resolution even if this environment is known,
             by default False
         force_co_resolve : bool, optional
             True if we should force co-resolution, by default False
+        full_id_unique_keys : Optional[Dict[str, str]], optional
+            Hash of the lock file for lock-pinned environments (set by @resolved_uv and
+            @resolved_req). It is part of the full ID and only environments with the
+            same keys are reused, by default None
+        enforce_pypi_pins : bool, optional
+            Validate extension PyPI requirements against final packages. Callers
+            that inject these requirements enable this unless dependencies are skipped.
         """
         self._non_step_envs = True
 
@@ -403,6 +416,7 @@ class EnvsResolver(object):
                 ),
                 "env_type": env_type,
                 "force": force,
+                "enforce_pypi_pins": enforce_pypi_pins,
             }
 
             debug.conda_exec(
@@ -410,6 +424,7 @@ class EnvsResolver(object):
             )
         else:
             self._requested_envs[env_id]["steps"].append(step_name)
+            self._requested_envs[env_id]["enforce_pypi_pins"] |= enforce_pypi_pins
             debug.conda_exec(
                 "Environment '%s' is also needed by '%s'" % (env_id, step_name)
             )
@@ -440,6 +455,30 @@ class EnvsResolver(object):
                     )
             if len(need_resolution):
                 self._resolve_environments(echo, need_resolution)
+            # Solvers and base reuse can bypass injected constraints (for example,
+            # when choosing a direct URL). Check final packages before deployment,
+            # including frozen locks and cached environments.
+            for env_id, req in self._requested_envs.items():
+                if (
+                    not req.get("enforce_pypi_pins")
+                    or req["env_type"] == EnvType.CONDA_ONLY
+                ):
+                    continue
+                resolved = cast(ResolvedEnvironment, req["resolved"])
+                python_version = get_python_full_version_from_builder_envs(
+                    [resolved], env_id.arch
+                )
+                if python_version is None:
+                    raise CondaException(
+                        "Resolved environment has no Python interpreter"
+                    )
+                validate_pypi_pins(
+                    get_pinned_pypi_libs(python_version, self._conda._datastore_type),
+                    resolved.packages,
+                    python_version,
+                    env_id.arch,
+                    locked=bool(req.get("file_paths", {}).get("pylock_toml")),
+                )
             # NOTE: Co-resolved environments allow you to resolve a bunch of "equivalent"
             # environments for different platforms. This is great as it can allow you to
             # run code on Linux and then instantiate an environment to look at it on Mac.
@@ -1103,11 +1142,18 @@ class EnvsResolver(object):
         python_version = python_package.package_version if python_package else None
         if python_version is None:
             raise CondaException("Python package not found in base environment")
-        filtered_deps = filter_user_reqs_by_markers(deps, python_version, architecture)
+        filtered_deps = filter_user_reqs_by_markers(
+            deps, "python==%s" % python_version, architecture
+        )
 
         incoming_conda_deps = split_into_dict(filtered_deps.get("conda", []))
         incoming_npconda_deps = split_into_dict(filtered_deps.get("npconda", []))
-        incoming_pypi_deps = split_into_dict(filtered_deps.get("pypi", []))
+        # Removing active markers can leave multiple constraints for one package.
+        # Accumulate them so none is overwritten when extending the base.
+        incoming_pypi_deps: Dict[str, str] = {}
+        for dep in filtered_deps.get("pypi", []):
+            req = get_pypi_requirement(dep)
+            incoming_pypi_deps = merge_pypi_deps(incoming_pypi_deps, {str(req): ""})
         incoming_sys_deps = split_into_dict(filtered_deps.get("sys", []))
 
         base_deps = tstr_to_dict(base_env.deps)
@@ -1224,7 +1270,7 @@ class EnvsResolver(object):
                             compatible_base_env = False
                             break
                     else:
-                        req = get_requirement(dep_req)
+                        req = get_pypi_requirement(dep_req)
                     dep_name = req.name
                     if dep_type in ("conda", "npconda") and "::" in dep_req:
                         dep_name = "%s::%s" % (dep_req.split("::", 1)[0], req.name)

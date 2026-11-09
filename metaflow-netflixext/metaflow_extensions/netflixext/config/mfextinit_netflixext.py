@@ -210,7 +210,9 @@ def _validate_remote_latest(name, value):
 
 
 # Set to:
-#  - :none: if default environments should never be looked up remotely
+#  - :none: if default environments should not be looked up remotely. Lock-pinned
+#    environments (@resolved_uv, @resolved_req) are still looked up remotely and
+#    reused if resolved from the same lock file
 #  - :username: if default environments should be fetched remotely picking the latest
 #    environment by the user
 #  - :any: if default environments should be fetched remotely picking the latest
