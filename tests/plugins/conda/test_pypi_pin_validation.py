@@ -17,6 +17,14 @@ from metaflow_extensions.netflixext.plugins.conda.utils import (
 )
 
 
+@pytest.fixture(autouse=True)
+def conda_mapping(mocker):
+    return mocker.patch(
+        "metaflow_extensions.netflixext.plugins.conda.utils.get_pypi_to_conda_mapping",
+        return_value={"graphviz": "python-graphviz", "numpy": "numpy"},
+    )
+
+
 def _package(name, version, kind="pypi"):
     if kind == "conda":
         filename = "%s-%s-0" % (name.replace("_", "-"), version)
@@ -60,7 +68,7 @@ def test_final_packages_satisfy_hook_requirements(pins, version, error, kind):
     ids=["compatible-pypi", "incompatible-pypi"],
 )
 def test_pypi_version_takes_precedence_over_conda_record(
-    conda_version, pypi_version, error
+    conda_version, pypi_version, error, conda_mapping
 ):
     # Record order must not affect precedence; packages may be an iterator.
     packages = iter(
@@ -73,6 +81,66 @@ def test_pypi_version_takes_precedence_over_conda_record(
         validate_pypi_pins(
             {"example-package": ">=1.2.0"}, packages, "3.10.21", "linux-64"
         )
+    conda_mapping.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "binding_version, error",
+    [("0.19", "version: 0.19"), ("0.20.3", None), (None, "version: missing")],
+)
+def test_conda_python_binding_satisfies_pin_instead_of_native_package(
+    binding_version, error
+):
+    packages = [_package("graphviz", "14.1.2", "conda")]
+    if binding_version:
+        packages.append(_package("python-graphviz", binding_version, "conda"))
+    with pytest.raises(CondaException, match=error) if error else nullcontext():
+        validate_pypi_pins({"graphviz": ">=0.20"}, packages, "3.10.21", "linux-64")
+
+
+@pytest.mark.parametrize(
+    "version, error", [("1.25.0", "version: 1.25.0"), ("1.26.4", None)]
+)
+def test_same_name_conda_python_package_satisfies_pin(version, error):
+    with pytest.raises(CondaException, match=error) if error else nullcontext():
+        validate_pypi_pins(
+            {"numpy": ">=1.26"},
+            [_package("numpy", version, "conda")],
+            "3.10.21",
+            "linux-64",
+        )
+
+
+@pytest.mark.parametrize(
+    "pypi_version, error", [("0.19", "version: 0.19"), ("0.20.3", None)]
+)
+def test_pypi_version_takes_precedence_over_mapped_conda_binding(
+    pypi_version, error, conda_mapping
+):
+    packages = [
+        _package("graphviz", pypi_version),
+        _package("graphviz", "14.1.2", "conda"),
+        _package("python-graphviz", "0.20.3", "conda"),
+    ]
+    with pytest.raises(CondaException, match=error) if error else nullcontext():
+        validate_pypi_pins({"graphviz": ">=0.20"}, packages, "3.10.21", "linux-64")
+    conda_mapping.assert_not_called()
+
+
+def test_inactive_pin_does_not_load_conda_mapping(conda_mapping):
+    validate_pypi_pins(
+        {"graphviz": '>=0.20; python_version < "3.10"'},
+        [_package("graphviz", "14.1.2", "conda")],
+        "3.10.21",
+        "linux-64",
+    )
+    conda_mapping.assert_not_called()
+
+
+def test_missing_pypi_package_without_conda_does_not_load_mapping(conda_mapping):
+    with pytest.raises(CondaException, match="version: missing"):
+        validate_pypi_pins({"graphviz": ">=0.20"}, [], "3.10.21", "linux-64")
+    conda_mapping.assert_not_called()
 
 
 @pytest.mark.parametrize(

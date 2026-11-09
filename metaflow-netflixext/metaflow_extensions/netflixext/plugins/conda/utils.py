@@ -66,6 +66,8 @@ from metaflow_extensions.netflixext.config.mfextinit_netflixext import (  # type
 from requests import PreparedRequest, Response, Session
 from requests.auth import AuthBase, HTTPBasicAuth
 
+from .pypi_conda_mapping import get_pypi_to_conda_mapping
+
 if TYPE_CHECKING:
     import metaflow_extensions.netflixext.plugins.conda.env_descr
     from metaflow_extensions.netflixext.plugins.conda.env_descr import (
@@ -1354,20 +1356,24 @@ def validate_pypi_pins(
     target_envs = compute_target_envs(
         default_environment(), [python_full_version], architecture
     )
-    packages = list(packages)
-    installed = {}
-    # PyPI packages are installed after Conda packages, so their versions win
-    # when both package records remain in the resolved environment.
-    for kind in ("conda", "pypi"):
-        for pkg in packages:
-            if pkg.TYPE == kind:
-                installed[canonicalize_name(pkg.package_name)] = pkg.package_version
+    installed: Dict[str, Dict[str, str]] = {"conda": {}, "pypi": {}}
+    for pkg in packages:
+        if pkg.TYPE in installed:
+            name = canonicalize_name(pkg.package_name)
+            installed[pkg.TYPE][name] = pkg.package_version
     failures = []
     for dep in dict_to_strlist(pins):
         req = get_pypi_requirement(dep)
         if not evaluate_marker(req.marker, target_envs):
             continue
-        version = installed.get(canonicalize_name(req.name))
+        name = canonicalize_name(req.name)
+        # PyPI packages are installed last. Only consult Conda when no PyPI
+        # record exists, translating the Python distribution name first: native
+        # graphviz must not satisfy a requirement for Python's graphviz binding.
+        version = installed["pypi"].get(name)
+        if version is None and installed["conda"]:
+            mapping = get_pypi_to_conda_mapping()
+            version = installed["conda"].get(mapping.get(name, name))
         if version is None or not req.specifier.contains(version, prereleases=True):
             failures.append(
                 "%s (%s version: %s)"
