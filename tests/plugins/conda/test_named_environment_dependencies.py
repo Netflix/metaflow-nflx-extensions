@@ -245,11 +245,37 @@ def test_derivation_preserves_distinct_explicit_channels(conda, make_base):
     assert deps["other-channel::pandas"] == ">=2.0"
 
 
-@pytest.mark.parametrize("python_version", ["3.10", "3.10.*"])
+@pytest.mark.parametrize(
+    "python_version,incoming_constraint,expected_fresh,expected_derived",
+    [
+        ("3.10", "3.10", "3.10.*", "3.10.*"),
+        ("3.10.*", "3.10.*", "3.10.*", "3.10.*"),
+        ("3.10.18", "3.10.18", "3.10.18", "3.10.18"),
+        ("3.10", ">=3.9", ">=3.9", ">=3.9,==3.10.*"),
+        ("3.10.*", ">=3.9", ">=3.9", ">=3.9,==3.10.*"),
+        ("3.10.18", ">=3.9", ">=3.9", ">=3.9,==3.10.18"),
+    ],
+    ids=[
+        "short",
+        "wildcard",
+        "exact-patch",
+        "short-with-range",
+        "wildcard-with-range",
+        "patch-with-range",
+    ],
+)
 @pytest.mark.parametrize("use_base", [False, True], ids=["fresh", "derived"])
 @pytest.mark.parametrize("needs_builder", [False, True], ids=["no-builder", "builder"])
 def test_resolution_discovers_channel_qualified_python(
-    conda, make_base, monkeypatch, python_version, use_base, needs_builder
+    conda,
+    make_base,
+    monkeypatch,
+    python_version,
+    incoming_constraint,
+    expected_fresh,
+    expected_derived,
+    use_base,
+    needs_builder,
 ):
     conda.environment.return_value = None
     monkeypatch.setattr(envsresolver, "arch_id", lambda: "linux-64")
@@ -261,7 +287,7 @@ def test_resolution_discovers_channel_qualified_python(
     resolver.add_environment(
         "linux-64",
         {
-            "conda": ["conda-forge::python==%s" % python_version],
+            "conda": ["conda-forge::python==%s" % incoming_constraint],
             "pypi": ["new-package"],
         },
         {"conda": ["conda-forge"]},
@@ -286,7 +312,13 @@ def test_resolution_discovers_channel_qualified_python(
     monkeypatch.setattr(resolver, "_resolve", resolve_mock)
     resolver._resolve_environments(Mock(), [env_id])
 
-    assert requested["python_version_requested"] == "python==3.10.*"
+    expected_constraint = expected_derived if use_base else expected_fresh
+    expected_specifier = get_requirement("python==%s" % expected_constraint).specifier
+    requested_specifier = get_requirement(
+        requested["python_version_requested"]
+    ).specifier
+    assert requested_specifier == expected_specifier
+    assert requested_specifier.contains("3.10.18")
     assert requested["resolved"] is not None
     assert len(resolver._builder_envs) == int(needs_builder)
     assert resolve_mock.call_count == 1 + int(needs_builder)
@@ -296,6 +328,13 @@ def test_resolution_discovers_channel_qualified_python(
             for name, version in split_into_dict(builder["deps"]["conda"]).items()
             if name.split("::", 1)[-1] == "python"
         }
-        assert python_deps == {"conda-forge::python": "3.10.*"}
-        assert builder["python_version_requested"] == "python==3.10.*"
+        assert set(python_deps) == {"conda-forge::python"}
+        assert (
+            get_requirement("python==%s" % python_deps["conda-forge::python"]).specifier
+            == expected_specifier
+        )
+        assert (
+            get_requirement(builder["python_version_requested"]).specifier
+            == expected_specifier
+        )
         assert builder["resolved"] is not None

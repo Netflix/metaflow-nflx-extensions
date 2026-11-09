@@ -2,6 +2,7 @@
 
 import uuid
 import time
+import re
 
 from itertools import chain
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -751,9 +752,15 @@ class EnvsResolver(object):
             # A common pattern is people request a Python version using "major.minor"
             # instead of "major.minor.*". Which is likely what they intend (ie: any
             # version of that major.minor) so we convert it to the more common format.
-            if python_version_requested.count(".") == 1:
-                python_version_requested = python_version_requested + ".*"
-                python_dep = [f"{python_name}=={python_version_requested}"]
+            # Normalize each equality clause so merged ranges retain that meaning.
+            constraints = []
+            for constraint in python_version_requested.split(","):
+                constraint = constraint.strip()
+                if re.fullmatch(r"(?:==)?[0-9]+\.[0-9]+", constraint):
+                    constraint += ".*"
+                constraints.append(constraint)
+            python_version_requested = ",".join(constraints)
+            python_dep[0] = f"{python_name}=={python_version_requested}"
 
             if python_version_requested[0] not in ("~", "<", ">", "!", "="):
                 python_version_requested = "python==%s" % python_version_requested
