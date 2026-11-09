@@ -30,12 +30,15 @@ def conda(monkeypatch):
 
 @pytest.fixture
 def make_base():
-    def make(arch="linux-64", pandas_name="pandas", mixed=True):
+    def make(
+        arch="linux-64", pandas_name="pandas", mixed=True, extra_conda_packages=()
+    ):
         packages = []
         for name, version in (
             ("python", "3.10.18"),
             ("pandas", "1.5.3"),
             ("numpy", "1.26.4"),
+            *extra_conda_packages,
         ):
             filename = "%s-%s-build_0" % (name, version)
             packages.append(
@@ -47,6 +50,7 @@ def make_base():
                 )
             )
         deps = {"conda": ["python==3.10.*", "%s==1.5.3" % pandas_name, "numpy==1.26.4"]}
+        deps["conda"].extend("%s==%s" % item for item in extra_conda_packages)
         sources = {"conda": ["conda-forge"]}
         if mixed:
             deps["pypi"] = ["requests==2.32.3"]
@@ -109,6 +113,76 @@ def test_base_compatibility_respects_conda_versions_and_channels(
         conda, make_base(), {"conda": [requirement]}, {}, {}, "linux-64"
     )
     assert result[6] is compatible
+
+
+@pytest.mark.parametrize("mixed", [False, True], ids=["conda-only", "mixed"])
+@pytest.mark.parametrize("dep_type", ["conda", "npconda"])
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        "numpy==1.26.4=build_0",
+        "numpy==1.26.4=build_1",
+        "conda-forge::numpy==1.26.4=build_1",
+        "numpy==1.26.4=build_*",
+        "numpy==1.26.4-build_1",
+        "numpy==1.26.4-1",
+    ],
+)
+def test_build_requirements_require_resolution_with_constraints_preserved(
+    conda, make_base, mixed, dep_type, requirement
+):
+    incoming = {dep_type: [requirement]}
+    result = EnvsResolver.extract_info_from_base(
+        conda, make_base(mixed=mixed), incoming, {}, {}, "linux-64"
+    )
+
+    assert result[6] is False
+    requested_constraint = requirement.split("==", 1)[1]
+    for deps in (result[3], result[4]):
+        values = split_into_dict(deps[dep_type])
+        numpy_constraint = next(
+            value
+            for name, value in values.items()
+            if name.split("::", 1)[-1] == "numpy"
+        )
+        assert requested_constraint in [
+            part.lstrip("=") for part in numpy_constraint.split(",")
+        ]
+    assert incoming == {dep_type: [requirement]}
+
+
+@pytest.mark.parametrize("name", ["python-stub", "numpy-base"])
+@pytest.mark.parametrize("installed", [False, True], ids=["missing", "installed"])
+@pytest.mark.parametrize("channel", ["", "conda-forge::"])
+def test_unversioned_hyphenated_requirement_checks_complete_package_name(
+    conda, make_base, name, installed, channel
+):
+    base = make_base(extra_conda_packages=[(name, "1.0")] if installed else [])
+    requirement = channel + name
+    result = EnvsResolver.extract_info_from_base(
+        conda, base, {"conda": [requirement]}, {}, {}, "linux-64"
+    )
+
+    assert result[6] is installed
+    if not installed:
+        assert requirement in result[3]["conda"]
+        assert requirement in result[4]["conda"]
+
+
+@pytest.mark.parametrize("requirement", ["numpy==1.26.*|2.0.*", "numpy[extra]"])
+def test_unsupported_conda_comparison_is_deferred_to_solver(
+    conda, make_base, requirement
+):
+    result = EnvsResolver.extract_info_from_base(
+        conda, make_base(), {"conda": [requirement]}, {}, {}, "linux-64"
+    )
+
+    assert result[6] is False
+    name, _, constraint = requirement.partition("==")
+    user_deps = split_into_dict(result[3]["conda"])
+    assert name in user_deps
+    if constraint:
+        assert constraint in [part.lstrip("=") for part in user_deps[name].split(",")]
 
 
 @pytest.mark.parametrize("pandas_name", ["pandas", "conda-forge::pandas"])

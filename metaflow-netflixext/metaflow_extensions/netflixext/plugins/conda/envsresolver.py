@@ -35,6 +35,7 @@ from metaflow.metaflow_environment import InvalidEnvironmentException
 from metaflow.system import _system_monitor, _system_logger
 
 from metaflow._vendor.packaging.version import parse as parse_version
+from metaflow._vendor.packaging.requirements import InvalidRequirement, Requirement
 from metaflow.metaflow_config import PYLOCK_TOML_DEPENDENCY_RESOLVER
 from .env_descr import (
     EnvID,
@@ -48,6 +49,7 @@ from .resolvers import Resolver
 from .utils import (
     CondaException,
     channel_or_url,
+    clean_up_double_equal,
     arch_id,
     get_requirement,
     dict_to_strlist,
@@ -61,6 +63,24 @@ from .utils import (
 
 if TYPE_CHECKING:
     from .conda import Conda
+
+
+def _conda_requirement_for_reuse(dep: str) -> Optional[Requirement]:
+    """Only check reuse when the complete Conda constraint can be evaluated."""
+    unqualified = dep.split("::", 1)[-1]
+    name, _, constraints = unqualified.partition("==")
+    # Legacy version-build syntax can resemble a Python post-release version.
+    # Leave build selectors and other unsupported forms to the Conda solver.
+    if "-" in constraints:
+        return None
+    try:
+        req = Requirement(clean_up_double_equal([unqualified])[0])
+    except InvalidRequirement:
+        return None
+    # Markers have already been evaluated before this check.
+    if req.name != name or req.extras or req.url is not None or req.marker is not None:
+        return None
+    return req
 
 
 def _merge_conda_dep_dicts(
@@ -1191,7 +1211,13 @@ class EnvsResolver(object):
                     continue  # These are the system deps
 
                 for dep_req in incoming_deps_per_type:
-                    req = get_requirement(dep_req)
+                    if dep_type in ("conda", "npconda"):
+                        req = _conda_requirement_for_reuse(dep_req)
+                        if req is None:
+                            compatible_base_env = False
+                            break
+                    else:
+                        req = get_requirement(dep_req)
                     dep_name = req.name
                     if dep_type in ("conda", "npconda") and "::" in dep_req:
                         dep_name = "%s::%s" % (dep_req.split("::", 1)[0], req.name)
