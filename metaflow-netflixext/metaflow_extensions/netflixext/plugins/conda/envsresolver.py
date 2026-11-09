@@ -2,6 +2,7 @@
 
 import uuid
 import time
+import re
 
 from itertools import chain
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,7 +35,8 @@ from metaflow.metaflow_config import (
 from metaflow.metaflow_environment import InvalidEnvironmentException
 from metaflow.system import _system_monitor, _system_logger
 
-from metaflow._vendor.packaging.version import parse as parse_version
+from metaflow._vendor.packaging.version import InvalidVersion, parse as parse_version
+from metaflow._vendor.packaging.requirements import InvalidRequirement, Requirement
 from metaflow.metaflow_config import PYLOCK_TOML_DEPENDENCY_RESOLVER
 from .env_descr import (
     EnvID,
@@ -48,6 +50,7 @@ from .resolvers import Resolver
 from .utils import (
     CondaException,
     channel_or_url,
+    clean_up_double_equal,
     arch_id,
     get_requirement,
     get_pypi_requirement,
@@ -66,6 +69,47 @@ from .utils import (
 
 if TYPE_CHECKING:
     from .conda import Conda
+
+
+def _conda_requirement_for_reuse(dep: str) -> Optional[Requirement]:
+    """Only check reuse when the complete Conda constraint can be evaluated."""
+    unqualified = dep.split("::", 1)[-1]
+    name, _, constraints = unqualified.partition("==")
+    # Legacy version-build syntax can resemble a Python post-release version.
+    # Leave build selectors and other unsupported forms to the Conda solver.
+    if "-" in constraints:
+        return None
+    try:
+        req = Requirement(clean_up_double_equal([unqualified])[0])
+    except InvalidRequirement:
+        return None
+    # Markers have already been evaluated before this check.
+    if req.name != name or req.extras or req.url is not None or req.marker is not None:
+        return None
+    return req
+
+
+def _merge_conda_dep_dicts(
+    base: Dict[str, str], incoming: Dict[str, str]
+) -> Dict[str, str]:
+    """Merge named-base constraints without duplicating channel-qualified packages."""
+    merged = merge_dep_dicts(base, incoming)
+    qualified_names = {}  # type: Dict[str, List[str]]
+    for name in merged:
+        if "::" in name:
+            qualified_names.setdefault(name.split("::", 1)[1], []).append(name)
+
+    # A solver may treat `channel::name` and `name` as separate inputs and lose
+    # one of their constraints. Keep the channel and intersect both constraints
+    # under that key instead. Leave distinct explicit channels to the solver.
+    for name, channel_names in qualified_names.items():
+        if name in merged:
+            constraint = merged.pop(name)
+            for channel_name in channel_names:
+                merged[channel_name] = merge_dep_dicts(
+                    {channel_name: merged[channel_name]}, {channel_name: constraint}
+                )[channel_name]
+    return merged
 
 
 class EnvsResolver(object):
@@ -741,15 +785,21 @@ class EnvsResolver(object):
             python_dep = [
                 d
                 for d in to_resolve_info["user_deps"].get("conda", [])
-                if d.startswith("python==")
+                if d.split("::", 1)[-1].startswith("python==")
             ]
-            python_version_requested = python_dep[0].split("==")[1]
+            python_name, python_version_requested = python_dep[0].split("==", 1)
             # A common pattern is people request a Python version using "major.minor"
             # instead of "major.minor.*". Which is likely what they intend (ie: any
             # version of that major.minor) so we convert it to the more common format.
-            if python_version_requested.count(".") == 1:
-                python_version_requested = python_version_requested + ".*"
-                python_dep = [f"python=={python_version_requested}"]
+            # Normalize each equality clause so merged ranges retain that meaning.
+            constraints = []
+            for constraint in python_version_requested.split(","):
+                constraint = constraint.strip()
+                if re.fullmatch(r"(?:==)?[0-9]+\.[0-9]+", constraint):
+                    constraint += ".*"
+                constraints.append(constraint)
+            python_version_requested = ",".join(constraints)
+            python_dep[0] = f"{python_name}=={python_version_requested}"
 
             if python_version_requested[0] not in ("~", "<", ">", "!", "="):
                 python_version_requested = "python==%s" % python_version_requested
@@ -770,7 +820,7 @@ class EnvsResolver(object):
                     [
                         d
                         for d in to_resolve_info["user_deps"].get("conda", [])
-                        if not d.startswith("python==")
+                        if not d.split("::", 1)[-1].startswith("python==")
                     ]
                 )
             )
@@ -1110,7 +1160,7 @@ class EnvsResolver(object):
         base_sources = tstr_to_dict(base_env.sources)
         base_extras = tstr_to_dict(base_env.extras)
 
-        user_conda_deps = merge_dep_dicts(
+        user_conda_deps = _merge_conda_dep_dicts(
             split_into_dict(base_deps.get("conda", [])),
             incoming_conda_deps,
         )
@@ -1118,7 +1168,7 @@ class EnvsResolver(object):
             split_into_dict(base_deps.get("pypi", [])),
             incoming_pypi_deps,
         )
-        user_npconda_deps = merge_dep_dicts(
+        user_npconda_deps = _merge_conda_dep_dicts(
             split_into_dict(base_deps.get("npconda", [])),
             incoming_npconda_deps,
         )
@@ -1178,6 +1228,17 @@ class EnvsResolver(object):
             for p in base_env.packages
             if p.TYPE == "conda"
         }
+        # Solver inputs retain channels, but an unqualified requirement can be
+        # satisfied by a package from any channel. Explicit channel requirements
+        # must still match the installed package's channel.
+        installed_conda_deps = dict(conda_deps)
+        installed_conda_deps.update(
+            {
+                p.package_name: p.package_version
+                for p in base_env.packages
+                if p.TYPE == "conda"
+            }
+        )
 
         pypi_deps = {
             p.package_name: p.package_version
@@ -1196,34 +1257,51 @@ class EnvsResolver(object):
         else:
             for dep_type, incoming_deps_per_type in filtered_deps.items():
                 if dep_type in ("conda", "npconda"):
-                    dep_dict = conda_deps
+                    dep_dict = installed_conda_deps
                 elif dep_type == "pypi":
                     dep_dict = pypi_deps
                 else:
                     continue  # These are the system deps
 
                 for dep_req in incoming_deps_per_type:
-                    req = (
-                        get_pypi_requirement(dep_req)
-                        if dep_type == "pypi"
-                        else get_requirement(dep_req)
-                    )
-                    if req.name not in dep_dict or (
-                        len(req.specifier) != 0  # Make sure we have a version
-                        and not req.specifier.contains(dep_dict[req.name])
-                    ):
+                    if dep_type in ("conda", "npconda"):
+                        req = _conda_requirement_for_reuse(dep_req)
+                        if req is None:
+                            compatible_base_env = False
+                            break
+                    else:
+                        req = get_pypi_requirement(dep_req)
+                    dep_name = req.name
+                    if dep_type in ("conda", "npconda") and "::" in dep_req:
+                        dep_name = "%s::%s" % (dep_req.split("::", 1)[0], req.name)
+                    try:
+                        satisfies_requirement = dep_name in dep_dict and (
+                            len(req.specifier) == 0
+                            or req.specifier.contains(dep_dict[dep_name])
+                        )
+                    except InvalidVersion:
+                        if dep_type not in ("conda", "npconda"):
+                            raise
+                        # Conda accepts versions outside Python's version scheme.
+                        # Let its solver evaluate those instead of reusing the base.
+                        debug.conda_exec(
+                            "Cannot compare Conda version for %s; deferring to the solver"
+                            % dep_name
+                        )
+                        satisfies_requirement = False
+                    if not satisfies_requirement:
                         if len(req.specifier) == 0:
                             debug.conda_exec(
                                 "Dependency %s prevents compatible base (not found)"
-                                % req.name
+                                % dep_name
                             )
                         else:
                             debug.conda_exec(
                                 "Dependency %s prevents compatible base "
                                 "(%s incompatible with requested version %s)"
                                 % (
-                                    req.name,
-                                    dep_dict.get(req.name, "<not present>"),
+                                    dep_name,
+                                    dep_dict.get(dep_name, "<not present>"),
                                     str(req.specifier),
                                 )
                             )
@@ -1234,8 +1312,9 @@ class EnvsResolver(object):
 
         if not compatible_base_env:
             # If envs are compatible, the deps are the same so we don't change.
-            conda_deps = merge_dep_dicts(
-                merge_dep_dicts(conda_deps, incoming_conda_deps), incoming_npconda_deps
+            conda_deps = _merge_conda_dep_dicts(
+                _merge_conda_dep_dicts(conda_deps, incoming_conda_deps),
+                incoming_npconda_deps,
             )
             pypi_deps = merge_dep_dicts(pypi_deps, incoming_pypi_deps)
 

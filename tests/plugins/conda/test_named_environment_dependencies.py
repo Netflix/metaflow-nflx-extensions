@@ -1,0 +1,365 @@
+"""Preserve package constraints when reusing or extending named environments."""
+
+from unittest.mock import Mock
+
+import pytest
+import metaflow  # Initialize extension configuration before importing the resolver.
+
+from metaflow_extensions.netflixext.plugins.conda import envsresolver
+from metaflow_extensions.netflixext.plugins.conda.env_descr import (
+    CondaPackageSpecification,
+    EnvType,
+    PypiPackageSpecification,
+    ResolvedEnvironment,
+)
+from metaflow_extensions.netflixext.plugins.conda.envsresolver import EnvsResolver
+from metaflow_extensions.netflixext.plugins.conda.utils import (
+    get_requirement,
+    split_into_dict,
+)
+
+
+@pytest.fixture
+def conda(monkeypatch):
+    monkeypatch.setattr(envsresolver, "CONDA_SYS_DEFAULT_PACKAGES", {})
+    return Mock(
+        default_conda_channels=["conda-forge"],
+        default_pypi_sources=["https://pypi.org/simple"],
+    )
+
+
+@pytest.fixture
+def make_base():
+    def make(
+        arch="linux-64",
+        pandas_name="pandas",
+        mixed=True,
+        extra_conda_packages=(),
+        python_version="3.10.*",
+    ):
+        packages = []
+        for name, version in (
+            ("python", "3.10.18"),
+            ("pandas", "1.5.3"),
+            ("numpy", "1.26.4"),
+            *extra_conda_packages,
+        ):
+            filename = "%s-%s-build_0" % (name, version)
+            packages.append(
+                CondaPackageSpecification(
+                    filename,
+                    "https://conda.anaconda.org/conda-forge/%s/%s.conda"
+                    % (arch, filename),
+                    hashes={".conda": "0" * 32},
+                )
+            )
+        deps = {
+            "conda": [
+                "python==%s" % python_version,
+                "%s==1.5.3" % pandas_name,
+                "numpy==1.26.4",
+            ]
+        }
+        deps["conda"].extend("%s==%s" % item for item in extra_conda_packages)
+        sources = {"conda": ["conda-forge"]}
+        if mixed:
+            deps["pypi"] = ["requests==2.32.3"]
+            sources["pypi"] = ["https://pypi.org/simple"]
+            packages.append(
+                PypiPackageSpecification(
+                    "requests-2.32.3-py3-none-any",
+                    "https://example.org/requests-2.32.3-py3-none-any.whl",
+                    hashes={".whl": "1" * 64},
+                )
+            )
+        return ResolvedEnvironment(
+            deps,
+            sources,
+            {},
+            arch=arch,
+            all_packages=packages,
+            env_type=EnvType.MIXED if mixed else EnvType.CONDA_ONLY,
+        )
+
+    return make
+
+
+@pytest.mark.parametrize("arch", ["linux-64", "osx-64", "osx-arm64"])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_compatible_conda_requirements_reuse_base_artifacts(
+    conda, make_base, arch, mixed
+):
+    base = make_base(arch=arch, mixed=mixed)
+    incoming = {"conda": ["python==3.10.*", "pandas==>=0.24.0"]}
+    if mixed:
+        incoming["pypi"] = ["requests==>=2.21.0"]
+
+    result = EnvsResolver.find_resolved_environment(
+        conda, arch, incoming, {}, {}, base_env=base
+    )
+
+    assert result[6] is True
+    resolved = result[7]
+    assert resolved.env_id.req_id != base.env_id.req_id
+    assert resolved.env_id.full_id == base.env_id.full_id
+    assert list(resolved.packages) == list(base.packages)
+    conda.environment.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "requirement,compatible",
+    [
+        ("pandas==>=1.0", True),
+        ("conda-forge::pandas==>=1.0", True),
+        ("other-channel::pandas==>=1.0", False),
+        ("pandas==>=2.0", False),
+        ("missing-package", False),
+    ],
+)
+def test_base_compatibility_respects_conda_versions_and_channels(
+    conda, make_base, requirement, compatible
+):
+    result = EnvsResolver.extract_info_from_base(
+        conda, make_base(), {"conda": [requirement]}, {}, {}, "linux-64"
+    )
+    assert result[6] is compatible
+
+
+@pytest.mark.parametrize("mixed", [False, True], ids=["conda-only", "mixed"])
+@pytest.mark.parametrize("dep_type", ["conda", "npconda"])
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        "numpy==1.26.4=build_0",
+        "numpy==1.26.4=build_1",
+        "conda-forge::numpy==1.26.4=build_1",
+        "numpy==1.26.4=build_*",
+        "numpy==1.26.4-build_1",
+        "numpy==1.26.4-1",
+    ],
+)
+def test_build_requirements_require_resolution_with_constraints_preserved(
+    conda, make_base, mixed, dep_type, requirement
+):
+    incoming = {dep_type: [requirement]}
+    result = EnvsResolver.extract_info_from_base(
+        conda, make_base(mixed=mixed), incoming, {}, {}, "linux-64"
+    )
+
+    assert result[6] is False
+    requested_constraint = requirement.split("==", 1)[1]
+    for deps in (result[3], result[4]):
+        values = split_into_dict(deps[dep_type])
+        numpy_constraint = next(
+            value
+            for name, value in values.items()
+            if name.split("::", 1)[-1] == "numpy"
+        )
+        assert requested_constraint in [
+            part.lstrip("=") for part in numpy_constraint.split(",")
+        ]
+    assert incoming == {dep_type: [requirement]}
+
+
+@pytest.mark.parametrize("name", ["python-stub", "numpy-base"])
+@pytest.mark.parametrize("installed", [False, True], ids=["missing", "installed"])
+@pytest.mark.parametrize("channel", ["", "conda-forge::"])
+def test_unversioned_hyphenated_requirement_checks_complete_package_name(
+    conda, make_base, name, installed, channel
+):
+    base = make_base(extra_conda_packages=[(name, "1.0")] if installed else [])
+    requirement = channel + name
+    result = EnvsResolver.extract_info_from_base(
+        conda, base, {"conda": [requirement]}, {}, {}, "linux-64"
+    )
+
+    assert result[6] is installed
+    if not installed:
+        assert requirement in result[3]["conda"]
+        assert requirement in result[4]["conda"]
+
+
+@pytest.mark.parametrize("requirement", ["numpy==1.26.*|2.0.*", "numpy[extra]"])
+def test_unsupported_conda_comparison_is_deferred_to_solver(
+    conda, make_base, requirement
+):
+    result = EnvsResolver.extract_info_from_base(
+        conda, make_base(), {"conda": [requirement]}, {}, {}, "linux-64"
+    )
+
+    assert result[6] is False
+    name, _, constraint = requirement.partition("==")
+    user_deps = split_into_dict(result[3]["conda"])
+    assert name in user_deps
+    if constraint:
+        assert constraint in [part.lstrip("=") for part in user_deps[name].split(",")]
+
+
+@pytest.mark.parametrize("mixed", [False, True], ids=["conda-only", "mixed"])
+@pytest.mark.parametrize("dep_type", ["conda", "npconda"])
+@pytest.mark.parametrize("channel", ["", "conda-forge::"])
+def test_non_python_conda_version_requires_resolution_with_constraints_preserved(
+    conda, make_base, mixed, dep_type, channel
+):
+    base = make_base(mixed=mixed, extra_conda_packages=[("openssl", "1.1.1w")])
+    original_deps = list(base.deps)
+    name = channel + "openssl"
+    incoming = {dep_type: [name + "==>=1.1"]}
+
+    result = EnvsResolver.extract_info_from_base(
+        conda, base, incoming, {}, {}, "linux-64"
+    )
+
+    assert result[6] is False
+    user_constraint = split_into_dict(result[3][dep_type])[name]
+    assert ">=1.1" in user_constraint.split(",")
+    solver_constraint = split_into_dict(result[4]["conda"])["conda-forge::openssl"]
+    assert ">=1.1" in solver_constraint.split(",")
+    assert "1.1.1w" in [part.lstrip("=") for part in solver_constraint.split(",")]
+    assert list(base.deps) == original_deps
+    assert incoming == {dep_type: [name + "==>=1.1"]}
+
+
+@pytest.mark.parametrize("pandas_name", ["pandas", "conda-forge::pandas"])
+@pytest.mark.parametrize("minimum", [">=0.24.0", ">=2.0"])
+def test_derivation_combines_qualified_and_unqualified_conda_constraints(
+    conda, make_base, pandas_name, minimum
+):
+    base = make_base(pandas_name=pandas_name)
+    original_deps = list(base.deps)
+    incoming = {
+        "conda": ["pandas==%s" % minimum],
+        "pypi": ["new-package"],
+    }
+    result = EnvsResolver.extract_info_from_base(
+        conda, base, incoming, {}, {}, "linux-64"
+    )
+
+    assert result[6] is False
+    for deps in (result[3], result[4]):
+        pandas_reqs = [
+            dep for dep in deps["conda"] if get_requirement(dep).name == "pandas"
+        ]
+        assert len(pandas_reqs) == 1
+        req = get_requirement(pandas_reqs[0])
+        assert str(req.specifier) == str(
+            get_requirement("pandas==1.5.3,%s" % minimum).specifier
+        )
+        assert not req.specifier.contains("2.3.3")
+        assert req.specifier.contains("1.5.3") is (minimum == ">=0.24.0")
+    resolved_deps = split_into_dict(result[4]["conda"])
+    assert "pandas" not in resolved_deps
+    assert "conda-forge::pandas" in resolved_deps
+    assert resolved_deps["conda-forge::numpy"] == "1.26.4"
+    assert list(base.deps) == original_deps
+    assert incoming["conda"] == ["pandas==%s" % minimum]
+
+
+def test_derivation_preserves_distinct_explicit_channels(conda, make_base):
+    result = EnvsResolver.extract_info_from_base(
+        conda,
+        make_base(pandas_name="conda-forge::pandas"),
+        {"conda": ["other-channel::pandas==>=2.0"]},
+        {},
+        {},
+        "linux-64",
+    )
+    assert result[6] is False
+    deps = split_into_dict(result[4]["conda"])
+    assert deps["conda-forge::pandas"] == "1.5.3"
+    assert deps["other-channel::pandas"] == ">=2.0"
+
+
+@pytest.mark.parametrize(
+    "python_version,incoming_constraint,expected_fresh,expected_derived",
+    [
+        ("3.10", "3.10", "3.10.*", "3.10.*"),
+        ("3.10.*", "3.10.*", "3.10.*", "3.10.*"),
+        ("3.10.18", "3.10.18", "3.10.18", "3.10.18"),
+        ("3.10", ">=3.9", ">=3.9", ">=3.9,==3.10.*"),
+        ("3.10.*", ">=3.9", ">=3.9", ">=3.9,==3.10.*"),
+        ("3.10.18", ">=3.9", ">=3.9", ">=3.9,==3.10.18"),
+    ],
+    ids=[
+        "short",
+        "wildcard",
+        "exact-patch",
+        "short-with-range",
+        "wildcard-with-range",
+        "patch-with-range",
+    ],
+)
+@pytest.mark.parametrize("use_base", [False, True], ids=["fresh", "derived"])
+@pytest.mark.parametrize("needs_builder", [False, True], ids=["no-builder", "builder"])
+def test_resolution_discovers_channel_qualified_python(
+    conda,
+    make_base,
+    monkeypatch,
+    python_version,
+    incoming_constraint,
+    expected_fresh,
+    expected_derived,
+    use_base,
+    needs_builder,
+):
+    conda.environment.return_value = None
+    monkeypatch.setattr(envsresolver, "arch_id", lambda: "linux-64")
+    monkeypatch.setattr(
+        EnvsResolver, "_env_needs_builder_env", staticmethod(lambda _: needs_builder)
+    )
+    resolver = EnvsResolver(conda)
+    base = make_base(python_version=python_version) if use_base else None
+    resolver.add_environment(
+        "linux-64",
+        {
+            "conda": ["conda-forge::python==%s" % incoming_constraint],
+            "pypi": ["new-package"],
+        },
+        {"conda": ["conda-forge"]},
+        {},
+        base_env=base,
+    )
+    env_id, requested = next(iter(resolver._requested_envs.items()))
+    assert "python" not in split_into_dict(requested["user_deps"]["conda"])
+
+    def resolve(env_desc, builders):
+        resolved = ResolvedEnvironment(
+            env_desc["user_deps"],
+            env_desc["sources"],
+            env_desc["extras"],
+            arch="linux-64",
+            all_packages=list(make_base().packages),
+            env_type=env_desc["env_type"],
+        )
+        return env_desc["id"], resolved, []
+
+    resolve_mock = Mock(side_effect=resolve)
+    monkeypatch.setattr(resolver, "_resolve", resolve_mock)
+    resolver._resolve_environments(Mock(), [env_id])
+
+    expected_constraint = expected_derived if use_base else expected_fresh
+    expected_specifier = get_requirement("python==%s" % expected_constraint).specifier
+    requested_specifier = get_requirement(
+        requested["python_version_requested"]
+    ).specifier
+    assert requested_specifier == expected_specifier
+    assert requested_specifier.contains("3.10.18")
+    assert requested["resolved"] is not None
+    assert len(resolver._builder_envs) == int(needs_builder)
+    assert resolve_mock.call_count == 1 + int(needs_builder)
+    for builder in resolver._builder_envs.values():
+        python_deps = {
+            name: version
+            for name, version in split_into_dict(builder["deps"]["conda"]).items()
+            if name.split("::", 1)[-1] == "python"
+        }
+        assert set(python_deps) == {"conda-forge::python"}
+        assert (
+            get_requirement("python==%s" % python_deps["conda-forge::python"]).specifier
+            == expected_specifier
+        )
+        assert (
+            get_requirement(builder["python_version_requested"]).specifier
+            == expected_specifier
+        )
+        assert builder["resolved"] is not None
