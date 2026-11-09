@@ -195,6 +195,31 @@ def test_unsupported_conda_comparison_is_deferred_to_solver(
         assert constraint in [part.lstrip("=") for part in user_deps[name].split(",")]
 
 
+@pytest.mark.parametrize("mixed", [False, True], ids=["conda-only", "mixed"])
+@pytest.mark.parametrize("dep_type", ["conda", "npconda"])
+@pytest.mark.parametrize("channel", ["", "conda-forge::"])
+def test_non_python_conda_version_requires_resolution_with_constraints_preserved(
+    conda, make_base, mixed, dep_type, channel
+):
+    base = make_base(mixed=mixed, extra_conda_packages=[("openssl", "1.1.1w")])
+    original_deps = list(base.deps)
+    name = channel + "openssl"
+    incoming = {dep_type: [name + "==>=1.1"]}
+
+    result = EnvsResolver.extract_info_from_base(
+        conda, base, incoming, {}, {}, "linux-64"
+    )
+
+    assert result[6] is False
+    user_constraint = split_into_dict(result[3][dep_type])[name]
+    assert ">=1.1" in user_constraint.split(",")
+    solver_constraint = split_into_dict(result[4]["conda"])["conda-forge::openssl"]
+    assert ">=1.1" in solver_constraint.split(",")
+    assert "1.1.1w" in [part.lstrip("=") for part in solver_constraint.split(",")]
+    assert list(base.deps) == original_deps
+    assert incoming == {dep_type: [name + "==>=1.1"]}
+
+
 @pytest.mark.parametrize("pandas_name", ["pandas", "conda-forge::pandas"])
 @pytest.mark.parametrize("minimum", [">=0.24.0", ">=2.0"])
 def test_derivation_combines_qualified_and_unqualified_conda_constraints(

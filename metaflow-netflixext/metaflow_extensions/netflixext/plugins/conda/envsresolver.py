@@ -35,7 +35,7 @@ from metaflow.metaflow_config import (
 from metaflow.metaflow_environment import InvalidEnvironmentException
 from metaflow.system import _system_monitor, _system_logger
 
-from metaflow._vendor.packaging.version import parse as parse_version
+from metaflow._vendor.packaging.version import InvalidVersion, parse as parse_version
 from metaflow._vendor.packaging.requirements import InvalidRequirement, Requirement
 from metaflow.metaflow_config import PYLOCK_TOML_DEPENDENCY_RESOLVER
 from .env_descr import (
@@ -1228,10 +1228,22 @@ class EnvsResolver(object):
                     dep_name = req.name
                     if dep_type in ("conda", "npconda") and "::" in dep_req:
                         dep_name = "%s::%s" % (dep_req.split("::", 1)[0], req.name)
-                    if dep_name not in dep_dict or (
-                        len(req.specifier) != 0  # Make sure we have a version
-                        and not req.specifier.contains(dep_dict[dep_name])
-                    ):
+                    try:
+                        satisfies_requirement = dep_name in dep_dict and (
+                            len(req.specifier) == 0
+                            or req.specifier.contains(dep_dict[dep_name])
+                        )
+                    except InvalidVersion:
+                        if dep_type not in ("conda", "npconda"):
+                            raise
+                        # Conda accepts versions outside Python's version scheme.
+                        # Let its solver evaluate those instead of reusing the base.
+                        debug.conda_exec(
+                            "Cannot compare Conda version for %s; deferring to the solver"
+                            % dep_name
+                        )
+                        satisfies_requirement = False
+                    if not satisfies_requirement:
                         if len(req.specifier) == 0:
                             debug.conda_exec(
                                 "Dependency %s prevents compatible base (not found)"
