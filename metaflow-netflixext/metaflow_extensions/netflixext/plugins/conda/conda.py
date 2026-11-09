@@ -155,6 +155,10 @@ ParseURLResult = NamedTuple(
 )
 
 
+# Warn about an outdated conda-lock only once per process
+_warned_old_conda_lock = False
+
+
 class Conda(object):
     _cached_info = None
 
@@ -2243,6 +2247,18 @@ class Conda(object):
                     "is required) --ignoring"
                 )
                 del self._bins["conda-lock"]
+            elif parse_version(conda_lock_version) < parse_version("4.0.4"):
+                global _warned_old_conda_lock
+                if not _warned_old_conda_lock:
+                    _warned_old_conda_lock = True
+                    self.echo(
+                        "WARNING: conda-lock %s downloads its PyPI to conda name mapping "
+                        "from a URL that now returns 404, so resolving environments that "
+                        "mix conda and PyPI packages may fail. Upgrade to 4.0.4 or later "
+                        "from PyPI ('pip install -U conda-lock', or 'pipx install "
+                        "conda-lock'); conda-forge only provides it for Python 3.11+."
+                        % conda_lock_version
+                    )
         if self._bins is not None and "pip" in self._bins:
             pip_version = self.call_binary(["--version"], binary="pip").split(b" ", 2)[
                 1
