@@ -279,7 +279,8 @@ class RunnerCLI(object):
             steps will be returned.
         local_only : bool, default False
             If True, will only list environments as known if they are locally known. This
-            primarily affects named environments or if you have
+            primarily affects named environments, lock-pinned environments
+            (@resolved_uv, @resolved_req) or if you have
             METAFLOW_CONDA_USE_REMOTE_LATEST set to something different than ":none:".
         timeout : int, default 60
             Timeout in seconds for this call.
