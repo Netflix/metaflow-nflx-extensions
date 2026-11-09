@@ -55,6 +55,7 @@ from metaflow_extensions.netflixext.plugins.conda.utils import (
     resolve_env_alias,
     plural_marker,
     merge_dep_dicts,
+    merge_pypi_deps,
     tstr_to_dict,
 )
 
@@ -853,7 +854,7 @@ def resolve(
             )
             pypi_deps = {}
 
-        pypi_deps = merge_dep_dicts(pypi_deps, new_pypi_deps)
+        pypi_deps = merge_pypi_deps(pypi_deps, new_pypi_deps)
         conda_deps = merge_dep_dicts(conda_deps, new_conda_deps)
 
         deps = {
