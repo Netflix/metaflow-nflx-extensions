@@ -263,15 +263,19 @@ class EnvsResolver(object):
             True if we should only look for resolved environments locally and not
             remotely, by default False
         use_latest : str, default METAFLOW_CONDA_USE_REMOTE_LATEST
-            For default environments, determine if we allow fetching the latest environment
-            remotely resolved. If ":none:", we don't fetch anything. If ":username:", we
-            fetch the latest environment resolved by the current user. If ":any:", we fetch
-            the latest environment resolved by any user.
+            For default environments not known locally, which remotely resolved
+            environment to use (see `Conda.environment`). ":none:" fetches nothing,
+            except for lock-pinned environments (full_id_unique_keys set), which are
+            looked up remotely as if it were ":any:".
         force : bool, optional
             True if we should force resolution even if this environment is known,
             by default False
         force_co_resolve : bool, optional
             True if we should force co-resolution, by default False
+        full_id_unique_keys : Optional[Dict[str, str]], optional
+            Hash of the lock file for lock-pinned environments (set by @resolved_uv and
+            @resolved_req). It is part of the full ID and only environments with the
+            same keys are reused, by default None
         enforce_pypi_pins : bool, optional
             Validate extension PyPI requirements against final packages. Callers
             that inject these requirements enable this unless dependencies are skipped.
