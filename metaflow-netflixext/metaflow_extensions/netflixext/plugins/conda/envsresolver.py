@@ -745,15 +745,15 @@ class EnvsResolver(object):
             python_dep = [
                 d
                 for d in to_resolve_info["user_deps"].get("conda", [])
-                if d.startswith("python==")
+                if d.split("::", 1)[-1].startswith("python==")
             ]
-            python_version_requested = python_dep[0].split("==")[1]
+            python_name, python_version_requested = python_dep[0].split("==", 1)
             # A common pattern is people request a Python version using "major.minor"
             # instead of "major.minor.*". Which is likely what they intend (ie: any
             # version of that major.minor) so we convert it to the more common format.
             if python_version_requested.count(".") == 1:
                 python_version_requested = python_version_requested + ".*"
-                python_dep = [f"python=={python_version_requested}"]
+                python_dep = [f"{python_name}=={python_version_requested}"]
 
             if python_version_requested[0] not in ("~", "<", ">", "!", "="):
                 python_version_requested = "python==%s" % python_version_requested
@@ -774,7 +774,7 @@ class EnvsResolver(object):
                     [
                         d
                         for d in to_resolve_info["user_deps"].get("conda", [])
-                        if not d.startswith("python==")
+                        if not d.split("::", 1)[-1].startswith("python==")
                     ]
                 )
             )

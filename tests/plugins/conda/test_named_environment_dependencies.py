@@ -31,7 +31,11 @@ def conda(monkeypatch):
 @pytest.fixture
 def make_base():
     def make(
-        arch="linux-64", pandas_name="pandas", mixed=True, extra_conda_packages=()
+        arch="linux-64",
+        pandas_name="pandas",
+        mixed=True,
+        extra_conda_packages=(),
+        python_version="3.10.*",
     ):
         packages = []
         for name, version in (
@@ -49,7 +53,13 @@ def make_base():
                     hashes={".conda": "0" * 32},
                 )
             )
-        deps = {"conda": ["python==3.10.*", "%s==1.5.3" % pandas_name, "numpy==1.26.4"]}
+        deps = {
+            "conda": [
+                "python==%s" % python_version,
+                "%s==1.5.3" % pandas_name,
+                "numpy==1.26.4",
+            ]
+        }
         deps["conda"].extend("%s==%s" % item for item in extra_conda_packages)
         sources = {"conda": ["conda-forge"]}
         if mixed:
@@ -233,3 +243,59 @@ def test_derivation_preserves_distinct_explicit_channels(conda, make_base):
     deps = split_into_dict(result[4]["conda"])
     assert deps["conda-forge::pandas"] == "1.5.3"
     assert deps["other-channel::pandas"] == ">=2.0"
+
+
+@pytest.mark.parametrize("python_version", ["3.10", "3.10.*"])
+@pytest.mark.parametrize("use_base", [False, True], ids=["fresh", "derived"])
+@pytest.mark.parametrize("needs_builder", [False, True], ids=["no-builder", "builder"])
+def test_resolution_discovers_channel_qualified_python(
+    conda, make_base, monkeypatch, python_version, use_base, needs_builder
+):
+    conda.environment.return_value = None
+    monkeypatch.setattr(envsresolver, "arch_id", lambda: "linux-64")
+    monkeypatch.setattr(
+        EnvsResolver, "_env_needs_builder_env", staticmethod(lambda _: needs_builder)
+    )
+    resolver = EnvsResolver(conda)
+    base = make_base(python_version=python_version) if use_base else None
+    resolver.add_environment(
+        "linux-64",
+        {
+            "conda": ["conda-forge::python==%s" % python_version],
+            "pypi": ["new-package"],
+        },
+        {"conda": ["conda-forge"]},
+        {},
+        base_env=base,
+    )
+    env_id, requested = next(iter(resolver._requested_envs.items()))
+    assert "python" not in split_into_dict(requested["user_deps"]["conda"])
+
+    def resolve(env_desc, builders):
+        resolved = ResolvedEnvironment(
+            env_desc["user_deps"],
+            env_desc["sources"],
+            env_desc["extras"],
+            arch="linux-64",
+            all_packages=list(make_base().packages),
+            env_type=env_desc["env_type"],
+        )
+        return env_desc["id"], resolved, []
+
+    resolve_mock = Mock(side_effect=resolve)
+    monkeypatch.setattr(resolver, "_resolve", resolve_mock)
+    resolver._resolve_environments(Mock(), [env_id])
+
+    assert requested["python_version_requested"] == "python==3.10.*"
+    assert requested["resolved"] is not None
+    assert len(resolver._builder_envs) == int(needs_builder)
+    assert resolve_mock.call_count == 1 + int(needs_builder)
+    for builder in resolver._builder_envs.values():
+        python_deps = {
+            name: version
+            for name, version in split_into_dict(builder["deps"]["conda"]).items()
+            if name.split("::", 1)[-1] == "python"
+        }
+        assert python_deps == {"conda-forge::python": "3.10.*"}
+        assert builder["python_version_requested"] == "python==3.10.*"
+        assert builder["resolved"] is not None
